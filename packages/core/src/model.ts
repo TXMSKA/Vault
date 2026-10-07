@@ -1,4 +1,4 @@
-export const KINDS = ["login", "card", "doc", "note", "key", "custom"] as const;
+export const KINDS = ["login", "card", "doc", "note", "key", "custom", "env"] as const;
 export type Kind = typeof KINDS[number];
 export type Field = { id: string; name: string; value: string; secret: boolean };
 export type Attachment = { id: string; name: string; type: string; size: number; chunks: string[] };
@@ -16,10 +16,10 @@ export const IDLE_MS = 5 * 60 * 1000;
 export const CLIPBOARD_MS = 30 * 1000;
 export const CHUNK_BYTES = 32 * 1024;
 export const MAX_FILE_BYTES = 20 * 1024 * 1024;
-export const MAX_ENTRIES = 250;
+export const MAX_ENTRIES = 4096;
 export const FIELD_KEYS = {
   login: ["username", "password", "website"], card: ["bank", "number", "expiry", "securityCode", "holder", "pin"],
-  doc: [], note: [], key: ["key", "license"], custom: [],
+  doc: [], note: [], key: ["key", "license"], custom: [], env: [],
 } satisfies Record<Kind, string[]>;
 
 export function filename(value: string): string {

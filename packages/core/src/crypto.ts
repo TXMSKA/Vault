@@ -1,5 +1,5 @@
 // This module only handles browser-memory keys. No plaintext is sent to the server.
-import type { Envelope, Sealed, VaultState } from "./model";
+import type { Envelope, Sealed, VaultState } from "./model.js";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 export function base64(bytes: Uint8Array): string { return btoa(Array.from(bytes, b => String.fromCharCode(b)).join("")); }

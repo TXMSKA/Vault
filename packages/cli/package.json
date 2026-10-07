@@ -1,0 +1,1 @@
+{ "name": "vault-cli", "version": "0.1.0", "private": true, "type": "module", "bin": { "vault": "src/main.ts" }, "scripts": { "start": "node src/main.ts" } }
