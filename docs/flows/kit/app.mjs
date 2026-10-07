@@ -142,15 +142,15 @@ export function menu(items, { w = 260, at, name = "menu", title = "Menu" } = {})
 /** The dim over the window behind a dialog. */
 const scrim = () => box({ w: SIZE.w, h: BODY_H, fill: "overlay", place: { x: 0, y: TITLE_H } });
 
-/** A dialog centred over the window: its title, its body and its buttons, right aligned. */
-export function dialog({ title, w = 440, name = "dialog" }, body, actions) {
+/** A dialog centred over the window: its title, its body and its buttons, right aligned, with an optional `lead` at the left. */
+export function dialog({ title, w = 440, name = "dialog", lead }, body, actions) {
   return [
     scrim(),
     col(
       { w, pad: 24, gap: 18, radius: d.r.window, fill: "surface", stroke: "line-strong", place: "center", name, label: title },
       heading(title, { size: 18 }),
       ...body,
-      row({ gap: 10 }, fill(), ...actions),
+      row({ gap: 10 }, lead ?? null, fill(), ...actions),
     ),
   ];
 }

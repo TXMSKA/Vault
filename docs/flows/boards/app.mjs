@@ -157,7 +157,7 @@ const NEW_FORMS = {
     formField("Passphrase", input(null, { placeholder: "Optional", mono: true, ref: "passphrase" })),
   ],
   env: () => [
-    formField("Project", input(null, { placeholder: "sprout", focus: true, ref: "project" }), { hint: "The name the terminal asks for: vault env sprout." }),
+    formField("Project", input(null, { placeholder: "sprout", focus: true, ref: "project" }), { hint: "The name a run asks for: vault run --project sprout." }),
     label("Values"),
     ...[["DATABASE_URL", DOTS], ["API_TOKEN", DOTS]].map(([key, value]) =>
       row({ gap: 8, name: `value-${slug(key)}`, label: key }, input(key, { mono: true, w: 200 }), input(value, { mono: true, grow: 1 }), iconButton(d, "x", { label: "Remove value" })),
@@ -385,13 +385,25 @@ const SOURCES = [
   ["Bitwarden", "CSV, or JSON that is not encrypted"],
   ["1Password", "CSV export"],
   ["KeePass", "CSV, or KeePass 2 XML"],
+  [".env file", "A project's values, for its commands"],
 ];
+const ENV_SOURCE = SOURCES.length - 1;
 
 const sourceTile = ([name, line], on) =>
   row(
     { grow: 1, pad: [12, 14], gap: 12, radius: d.r.group, stroke: on ? "primary" : "line", strokeWidth: on ? 2 : 1, fill: on ? "selected" : undefined, name: `source-${slug(name)}`, label: name },
     stack({ w: 18, h: 18, radius: "pill", stroke: on ? "primary" : "field-line", strokeWidth: 2 }, on ? box({ w: 8, h: 8, radius: "pill", fill: "primary", place: "center" }) : null),
     col({ gap: 2, grow: 1 }, strong(name), t.ui(line, { size: 12, color: "soft" })),
+  );
+
+/** The sources in rows of three; the last row keeps the same column width. */
+const sourceGrid = (chosen) =>
+  col(
+    { gap: 10 },
+    ...[0, 3, 6].map((i) => {
+      const tiles = SOURCES.slice(i, i + 3).map((source, j) => sourceTile(source, i + j === chosen));
+      return row({ gap: 10 }, ...tiles, ...Array.from({ length: 3 - tiles.length }, () => box({ grow: 1 })));
+    }),
   );
 
 function importSource({ chosen } = {}) {
@@ -401,8 +413,8 @@ function importSource({ chosen } = {}) {
       {},
       sectionHead("Import"),
       page(
-        t.body("Choose where the passwords come from, then the file you exported from it.", { color: "text" }),
-        col({ gap: 10 }, ...[0, 3].map((i) => row({ gap: 10 }, ...SOURCES.slice(i, i + 3).map((source, j) => sourceTile(source, i + j === 0))))),
+        t.body("Choose where the passwords or a project's values come from, then the file.", { color: "text" }),
+        sourceGrid(0),
         chosen
           ? row(
               { gap: 10, pad: [10, 14], radius: d.r.control, fill: "surface-2", name: "chosen-file", label: "Chosen file" },
@@ -441,6 +453,91 @@ function importReport() {
       ),
     ),
   );
+}
+
+// A .env file goes into one project's entry, then Vault offers to delete the plain file.
+function importEnv() {
+  return appWindow(
+    {},
+    view(
+      {},
+      sectionHead("Import"),
+      page(
+        t.body("Choose where the passwords or a project's values come from, then the file.", { color: "text" }),
+        sourceGrid(ENV_SOURCE),
+        row(
+          { gap: 12, align: "start" },
+          col({ grow: 1 }, formField("Project", input("sprout", { ref: "project", focus: true }), { hint: "New names are added, known ones replaced, the rest kept." })),
+          col(
+            { grow: 1, gap: 6 },
+            label("File"),
+            row(
+              { h: CONTROL_H + 4, gap: 10, pad: [0, 14], radius: d.r.control, fill: "surface-2", name: "chosen-file", label: "Chosen file" },
+              icon("fileText", { size: 16, color: "soft" }),
+              t.ui(".env", { size: 14, color: "title" }),
+              t.ui("1 KB, 6 values", { color: "soft" }),
+              fill(),
+              link("Change", "change-file"),
+            ),
+          ),
+        ),
+        fill(),
+        row({}, notice("lock", "The file is read on this computer only."), fill(), button("Import 6 values", { primary: true, ref: "import" })),
+      ),
+    ),
+  );
+}
+
+function importEnvReport() {
+  return appWindow(
+    {},
+    view(
+      {},
+      sectionHead("Import"),
+      page(
+        col({ gap: 6 }, heading("6 values saved in sprout"), t.body("4 are new and 2 replaced older ones. 1 line was skipped: bad-name is not a valid name.", { color: "text" })),
+        row(
+          { pad: 16, gap: 12, align: "start", radius: d.r.group, fill: "error-wash", name: "delete-offer", label: "Delete the .env file" },
+          icon("triangleAlert", { size: 18, color: "error" }),
+          col({ gap: 4, grow: 1 }, strong("Delete .env now?"), t.ui("It holds every value in plain text. Vault deletes it only if you say so.", { color: "text" })),
+          row({ gap: 10 }, button("Keep it", { ref: "keep-file" }), button("Delete file", { danger: true, glyph: "trash2", ref: "delete-file" })),
+        ),
+        fill(),
+        row({}, fill(), button("Done", { primary: true, ref: "done" })),
+      ),
+    ),
+  );
+}
+
+// ---- a run request ----------------------------------------------------------
+
+const RUN_COMMANDS = ["npx prisma migrate deploy", "npm run db:seed"];
+
+/** An agent asks to run commands with a project's values; Vault comes to the front over whatever it shows. */
+function runRequest({ password = false } = {}) {
+  const fact = (name, value, mono = false) => row({ gap: 12 }, label(name, { w: 64 }), mono ? t.mono(value, { size: 13, color: "title" }) : t.ui(value, { size: 14, color: "title" }));
+  return main({}, [
+    dialog(
+      {
+        title: "Claude Code wants to run 2 commands",
+        w: 560,
+        name: "run-request",
+        lead: password ? link("Use Windows Hello", "use-hello") : link("Use master password", "use-password"),
+      },
+      [
+        col({ gap: 8 }, fact("Project", "sprout"), fact("Folder", "C:\\Users\\alex\\code\\sprout", true)),
+        col({ pad: [12, 14], gap: 8, radius: d.r.group, fill: "surface-2", stroke: "line", name: "commands", label: "Commands" }, ...RUN_COMMANDS.map((line) => t.mono(line, { size: 13, color: "title" }))),
+        notice("info", "They get sprout's values. Vault hides the values in what the commands print, but a command, or a script it runs, can still save them elsewhere."),
+        notice("eye", "DEBUG is shorter than 4 characters, so it shows as it is in the output."),
+        row({ gap: 8 }, icon("clock", { size: 14, color: "soft" }), t.ui("Expires in 9 minutes. Approving covers these two commands only.", { size: 12, color: "soft" })),
+        password ? formField("Master password", input("•".repeat(18), { mono: true, focus: true, ref: "password", title: "Master password", trail: [reveal(false)] })) : null,
+      ].filter(Boolean),
+      [
+        button("Reject", { ref: "reject" }),
+        password ? button("Approve", { primary: true, ref: "approve-password" }) : button("Approve", { primary: true, glyph: "fingerprint", ref: "approve" }),
+      ],
+    ),
+  ]);
 }
 
 // ---- export -----------------------------------------------------------------
@@ -561,7 +658,17 @@ const FILTERS = [
 const LIST_TOP = 36 + 24; // the top of the search field in the window
 const screen = (id, title, col, row, root, note) => ({ id, title, col, row, w: SIZE.w, h: SIZE.h, root, note });
 
+const ADD_ENV_NOTE = "Nova reads these. A command gets them only through a run that a person approves.";
+
 const screens = [
+  // New and changed in this round, kept apart from the flow by an empty row; the number is the screen's place in the flow.
+  screen("run-request", "New 44: Run request", 0, -2, () => runRequest(), "An agent asked to run commands with a project's values, so Vault comes to the front with the request. Approve opens Windows Hello and covers these commands only; Reject tells the agent nothing ran. vault approve shows the same request in a terminal."),
+  screen("run-password", "New 45: Run request, master password", 1, -2, () => runRequest({ password: true }), "The master password instead of Windows Hello, for Linux or when Hello is off."),
+  screen("import-env", "New 46: Import, .env file", 2, -2, importEnv, "A .env file goes into one project's entry: new names are added, known ones replaced, the rest kept."),
+  screen("import-env-report", "New 47: Import, .env report", 3, -2, importEnvReport, "Vault offers to delete the plain file and never deletes it without the answer."),
+  screen("changed-import", "Changed 30: Import, source", 4, -2, () => importSource(), "The .env file joins the sources, in a third row."),
+  screen("changed-import-file", "Changed 31: Import, file chosen", 5, -2, () => importSource({ chosen: true }), "The same third row of sources."),
+  screen("changed-add-env", "Changed 28: New environment", 6, -2, () => newEntry("env"), "The hint names vault run, the command that reaches these values after approval."),
   // First run
   screen("welcome", "Welcome", 0, 0, welcome, "The first open on a computer with no vault: create one, or restore an encrypted backup. An existing shared vault, made by Nebula or another app, opens on the locked screen instead."),
   screen("create", "Master password", 1, 0, () => createVault(), "Two fields, 15 to 128 characters, as the service checks."),
@@ -594,7 +701,7 @@ const screens = [
   screen("add-document", "New document", 4, 4, () => newEntry("document")),
   screen("add-note", "New note", 5, 4, () => newEntry("note")),
   screen("add-key", "New key", 6, 4, () => newEntry("key")),
-  screen("add-env", "New environment", 7, 4, () => newEntry("env"), "Nova reads these; the terminal loads them with vault env."),
+  screen("add-env", "New environment", 7, 4, () => newEntry("env"), ADD_ENV_NOTE),
   screen("add-custom", "New custom entry", 8, 4, () => newEntry("custom")),
   // Import
   screen("import", "Import, source", 0, 5, () => importSource(), "Choose file opens the system file picker."),
@@ -662,6 +769,16 @@ const links = [
   { from: "settings", to: "idle-open", at: "idle", label: "Lock after idle" },
   { from: "settings", to: "language-open", at: "language", label: "Language" },
   { from: "settings", to: "theme-open", at: "theme", label: "Theme" },
+  { from: "list", to: "run-request", label: "An agent asks" },
+  { from: "run-request", to: "run-password", at: "use-password", label: "Use master password" },
+  { from: "run-password", to: "run-request", at: "use-hello", label: "Use Windows Hello" },
+  { from: "run-request", to: "list", at: "approve", label: "Approve" },
+  { from: "run-request", to: "list", at: "reject", label: "Reject" },
+  { from: "run-password", to: "list", at: "approve-password", label: "Approve" },
+  { from: "import", to: "import-env", at: "source-env-file", label: ".env file" },
+  { from: "changed-import", to: "import-env", at: "source-env-file", label: ".env file" },
+  { from: "import-env", to: "import-env-report", at: "import", label: "Import" },
+  { from: "import-env-report", to: "list", at: "done", label: "Done" },
 ];
 
 export default board({
