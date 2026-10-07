@@ -11,6 +11,8 @@ import { csv, parseImport } from "../src/imports.ts";
 import { xml } from "../src/xml.ts";
 import { dpapi } from "../src/hello.ts";
 import { Lifecycle, DISCONNECTED_MS } from "../src/lifecycle.ts";
+import { Redactor, MASK } from "../src/redact.ts";
+import { dotenv } from "../src/dotenv.ts";
 import { defaultRoots } from "../../../test/guard.mjs";
 import { resolveHome } from "../../client/src/paths.ts";
 import { connect, ensureRunning, findService, VaultClientError, readCapped } from "../../client/dist/index.js";
@@ -92,7 +94,7 @@ try {
   const horizon = await app("horizon"), nova = await app("nova"), nebula = await app("nebula");
   const unknown = await app("synthetic-app", "app"), agent = await app("synthetic-agent", "agent"), lyra = await app("lyra", "app");
   await rejects(() => unknown.status(), "pending"); await cli.apps.allow("synthetic-app"); await unknown.present(); assert.equal((await unknown.status()).created, false);
-  await rejects(() => cli.apps.allow("synthetic-agent"), "forbidden"); await rejects(() => cli.apps.allow("lyra"), "forbidden");
+  await cli.apps.allow("synthetic-agent"); await rejects(() => agent.status(), "forbidden"); await rejects(() => agent.entries.list(), "forbidden"); await rejects(() => cli.apps.allow("lyra"), "forbidden");
   await cli.apps.revoke("synthetic-app"); await rejects(() => unknown.status(), "revoked"); checks += 5;
   const hashFile = await readFile(join(home, "secrets", "apps.json"), "utf8"); assert.equal(hashFile.includes(cliTokens.token()), false); checks++;
   const badToken = await probe(service, "/v1/status", { auth: `Bearer ${randomBytes(32).toString("base64url")}` }); assert.equal(badToken.status, 401); checks++;
@@ -206,12 +208,13 @@ try {
   stage = "CLI and argument-array run";
   // The CLI follows the machine's locale; the English answers below must not depend on it.
   process.env.LC_ALL = "en";
-  const output = [], errors = [], prompts = [], io = { isTTY: () => true, async ask() { return prompts.shift(); }, write(value) { output.push(value); }, error(value) { errors.push(value); } };
+  const output = [], errors = [], prompts = [], io = { isTTY: () => true, async ask() { return prompts.shift(); }, write(value) { output.push(value); }, error(value) { errors.push(value); }, out(value) { output.push(value); }, err(value) { errors.push(value); } };
   const resultFile = join(scratch, "child-result.json"), childPath = join(scratch, "child.mjs");
   const childCode = "import fs from 'node:fs'; const good = !!process.env.VAULT_SYNTHETIC_VALUE && process.argv[3] === 'literal;$(echo forbidden)&'; fs.writeFileSync(process.argv[2],JSON.stringify({good,hasValue:!!process.env.VAULT_SYNTHETIC_VALUE}));";
   await writeFile(childPath, childCode);
   const runArgs = ["run", "--project", "synthetic-project", "--", process.execPath, childPath, resultFile];
-  for (const command of [runArgs, ["get", one.id, "password", "--reveal"]]) {
+  // Without a terminal a run is an agent's request, so it reaches the service; a reveal still needs a terminal.
+  for (const [command, expected] of [[runArgs, "Run vault dev-install first"], [["get", one.id, "password", "--reveal"], "A terminal is required"]]) {
     const stdinPath = join(scratch, `stdin-${randomUUID()}`), stdoutPath = join(scratch, `stdout-${randomUUID()}`), stderrPath = join(scratch, `stderr-${randomUUID()}`);
     await writeFile(stdinPath, "", { mode: 0o600 });
     const handles = [await open(stdinPath, "r"), await open(stdoutPath, "wx", 0o600), await open(stderrPath, "wx", 0o600)];
@@ -221,16 +224,15 @@ try {
       detached.add(child.pid);
       const status = await new Promise((done, fail) => { child.once("error", fail); child.once("exit", done); }); detached.delete(child.pid);
       const stdout = await readFile(stdoutPath, "utf8"), stderr = await readFile(stderrPath, "utf8");
-      assert.equal(status, 1); assert.equal(stdout.length, 0); assert.equal(stderr.includes("A terminal is required"), true);
+      assert.equal(status, 1); assert.equal(stdout.length, 0); assert.equal(stderr.includes(expected), true);
       assert.equal(stderr.includes(canary), false); checks += 4;
     } finally { for (const handle of handles) await handle.close(); }
   }
   const noTerminal = { ...io, isTTY: () => false, async ask() { throw new Error("unexpected_prompt"); } };
-  assert.equal(await main(runArgs, noTerminal), 1);
+  assert.equal(await main(runArgs, noTerminal), 1); assert.equal(errors.some(line => line.includes("vault apps allow agent")), true);
   assert.equal(await main(["get", one.id, "password", "--reveal"], noTerminal), 1);
   assert.equal(await main(["get", one.id, "password"], noTerminal), 0);
   assert.equal(output.join().includes(canary), false); output.length = 0;
-  prompts.push("no"); assert.equal(await main(runArgs, io), 1);
   prompts.push("no"); assert.equal(await main(["get", one.id, "password", "--reveal"], io), 1);
   await assert.rejects(() => readFile(resultFile)); errors.length = 0;
   prompts.push("yes"); assert.equal(await main(["get", one.id, "password", "--reveal"], io), 0);
@@ -243,15 +245,161 @@ try {
     assert.equal(await main(["get", one.id, "password", "--reveal"], io), 0);
     assert.equal(output.length, 1); assert.equal(output[0] === canary, true); output.length = 0; checks += 3;
   } finally { if (previousLocale === undefined) delete process.env.LC_ALL; else process.env.LC_ALL = previousLocale; }
-  prompts.push("yes");
-  assert.equal(await main(["run", "--project", "synthetic-project", "--", process.execPath, childPath, resultFile, "literal;$(echo forbidden)&"], io), 0);
-  const result = JSON.parse(await readFile(resultFile, "utf8")); assert.deepEqual(result, { good: true, hasValue: true });
-  assert.equal(output.join().includes(canary), false); assert.equal(errors.length, 0);
+  assert.equal(output.join().includes(canary), false);
   const kitPath = join(scratch, "kit.txt"); process.env.VAULT_HOME = join(scratch, "cli-home"); const kitService = await startService({ home: process.env.VAULT_HOME }); services.push(kitService);
   prompts.push(password, password); assert.equal(await main(["create", "--kit", kitPath], io), 0); assert.match(await readFile(kitPath, "utf8"), /Recovery kit/);
   const savedRecovery = (await readFile(kitPath, "utf8")).split("\n")[4]; assert.equal(output.join().includes(savedRecovery), false);
   assert.equal((await kitService.vault.store.envelope()).version, 1);
   process.env.VAULT_HOME = home; checks += 19;
+
+  stage = "agent runs: access";
+  {
+    let shift = 0;
+    const runHome = join(scratch, "run-home"), runner = await startService({ home: runHome, now: () => Date.now() + shift, runs: { commandMs: 3000 } }); services.push(runner);
+    const tom = await connect({ home: runHome, app: { id: "vault-app", name: "Synthetic app", kind: "cosmic" }, tokens: memoryTokens() }); clients.push(tom);
+    await tom.create(password);
+    const project = entry("env"); project.fields.push({ id: "VAULT_SYNTHETIC_SHORT", name: "Short", secret: true, value: "abc" }); await tom.entries.save(project, 0);
+    const agentApi = await connect({ home: runHome, app: { id: "claude-code", name: "Claude Code", kind: "agent" }, tokens: memoryTokens() }); clients.push(agentApi);
+    const environment = Object.fromEntries(Object.entries(process.env).filter(([name, value]) => /^[^=\0]{1,256}$/.test(name) && typeof value === "string" && value.length <= 32768));
+    const ask = (commands, name = "synthetic-project", env = environment) => ({ project: name, commands, cwd: scratch, env });
+    const marker = name => join(scratch, `marker-${name}.json`), printer = join(scratch, "printer.mjs"), seen = [];
+    await writeFile(printer, [
+      'import fs from "node:fs"; const v = process.env.VAULT_SYNTHETIC_VALUE ?? "", line = String.fromCharCode(10);',
+      'fs.writeFileSync(process.argv[2], JSON.stringify({ hasValue: v.length > 0, literal: process.argv[3] ?? null }));',
+      'process.stdout.write("whole:" + v + line + "url:" + encodeURIComponent(v) + line + "base64:" + Buffer.from(v).toString("base64") + line + "json:" + JSON.stringify({ v }) + line);',
+      'process.stderr.write("error:" + v + line); process.stdout.write("split:" + v.slice(0, 7));',
+      'setTimeout(() => process.stdout.write(v.slice(7) + line + "short:" + process.env.VAULT_SYNTHETIC_SHORT + line), 300);',
+    ].join("\n"));
+    const settle = async (api, id) => {
+      let after = 0, text = "";
+      for (let i = 0; i < 300; i++) {
+        const progress = await api.runs.get(id, after); seen.push(JSON.stringify(progress));
+        text += progress.chunks.map(chunk => chunk.text).join(""); after = progress.next;
+        if (!progress.more && !["pending", "running"].includes(progress.status)) return { progress, text };
+        await wait(100);
+      }
+      throw new Error("run_timeout");
+    };
+    const pendingFrom = async appId => { for (let i = 0; i < 100; i++) { const found = (await tom.runs.list()).find(row => row.status === "pending" && row.app.id === appId); if (found) return found; await wait(100); } throw new Error("no_request"); };
+    await rejects(() => agentApi.runs.submit(ask([[process.execPath, printer, marker("pending")]])), "pending");
+    await tom.apps.allow("claude-code"); checks++;
+    for (const call of [() => agentApi.status(), () => agentApi.entries.list(), () => agentApi.environment("synthetic-project"), () => agentApi.runs.list(), () => agentApi.runs.approve(randomUUID(), password), () => agentApi.unlock(password), () => agentApi.listLogins()]) { await rejects(call, "forbidden"); checks++; }
+    const horizonRuns = await app("horizon", "cosmic", runHome); await rejects(() => horizonRuns.runs.submit(ask([[process.execPath, "-e", ""]])), "not_found");
+    await rejects(() => tom.environment("synthetic-project"), "not_found");
+    const novaRuns = await app("nova", "cosmic", runHome); assert.equal((await novaRuns.environment("synthetic-project")).VAULT_SYNTHETIC_VALUE === canary, true);
+    for (const malformed of [ask([]), ask([[]]), ask([[" "]]), ask([["node", "a\u001bb"]]), { ...ask([["node"]]), cwd: "relative" }, ask([["node"]], ""), ask([["node"]], "synthetic-project", { "A=B": "x" })]) await rejects(() => agentApi.runs.submit(malformed), "invalid");
+    checks += 10;
+
+    stage = "agent runs: approval";
+    const first = await agentApi.runs.submit(ask([[process.execPath, printer, marker("first"), "literal;$(echo forbidden)&"]]));
+    const before = await agentApi.runs.get(first.id); assert.equal(before.status, "pending"); assert.equal(before.chunks.length, 0);
+    await wait(300); await assert.rejects(() => readFile(marker("first")));
+    const waiting = await tom.runs.list(), summary = waiting.find(row => row.id === first.id);
+    assert.equal(summary.app.name, "Claude Code"); assert.deepEqual(summary.short, ["VAULT_SYNTHETIC_SHORT"]); assert.equal(summary.commands[0].at(-1), "literal;$(echo forbidden)&");
+    assert.equal(JSON.stringify(waiting).includes(canary), false); checks += 7;
+    await tom.runs.approve(first.id, password);
+    const ran = await settle(agentApi, first.id);
+    assert.equal(ran.progress.status, "done"); assert.equal(ran.progress.commands[0].exit, 0);
+    assert.deepEqual(JSON.parse(await readFile(marker("first"), "utf8")), { hasValue: true, literal: "literal;$(echo forbidden)&" });
+    for (const form of [canary, encodeURIComponent(canary), Buffer.from(canary).toString("base64"), Buffer.from(canary).toString("base64").replace(/=+$/, "")]) assert.equal(ran.text.includes(form), false);
+    for (const shown of [`whole:${MASK}`, `url:${MASK}`, `base64:${MASK}`, `split:${MASK}`, `error:${MASK}`, "short:abc"]) assert.equal(ran.text.includes(shown), true);
+    assert.equal(seen.some(response => response.includes(canary)), false);
+    await rejects(() => tom.runs.approve(first.id, password), "not_pending"); checks += 15;
+
+    stage = "agent runs: refused, rejected and missing";
+    const wrong = await agentApi.runs.submit(ask([[process.execPath, printer, marker("wrong")]]));
+    await rejects(() => tom.runs.approve(wrong.id, nextPassword), "locked"); assert.equal((await agentApi.runs.get(wrong.id)).status, "pending"); shift += 2000;
+    await rejects(() => tom.runs.approveWithHello(wrong.id, "1"), "not_found"); assert.equal((await agentApi.runs.get(wrong.id)).status, "pending");
+    await tom.runs.reject(wrong.id); assert.equal((await agentApi.runs.get(wrong.id)).status, "rejected");
+    await rejects(() => tom.runs.approve(wrong.id, password), "not_pending"); await wait(300); await assert.rejects(() => readFile(marker("wrong")));
+    const missing = await agentApi.runs.submit(ask([[process.execPath, printer, marker("missing")]], "synthetic-missing"));
+    assert.equal((await tom.runs.list()).find(row => row.id === missing.id).problem, "missing");
+    await rejects(() => tom.runs.approve(missing.id, password), "not_found"); const missed = await agentApi.runs.get(missing.id);
+    assert.equal(missed.status, "failed"); assert.equal(missed.reason, "not_found"); await assert.rejects(() => readFile(marker("missing")));
+    const others = await tom.runs.submit(ask([[process.execPath, "-e", ""]])); await rejects(() => agentApi.runs.get(others.id), "not_found"); await tom.runs.reject(others.id);
+    await rejects(() => tom.runs.approve(randomUUID(), password), "not_found"); await rejects(() => agentApi.runs.get("synthetic"), "invalid"); checks += 15;
+
+    stage = "agent runs: failing, timed out and stopped";
+    const failing = await agentApi.runs.submit(ask([[process.execPath, "-e", "process.exit(3)"], [process.execPath, printer, marker("skipped")]]));
+    await tom.runs.approve(failing.id, password); const failed = (await settle(agentApi, failing.id)).progress;
+    assert.equal(failed.status, "failed"); assert.equal(failed.commands[0].exit, 3); assert.equal(failed.commands[1].status, "skipped"); await assert.rejects(() => readFile(marker("skipped")));
+    const slow = await agentApi.runs.submit(ask([[process.execPath, "-e", "setTimeout(() => {}, 20000)"]]));
+    await tom.runs.approve(slow.id, password); const timed = (await settle(agentApi, slow.id)).progress;
+    assert.equal(timed.status, "failed"); assert.equal(timed.commands[0].reason, "timeout");
+    const stopping = await agentApi.runs.submit(ask([[process.execPath, "-e", "setTimeout(() => {}, 20000)"], [process.execPath, printer, marker("after-stop")]]));
+    await tom.runs.approve(stopping.id, password); await wait(300); await tom.runs.reject(stopping.id);
+    const stopped = (await settle(agentApi, stopping.id)).progress;
+    assert.equal(stopped.status, "stopped"); assert.equal(stopped.commands[0].status, "stopped"); assert.equal(stopped.commands[1].status, "skipped"); await assert.rejects(() => readFile(marker("after-stop")));
+    const absent = await agentApi.runs.submit(ask([["vault-synthetic-missing-command"]])); await tom.runs.approve(absent.id, password);
+    assert.equal((await settle(agentApi, absent.id)).progress.commands[0].reason, process.platform === "win32" ? "not_found" : "not_started"); checks += 11;
+    if (process.platform === "win32") {
+      stage = "agent runs: Windows batch files";
+      const argsPrinter = join(scratch, "args.mjs"), shim = join(scratch, "synthetic-args.cmd"), pathName = Object.keys(environment).find(name => name.toLowerCase() === "path") ?? "Path";
+      await writeFile(argsPrinter, "process.stdout.write(JSON.stringify(process.argv.slice(2)));"); await writeFile(shim, `@"${process.execPath}" "${argsPrinter}" %*\r\n`);
+      const found = await agentApi.runs.submit(ask([["synthetic-args", "plain", "two words", "end\\"]], "synthetic-project", { ...environment, [pathName]: `${scratch};${environment[pathName] ?? ""}` }));
+      await tom.runs.approve(found.id, password); const shown = await settle(agentApi, found.id);
+      assert.equal(shown.progress.status, "done"); assert.deepEqual(JSON.parse(shown.text), ["plain", "two words", "end\\"]);
+      const unsafe = await agentApi.runs.submit(ask([[shim, "a&echo injected"]])); await tom.runs.approve(unsafe.id, password);
+      assert.equal((await settle(agentApi, unsafe.id)).progress.commands[0].reason, "unsafe_argument"); checks += 3;
+    }
+
+    stage = "redaction across pieces and .env parsing";
+    const secret = "synthetic-secret-value", redactor = new Redactor([secret, "abc"]), text = `before ${secret} after abc`;
+    for (let cut = 0; cut <= text.length; cut++) { const stream = redactor.stream(); assert.equal(stream.push(text.slice(0, cut)) + stream.push(text.slice(cut)) + stream.end(), `before ${MASK} after abc`); checks++; }
+    { const stream = redactor.stream(); let out = ""; for (const char of text) out += stream.push(char); assert.equal(out + stream.end(), `before ${MASK} after abc`); checks++; }
+    assert.equal(new Redactor([]).all(text), text);
+    const parsed = dotenv(`${String.fromCharCode(0xfeff)}# comment\nexport FIRST=one\nSECOND = "two words" # note\nTHIRD='single # kept'\nFOURTH="line\\nbreak"\nMULTI="first\nsecond"\nUNQUOTED=value # comment\nbad-name=x\nnovalue\n\nEMPTY=\nOPEN="never closed\nFIRST=again\n`);
+    assert.deepEqual(parsed.variables, [["FIRST", "again"], ["SECOND", "two words"], ["THIRD", "single # kept"], ["FOURTH", "line\nbreak"], ["MULTI", "first\nsecond"], ["UNQUOTED", "value"], ["EMPTY", ""]]);
+    assert.equal(parsed.skipped, 3); assert.throws(() => dotenv(Array.from({ length: 101 }, (_, i) => `NAME_${i}=x`).join("\n")), error => error.code === "limited"); checks += 4;
+
+    stage = ".env import";
+    process.env.VAULT_HOME = runHome;
+    const lines = [], answers = [], tty = { isTTY: () => true, async ask() { return answers.shift(); }, write(value) { lines.push(value); }, error(value) { lines.push(value); }, out(value) { lines.push(value); }, err(value) { lines.push(value); } };
+    const agentLines = [], agentStream = [], agentIo = { isTTY: () => false, async ask() { throw new Error("unexpected_prompt"); }, write(value) { agentLines.push(value); }, error(value) { agentLines.push(value); }, out(value) { agentStream.push(value); }, err(value) { agentStream.push(value); } };
+    const envPath = join(scratch, "synthetic.env"), importArgs = ["import", envPath, "--from", "dotenv", "--project", "dotenv-project"];
+    await writeFile(envPath, `DOTENV_FIRST=${canary}\nDOTENV_SHORT=abc\n`);
+    answers.push("no"); assert.equal(await main(importArgs, tty), 0); assert.equal((await readFile(envPath, "utf8")).includes(canary), true);
+    assert.deepEqual(await novaRuns.environment("dotenv-project"), { DOTENV_FIRST: canary, DOTENV_SHORT: "abc" });
+    await writeFile(envPath, `DOTENV_FIRST=${backupPassword}\nDOTENV_NEW=added\n`);
+    answers.push("yes"); assert.equal(await main(importArgs, tty), 0); await assert.rejects(() => readFile(envPath));
+    assert.deepEqual(await novaRuns.environment("dotenv-project"), { DOTENV_FIRST: backupPassword, DOTENV_SHORT: "abc", DOTENV_NEW: "added" });
+    assert.equal(lines.some(line => line.includes("1 new, 1 changed, 0 the same, 1 kept from before")), true);
+    await writeFile(envPath, "DOTENV_LATER=x\n"); assert.equal(await main(importArgs, agentIo), 0); assert.equal(await readFile(envPath, "utf8"), "DOTENV_LATER=x\n");
+    assert.equal([...lines, ...agentLines].join("\n").includes(canary), false); checks += 8;
+
+    stage = "agent runs through the command line";
+    const running = main(["run", "--agent", "claude-code", "--project", "synthetic-project", "--", process.execPath, printer, marker("cli")], agentIo);
+    const request = await pendingFrom("claude-code"); await assert.rejects(() => readFile(marker("cli")));
+    await tom.runs.approve(request.id, password); assert.equal(await running, 0);
+    assert.equal(agentStream.join("").includes(canary), false); assert.equal(agentStream.join("").includes(`whole:${MASK}`), true);
+    assert.equal(agentLines.some(line => line.includes("vault approve")), true); assert.equal(JSON.parse(await readFile(marker("cli"), "utf8")).hasValue, true);
+    const queued = main(["run", "--agent", "claude-code", "--project", "synthetic-project", "--", process.execPath, printer, marker("approved")], agentIo);
+    await pendingFrom("claude-code"); answers.push("yes", password); assert.equal(await main(["approve"], tty), 0); assert.equal(await queued, 0);
+    assert.equal(lines.some(line => line.startsWith("Claude Code asks to run 1 command with the values of \"synthetic-project\".")), true);
+    assert.equal(lines.some(line => line.startsWith("Shown as they are in the output, shorter than 4 characters: VAULT_SYNTHETIC_SHORT")), true);
+    assert.equal(lines.some(line => line.startsWith("Approved.")), true); assert.equal(JSON.parse(await readFile(marker("approved"), "utf8")).hasValue, true);
+    const refused = main(["run", "--agent", "claude-code", "--project", "synthetic-project", "--", process.execPath, printer, marker("refused")], agentIo);
+    const refusedRequest = await pendingFrom("claude-code"); assert.equal(await main(["reject", refusedRequest.id], tty), 0); assert.equal(await refused, 1);
+    assert.equal(agentLines.some(line => line.startsWith("The request was rejected.")), true); await assert.rejects(() => readFile(marker("refused")));
+    assert.equal(await main(["approve"], agentIo), 1);
+    for (const args of [["run", "--project", "synthetic-project"], ["run", "--project", "synthetic-project", "--batch", "f.json", "--", "node"], ["run", "--attach", randomUUID(), "--project", "synthetic-project"], ["run", "--agent", "Bad Id", "--project", "synthetic-project", "--", "node"]]) assert.equal(await main(args, tty), 2);
+    answers.push(password); lines.length = 0;
+    assert.equal(await main(["run", "--project", "synthetic-project", "--", process.execPath, printer, marker("person"), "literal;$(echo forbidden)&"], tty), 0);
+    assert.deepEqual(JSON.parse(await readFile(marker("person"), "utf8")), { hasValue: true, literal: "literal;$(echo forbidden)&" }); assert.equal(lines.join("").includes(canary), false);
+    const batchFile = join(scratch, "batch.json"); await writeFile(batchFile, JSON.stringify([[process.execPath, "-e", "process.stdout.write('one')"], [process.execPath, "-e", "process.stdout.write('two')"]]));
+    answers.push(password); lines.length = 0; assert.equal(await main(["run", "--project", "synthetic-project", "--batch", batchFile], tty), 0); assert.equal(lines.join("").includes("onetwo"), true);
+    assert.equal(agentStream.join("").includes(canary) || agentLines.join("").includes(canary), false); checks += 22;
+
+    stage = "expired run";
+    const later = await connect({ home: runHome, app: { id: "codex", name: "Codex", kind: "agent" }, tokens: memoryTokens() }); clients.push(later); await tom.apps.allow("codex");
+    const late = await later.runs.submit(ask([[process.execPath, printer, marker("late")]])); shift += 10 * 60 * 1000;
+    assert.equal((await later.runs.get(late.id)).status, "expired"); await tom.present(); await rejects(() => tom.runs.approve(late.id, password), "expired");
+    await wait(300); await assert.rejects(() => readFile(marker("late")));
+    const runLogs = await readFile(join(runHome, "logs", "events.jsonl"), "utf8"), runStore = await tree(join(runHome, "store"));
+    for (const hidden of [canary, password, backupPassword]) { assert.equal(runLogs.includes(hidden), false); assert.equal(runStore.includes(hidden), false); }
+    assert.equal(runLogs.includes("run_approve"), true); assert.equal(runLogs.includes("run_request"), true);
+    process.env.VAULT_HOME = home; checks += 11;
+  }
 
   stage = "bounded rate and secret-free records";
   now += 60000; let limitedResponse;

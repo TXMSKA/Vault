@@ -1,8 +1,9 @@
-import { FileVaultStore, VaultMemory, createVaultUnlock, createEnvelope, encryptJson, decryptJson, encrypt, decrypt, unlock, KINDS, id, version, chunkIds, VaultError } from "vault-core";
+import { FileVaultStore, VaultMemory, createVaultUnlock, createEnvelope, encryptJson, decryptJson, encrypt, decrypt, unlock, newEntry, KINDS, id, version, chunkIds, VaultError } from "vault-core";
 import type { Entry, VaultLogger } from "vault-core";
-import type { AppView, Backup, EntryRow, ImportCount, LoginSummary } from "../../client/src/types.ts";
+import type { AppView, Backup, EntryRow, EnvImportCount, ImportCount, LoginSummary } from "../../client/src/types.ts";
 import { ServiceError, object, text } from "./errors.ts";
 import { duplicateKey, MAX_ENTRIES } from "./imports.ts";
+import { MAX_VARIABLES } from "./dotenv.ts";
 export function validateEntry(value: unknown): Entry {
   const v = object(value, "favorite,fields,files,id,kind,note,recovery,title,totp,updatedAt"); id(v.id);
   if (!KINDS.includes(v.kind as Entry["kind"]) || typeof v.favorite !== "boolean" || !Array.isArray(v.fields) || v.fields.length > 100 || !Array.isArray(v.files) || v.files.length > 50 || !Array.isArray(v.recovery) || v.recovery.length > 100) throw new ServiceError("invalid");
@@ -102,6 +103,23 @@ export class Vault {
     this.allowed(app, "env"); const rows = (await this.rows()).filter(row => row.entry.kind === "env" && row.entry.title === project);
     if (rows.length !== 1) throw new ServiceError(rows.length ? "conflict" : "not_found", rows.length ? 409 : 404);
     return Object.fromEntries(rows[0].entry.fields.map(field => [field.id, field.value]));
+  }
+  /** Adds a .env file's variables to the project's entry, or creates it: new names are added, known ones replaced, the rest kept. */
+  async importEnv(app: AppView, project: string, variables: [string, string][], skipped: number): Promise<EnvImportCount> {
+    this.allowed(app, "env"); if (!project.trim()) throw new ServiceError("invalid");
+    const rows = await this.rows(), matching = rows.filter(row => row.entry.kind === "env" && row.entry.title === project);
+    if (matching.length > 1) throw new ServiceError("conflict", 409);
+    if (!matching.length && rows.length >= MAX_ENTRIES) throw new ServiceError("limited", 429);
+    const entry = matching.length ? structuredClone(matching[0].entry) : { ...newEntry("env"), title: project, fields: [] };
+    const before = entry.fields.map(field => field.id.toLowerCase()), imported = new Set(variables.map(([name]) => name.toLowerCase())); let added = 0, replaced = 0;
+    for (const [name, value] of variables) {
+      const field = entry.fields.find(item => item.id.toLowerCase() === name.toLowerCase());
+      if (!field) { entry.fields.push({ id: name, name, value, secret: true }); added++; }
+      else if (field.value !== value) { field.value = value; replaced++; }
+    }
+    if (entry.fields.length > MAX_VARIABLES) throw new ServiceError("limited", 429);
+    entry.updatedAt = new Date().toISOString(); await this.save(app, entry, matching[0]?.version ?? 0);
+    return { added, replaced, unchanged: variables.length - added - replaced, kept: before.filter(name => !imported.has(name)).length, skipped };
   }
   async export(password: string): Promise<Backup> {
     const { key, ticket } = this.key(), entries = (await this.rows()).map(row => row.entry), chunks: { id: string; data: string }[] = [];

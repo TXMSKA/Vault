@@ -7,13 +7,13 @@ import type { Client, ImportFormat, Backup } from "../../client/src/types.ts";
 import { atomicJson } from "../../client/src/files.ts";
 import { prepareHome } from "../../client/src/private.ts";
 import { serve } from "../../service/src/main.ts";
+import { appIdPattern } from "../../client/src/paths.ts";
 import { hiddenPrompt } from "./prompt.ts";
-import { runProject } from "./run.ts";
-const spanish = () => /^es(?:[-_.]|$)/i.test(process.env.LC_ALL || process.env.LANG || Intl.DateTimeFormat().resolvedOptions().locale);
-const copy = (en: string, es: string) => spanish() ? es : en;
+import { AGENTS, approve, run, runOptions, visible } from "./run.ts";
+import { copy } from "./copy.ts";
 const usage = () => copy(
-  "vault status\nvault create --kit <file.txt>\nvault unlock\nvault recover --kit <file.txt>\nvault lock\nvault apps [allow|revoke <id>]\nvault run --project <name> -- <command> [args...]\nvault import <file> --from chrome|edge|firefox|bitwarden|1password|keepass\nvault export <file>\nvault restore <file>\nvault dev-install\nvault serve",
-  "vault status: consultar el estado\nvault create --kit <archivo.txt>: crear la bóveda y guardar el kit\nvault unlock: desbloquear\nvault recover --kit <archivo.txt>: recuperar y guardar un kit nuevo\nvault lock: bloquear\nvault apps [allow|revoke <id>]: listar, permitir o revocar apps\nvault run --project <nombre> -- <comando> [args...]: ejecutar con las variables del proyecto\nvault import <archivo> --from chrome|edge|firefox|bitwarden|1password|keepass: importar\nvault export <archivo>: guardar una copia cifrada\nvault restore <archivo>: restaurar una copia cifrada\nvault dev-install: guardar la instalación de desarrollo\nvault serve: ejecutar el servicio");
+  "vault status\nvault create --kit <file.txt>\nvault unlock\nvault recover --kit <file.txt>\nvault lock\nvault apps [allow|revoke <id>]\nvault run --project <name> [--agent <id>] -- <command> [args...]\nvault run --project <name> [--agent <id>] --batch <file.json>\nvault run --attach <request> [--agent <id>]\nvault approve\nvault reject <request>\nvault import <file> --from chrome|edge|firefox|bitwarden|1password|keepass\nvault import <file.env> --from dotenv --project <name>\nvault export <file>\nvault restore <file>\nvault dev-install\nvault serve",
+  "vault status: consultar el estado\nvault create --kit <archivo.txt>: crear la bóveda y guardar el kit\nvault unlock: desbloquear\nvault recover --kit <archivo.txt>: recuperar y guardar un kit nuevo\nvault lock: bloquear\nvault apps [allow|revoke <id>]: listar, permitir o revocar apps\nvault run --project <nombre> [--agent <id>] -- <comando> [args...]: pedir que se ejecute con las variables del proyecto\nvault run --project <nombre> [--agent <id>] --batch <archivo.json>: pedir varios comandos juntos\nvault run --attach <pedido> [--agent <id>]: volver a seguir un pedido\nvault approve: ver los pedidos que esperan y aprobarlos o rechazarlos\nvault reject <pedido>: rechazar un pedido o detenerlo\nvault import <archivo> --from chrome|edge|firefox|bitwarden|1password|keepass: importar\nvault import <archivo.env> --from dotenv --project <nombre>: guardar las variables de un proyecto\nvault export <archivo>: guardar una copia cifrada\nvault restore <archivo>: restaurar una copia cifrada\nvault dev-install: guardar la instalación de desarrollo\nvault serve: ejecutar el servicio");
 const messages: Record<string, [string, string]> = {
   locked: ["Vault is locked. Run vault unlock.", "Vault está bloqueado. Ejecutá vault unlock."],
   not_installed: ["Run vault dev-install first.", "Primero ejecutá vault dev-install."],
@@ -28,9 +28,17 @@ const messages: Record<string, [string, string]> = {
   limited: ["The limit was reached. Try again later.", "Se alcanzó el límite. Volvé a intentar más tarde."],
   rate_limited: ["Too many requests. Try again later.", "Demasiadas solicitudes. Volvé a intentar más tarde."],
   conflict: ["The data changed or already exists.", "Los datos cambiaron o ya existen."],
+  not_verified: ["Vault could not confirm it is you. Nothing ran.", "Vault no pudo confirmar que sos vos. No se ejecutó nada."],
+  hello_unavailable: ["Windows Hello is not available for Vault here. Type the master password instead.", "Windows Hello no está disponible para Vault acá. Escribí la contraseña maestra."],
+  expired: ["The request expired. Nothing ran.", "El pedido venció. No se ejecutó nada."],
+  not_pending: ["That request was already answered.", "Ese pedido ya tuvo respuesta."],
+  run_not_found: ["Vault has no request with that id. It ended more than 10 minutes ago, or the service restarted.", "Vault no tiene un pedido con ese id. Terminó hace más de 10 minutos o el servicio se reinició."],
+  busy: ["Vault is busy. Try again in a moment.", "Vault está ocupado. Volvé a intentar en un momento."],
+  too_large: ["The data is too large.", "Los datos son demasiado grandes."],
 };
-export type CliIO = { isTTY(): boolean; ask(label: string): Promise<string>; write(text: string): void; error(text: string): void };
-const terminal: CliIO = { isTTY: () => !!process.stdin.isTTY, ask: hiddenPrompt, write: text => process.stdout.write(`${text}\n`), error: text => process.stderr.write(`${text}\n`) };
+/** `write` and `error` print a line; `out` and `err` pass a command's output through as it came. */
+export type CliIO = { isTTY(): boolean; ask(label: string): Promise<string>; write(text: string): void; error(text: string): void; out(text: string): void; err(text: string): void };
+const terminal: CliIO = { isTTY: () => !!process.stdin.isTTY, ask: hiddenPrompt, write: text => process.stdout.write(`${text}\n`), error: text => process.stderr.write(`${text}\n`), out: text => process.stdout.write(text), err: text => process.stderr.write(text) };
 async function confirmValues(io: CliIO) {
   if (!io.isTTY()) throw new VaultClientError("terminal_required");
   const answer = await io.ask(copy("Allow this command to access a value? Type yes: ", "¿Permitir que este comando acceda a un valor? Escribí sí: "));
@@ -59,13 +67,17 @@ export async function main(args = process.argv.slice(2), io: CliIO = terminal): 
       io.write(copy("Development installation saved.", "Se guardó la instalación de desarrollo.")); return 0;
     }
     if (command === "status" && args.length === 1 && !await findService(home)) { io.write(copy("Vault is stopped.", "Vault está detenido.")); return 0; }
-    const valid = ["status", "unlock", "lock"].includes(command) && args.length === 1 || ["create", "recover"].includes(command) && args.length === 3 && sub === "--kit" || command === "apps" && (args.length === 1 || args.length === 3 && ["allow", "revoke"].includes(sub)) || command === "run" && sub === "--project" && args[3] === "--" && args.length >= 5 || command === "import" && args.length === 4 && third === "--from" && ["chrome", "edge", "firefox", "bitwarden", "1password", "keepass"].includes(args[3]) || ["export", "restore"].includes(command) && args.length === 2;
+    const options = command === "run" ? runOptions(args, appIdPattern) : undefined, dotenv = command === "import" && args.length === 6 && third === "--from" && args[3] === "dotenv" && args[4] === "--project";
+    const valid = ["status", "unlock", "lock", "approve"].includes(command) && args.length === 1 || ["create", "recover"].includes(command) && args.length === 3 && sub === "--kit" || command === "apps" && (args.length === 1 || args.length === 3 && ["allow", "revoke"].includes(sub)) || !!options || dotenv || command === "import" && args.length === 4 && third === "--from" && ["chrome", "edge", "firefox", "bitwarden", "1password", "keepass"].includes(args[3]) || ["export", "restore", "reject"].includes(command) && args.length === 2;
     const get = command === "get" && (args.length === 2 || args.length === 3 || args.length === 4 && args[3] === "--reveal");
     if (!valid && !get) throw new VaultClientError("invalid");
     if (get && args.at(-1) !== "--reveal") { io.write(copy("Add --reveal to print a field value after terminal confirmation.", "Agregá --reveal para mostrar el valor de un campo después de confirmar en la terminal.")); return 0; }
-    if (command === "run" || get) await confirmValues(io);
-    api = await connect({ home, app: { id: "vault-cli", name: "Vault CLI", kind: "cosmic" } });
-    if (["run", "get", "import", "export", "restore"].includes(command) && !(await api.status()).unlocked) await api.unlock(await io.ask(copy("Master password: ", "Contraseña maestra: ")));
+    if (get) await confirmValues(io);
+    if (command === "approve" && !io.isTTY()) throw new VaultClientError("terminal_required");
+    // Without a terminal, or when named, the caller is an agent: it may only propose runs for a person to approve.
+    const agent = options && (options.agent !== undefined || !io.isTTY()) ? options.agent ?? "agent" : undefined;
+    api = await connect({ home, app: agent ? { id: agent, name: AGENTS[agent] ?? agent, kind: "agent" } : { id: "vault-cli", name: "Vault CLI", kind: "cosmic" } });
+    if (["get", "import", "export", "restore"].includes(command) && !(await api.status()).unlocked) await api.unlock(await io.ask(copy("Master password: ", "Contraseña maestra: ")));
     if (command === "status") { const status = await api.status(); io.write(copy(`Vault is ${status.created ? status.unlocked ? "unlocked" : "locked" : "not created"}.`, `Vault está ${status.created ? status.unlocked ? "desbloqueado" : "bloqueado" : "sin crear"}.`)); }
     else if (command === "create") {
       const password = await confirmedPassword(io); await kit(third, () => api!.create(password)); io.write(copy("Vault created. Recovery kit saved.", "Se creó Vault y se guardó el kit de recuperación."));
@@ -78,11 +90,21 @@ export async function main(args = process.argv.slice(2), io: CliIO = terminal): 
       if (sub === "allow") await api.apps.allow(third); else if (sub === "revoke") await api.apps.revoke(third);
       else for (const app of await api.apps.list()) io.write(`${app.id} | ${copy(app.status, ({ granted: "autorizada", pending: "pendiente", revoked: "revocada" })[app.status])} | ${app.kinds.join(",")}`);
       if (sub) io.write(copy("Saved.", "Se guardó."));
-    } else if (command === "run") return await runProject(api, third, args.slice(4));
+    } else if (command === "run") return await run(api, io, options!, agent);
+    else if (command === "approve") return await approve(api, io);
+    else if (command === "reject") { await api.runs.reject(sub); io.write(copy("Rejected.", "Rechazado.")); }
     else if (command === "get") {
       const row = await api.entries.get(sub), field = row.entry.fields.find(field => field.id === (third === "--reveal" ? "password" : third));
       if (!field) throw new VaultClientError("not_found");
       io.write(field.value);
+    }
+    else if (dotenv) {
+      const file = resolve(sub), counts = await api.importEnv(args[5], await readCapped(file)), shown = visible(file);
+      io.write(copy(`Saved in ${visible(args[5])}: ${counts.added} new, ${counts.replaced} changed, ${counts.unchanged} the same, ${counts.kept} kept from before; ${counts.skipped} lines skipped.`, `Guardado en ${visible(args[5])}: ${counts.added} nuevas, ${counts.replaced} cambiadas, ${counts.unchanged} iguales, ${counts.kept} que ya estaban; ${counts.skipped} líneas omitidas.`));
+      // The file is deleted only on the person's answer; without a terminal there is nobody to ask.
+      const answer = io.isTTY() ? await io.ask(copy(`Delete ${shown} now? It holds the values in plain text. Type yes to delete it: `, `¿Borrar ${shown} ahora? Tiene las variables en texto plano. Escribí sí para borrarlo: `)) : "";
+      if (answer.trim().toLowerCase() === copy("yes", "sí")) { await rm(file); io.write(copy("Deleted.", "Se borró.")); }
+      else io.write(copy(`${shown} was kept. It holds the values in plain text.`, `Se dejó ${shown}. Tiene las variables en texto plano.`));
     }
     else if (command === "import") { const counts = await api.import(args[3] as ImportFormat, await readCapped(resolve(sub))); io.write(copy(`Imported: ${counts.imported}; duplicates: ${counts.duplicates}; skipped: ${counts.skipped}.`, `Importados: ${counts.imported}; duplicados: ${counts.duplicates}; omitidos: ${counts.skipped}.`)); }
     else if (command === "export") {

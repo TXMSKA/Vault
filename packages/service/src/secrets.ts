@@ -9,7 +9,9 @@ import { object, text, ServiceError } from "./errors.ts";
 const all: Kind[] = ["login", "card", "doc", "note", "key", "custom", "env"];
 const trusted = new Set(["horizon", "nova", "nebula", "vault-cli", "vault-app"]);
 export const manages = (app: AppView) => app.id === "vault-cli" || app.id === "vault-app";
-export const blocked = (app: AppIdentity) => app.kind === "agent" || /^lyra(?:-|$)/.test(app.id);
+export const blocked = (app: AppIdentity) => /^lyra(?:-|$)/.test(app.id);
+// An agent never receives values: once allowed, it can only propose runs that a person approves.
+export const isAgent = (app: AppIdentity) => app.kind === "agent";
 export const hashToken = (value: string) => createHash("sha256").update(value).digest("hex");
 export function matches(input: string, expected: string) {
   const a = Buffer.from(hashToken(input), "hex"), b = Buffer.from(expected, "hex"); return b.length === a.length && timingSafeEqual(a, b);
@@ -56,7 +58,7 @@ export class Apps {
     await atomicJson(this.filename, rows); this.rows = rows; return app;
   }
 }
-function kinds(app: AppIdentity): Kind[] { return blocked(app) ? [] : app.id === "horizon" ? ["login"] : app.id === "nova" ? ["env"] : [...all]; }
+function kinds(app: AppIdentity): Kind[] { return blocked(app) || isAgent(app) ? [] : app.id === "horizon" ? ["login"] : app.id === "nova" ? ["env"] : [...all]; }
 // Held by policy, never by request, so no app can ask to keep Vault unlocked.
 export const holds = (app: string) => app === "horizon";
 export function identity(value: unknown): AppIdentity {
