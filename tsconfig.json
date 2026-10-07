@@ -2,10 +2,13 @@
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2023", "DOM"],
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
+    "types": ["node"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "strict": true,
-    "noEmit": true,
+    "declaration": true,
+    "rootDir": "src",
+    "outDir": "dist",
     "skipLibCheck": true
   },
   "include": ["src"]
