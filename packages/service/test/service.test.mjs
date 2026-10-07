@@ -13,6 +13,7 @@ import { dpapi } from "../src/hello.ts";
 import { Lifecycle, DISCONNECTED_MS } from "../src/lifecycle.ts";
 import { Redactor, MASK } from "../src/redact.ts";
 import { dotenv } from "../src/dotenv.ts";
+import { Apps } from "../src/secrets.ts";
 import { defaultRoots } from "../../../test/guard.mjs";
 import { resolveHome } from "../../client/src/paths.ts";
 import { connect, ensureRunning, findService, VaultClientError, readCapped } from "../../client/dist/index.js";
@@ -160,6 +161,25 @@ try {
     ["keepass", fixture('"Group","Title","Username","Password","URL","Notes","TOTP","Icon","Last Modified","Created"', `Synthetic,Synthetic,u,${canary},https://keepassxc.example,notes,,0,1,1`)],
   ];
   for (let i = 0; i < files.length; i++) { const [format, content] = files[i], filename = join(scratch, `synthetic-${i}.txt`); await writeFile(filename, content, { mode: 0o600 }); const count = await observer.import(format, await readCapped(filename)); assert.equal(count.imported, 1); assert.equal(count.duplicates, 1); assert.equal(count.skipped, i === 4 ? 1 : 0); checks += 3; }
+  const importer = await app("horizon"), beforeGranted = (await observer.entries.list()).length, loginFile = `name,url,username,password\r\nSynthetic,https://horizon-import.example,u,${canary}\r\n`;
+  await rejects(() => importer.import("chrome", loginFile), "permission_required"); assert.equal((await observer.entries.list()).length, beforeGranted); assert.deepEqual((await importer.apps.self()).permissions, []);
+  await rejects(() => importer.permissions.importWithPassword(password), "locked"); now += 1000; await rejects(() => importer.permissions.importWithHello("1"), "not_found"); assert.deepEqual((await importer.apps.self()).permissions, []);
+  await rejects(() => agent.permissions.importWithPassword(nextPassword), "forbidden"); await rejects(() => agent.apps.self(), "forbidden"); checks += 8;
+  assert.deepEqual((await importer.permissions.importWithPassword(nextPassword)).permissions, ["import"]); assert.deepEqual((await importer.apps.self()).permissions, ["import"]); assert.deepEqual((await observer.apps.list()).find(row => row.id === "horizon").permissions, ["import"]);
+  assert.equal((await importer.import("chrome", loginFile)).imported, 1); assert.equal((await observer.entries.list()).length, beforeGranted + 1);
+  const mixed = JSON.stringify({ encrypted: false, items: [{ type: 1, name: "Synthetic", login: { uris: [{ uri: "https://horizon-mixed.example" }], username: "u", password: canary } }, { type: 2, name: "Synthetic note" }] });
+  assert.deepEqual(await importer.import("bitwarden", mixed), { imported: 1, duplicates: 0, skipped: 1 }); assert.equal((await observer.entries.list()).filter(row => row.entry.kind === "note").length, 1);
+  await rejects(() => nova.import("chrome", loginFile.replace("horizon-import", "nova-import")), "permission_required"); await nova.present(); await nova.permissions.importWithPassword(nextPassword);
+  await rejects(() => nova.import("chrome", loginFile.replace("horizon-import", "nova-import")), "not_found"); assert.equal((await observer.entries.list()).length, beforeGranted + 2); checks += 10;
+  const fresh = new Apps(home); await fresh.load(); assert.deepEqual(fresh.list().find(row => row.id === "horizon").permissions, ["import"]); assert.deepEqual(fresh.list().find(row => row.id === "synthetic-agent").permissions, []);
+  const stored = JSON.parse(await readFile(join(home, "secrets", "apps.json"), "utf8")), horizonRow = stored.find(row => row.app.id === "horizon"), agentRow = stored.find(row => row.app.id === "synthetic-agent");
+  const loadFrom = async (name, rows) => { const target = join(scratch, name); await mkdir(join(target, "secrets"), { recursive: true }); await writeFile(join(target, "secrets", "apps.json"), JSON.stringify(rows)); const apps = new Apps(target); await apps.load(); return apps; };
+  const { permissions: dropped, ...legacyApp } = horizonRow.app; assert.deepEqual(dropped, ["import"]);
+  assert.deepEqual((await loadFrom("legacy-home", [{ ...horizonRow, app: legacyApp }])).list()[0].permissions, []);
+  for (const [name, row] of [["duplicate", { ...horizonRow, app: { ...horizonRow.app, permissions: ["import", "import"] } }], ["unknown", { ...horizonRow, app: { ...horizonRow.app, permissions: ["export"] } }], ["not-array", { ...horizonRow, app: { ...horizonRow.app, permissions: "import" } }], ["agent", { ...agentRow, app: { ...agentRow.app, permissions: ["import"] } }]]) { await assert.rejects(() => loadFrom(`bad-${name}-home`, [row])); checks++; }
+  await observer.apps.revoke("horizon"); assert.deepEqual((await observer.apps.list()).find(row => row.id === "horizon").permissions, []); await rejects(() => importer.apps.self(), "revoked");
+  await observer.apps.allow("horizon"); await importer.present(); assert.deepEqual((await importer.apps.self()).permissions, []); await rejects(() => importer.import("chrome", loginFile.replace("horizon-import", "horizon-again")), "permission_required");
+  assert.deepEqual((await importer.permissions.importWithPassword(nextPassword)).permissions, ["import"]); checks += 9;
   assert.deepEqual(csv('a,b\r\n"quoted,cell","line\nwith ""quotes"""\r\n'), [["a", "b"], ["quoted,cell", 'line\nwith "quotes"']]);
   for (const malformed of ['a,b\n"open,x', 'a,b\n"closed"x,y', 'a,b\nx"quote,y']) assert.throws(() => csv(malformed));
   await rejects(() => observer.import("chrome", "name,url,username,password\nshort,row"), "invalid");
@@ -239,6 +259,8 @@ try {
   assert.equal(output.length, 1); assert.equal(output[0] === canary, true); output.length = 0;
   prompts.push("yes"); assert.equal(await main(["get", one.id, "--reveal"], io), 0);
   assert.equal(output.length, 1); assert.equal(output[0] === canary, true); output.length = 0; checks += 3;
+  for (const answer of ["s", " Y "]) { prompts.push(answer); assert.equal(await main(["get", one.id, "password", "--reveal"], io), 0); assert.equal(output.length, 1); assert.equal(output[0] === canary, true); output.length = 0; checks += 3; }
+  prompts.push("n"); assert.equal(await main(["get", one.id, "password", "--reveal"], io), 1); assert.equal(output.length, 0); errors.length = 0; checks += 2;
   const previousLocale = process.env.LC_ALL;
   try {
     process.env.LC_ALL = "es"; prompts.push("sí");

@@ -8,7 +8,7 @@ export type Entry = {
 export type EntryRow = { entry: Entry; version: number };
 export type LoginSummary = { id: string; version: number; title: string; username: string; website: string };
 export type AppIdentity = { id: string; name: string; kind: "cosmic" | "app" | "agent" };
-export type AppView = AppIdentity & { status: "granted" | "pending" | "revoked"; kinds: Kind[] };
+export type AppView = AppIdentity & { status: "granted" | "pending" | "revoked"; kinds: Kind[]; permissions: "import"[] };
 export type Status = { created: boolean; unlocked: boolean; present: number; idleMs: number };
 export type ServiceRecord = { version: 1; pid: number; port: number; serviceVersion: string; startedAt: string };
 export type InstallRecord = { version: 1; command: string; args: string[] };
@@ -50,5 +50,6 @@ export interface Client {
   };
   export(password: string): Promise<Backup>;
   restore(backup: Backup, password: string): Promise<ImportCount>;
-  apps: { list(): Promise<AppView[]>; allow(id: string): Promise<AppView>; revoke(id: string): Promise<AppView> };
+  apps: { list(): Promise<AppView[]>; self(): Promise<AppView>; allow(id: string): Promise<AppView>; revoke(id: string): Promise<AppView> };
+  permissions: { importWithPassword(password: string): Promise<AppView>; importWithHello(hwnd: string): Promise<AppView> };
 }

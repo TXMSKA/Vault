@@ -113,6 +113,8 @@ export async function connect(options: ConnectOptions): Promise<Client> {
       // Windows Hello waits for the person, up to two minutes.
       approveWithHello: (id, hwnd) => call("POST", "/v1/runs/approve/hello", { hwnd, id }, 130000), reject: id => call("POST", "/v1/runs/reject", { id }),
     },
-    apps: { list: () => call<AppView[]>("GET", "/v1/apps"), allow: id => call("POST", `${appPath(id)}/allow`, {}), revoke: id => call("POST", `${appPath(id)}/revoke`, {}) },
+    apps: { list: () => call<AppView[]>("GET", "/v1/apps"), self: () => call<AppView>("GET", "/v1/apps/self"), allow: id => call("POST", `${appPath(id)}/allow`, {}), revoke: id => call("POST", `${appPath(id)}/revoke`, {}) },
+    // Windows Hello waits for the person, up to two minutes.
+    permissions: { importWithPassword: password => call<AppView>("POST", "/v1/apps/permissions/import", { password }), importWithHello: hwnd => call<AppView>("POST", "/v1/apps/permissions/import/hello", { hwnd }, 130000) },
   };
 }

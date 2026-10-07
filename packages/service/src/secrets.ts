@@ -32,21 +32,25 @@ export class Apps {
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw new ServiceError("unavailable", 500); }
     if (!Array.isArray(value) || value.length > 100) throw new ServiceError("unavailable", 500);
     for (const row of value) {
-      object(row, "app,tokenHash"); object(row.app, "id,kind,kinds,name,status"); identity({ id: row.app.id, name: row.app.name, kind: row.app.kind });
+      object(row, "app,tokenHash"); object(row.app, Object.hasOwn(row.app ?? {}, "permissions") ? "id,kind,kinds,name,permissions,status" : "id,kind,kinds,name,status"); identity({ id: row.app.id, name: row.app.name, kind: row.app.kind });
       if (!/^[a-f0-9]{64}$/.test(row.tokenHash) || !["granted", "pending", "revoked"].includes(row.app.status)) throw new ServiceError("unavailable", 500);
       row.app.kinds = kinds(row.app); if (blocked(row.app) && row.app.status === "granted") throw new ServiceError("unavailable", 500);
+      // Rows written before permissions existed have none.
+      const permissions = row.app.permissions ?? [];
+      if (!Array.isArray(permissions) || permissions.some(item => item !== "import") || new Set(permissions).size !== permissions.length || permissions.length && (blocked(row.app) || isAgent(row.app))) throw new ServiceError("unavailable", 500);
+      row.app.permissions = permissions;
     }
     if (new Set(value.map(row => row.app.id)).size !== value.length) throw new ServiceError("unavailable", 500);
     this.rows = value;
   }
-  list() { return this.rows.map(row => ({ ...row.app, kinds: [...row.app.kinds] })); }
+  list() { return this.rows.map(row => ({ ...row.app, kinds: [...row.app.kinds], permissions: [...row.app.permissions] })); }
   byToken(token: string) { return this.rows.find(row => matches(token, row.tokenHash))?.app; }
   async register(value: unknown) {
     const app = identity(value), previous = this.rows.find(row => row.app.id === app.id);
     if (previous && previous.app.kind !== app.kind) throw new ServiceError("invalid");
     if (!previous && this.rows.length >= 100) throw new ServiceError("limited", 429);
     const token = randomBytes(32).toString("base64url");
-    const next: RecordApp = { app: { ...app, status: previous?.app.status ?? (trusted.has(app.id) && !blocked(app) ? "granted" : "pending"), kinds: kinds(app) }, tokenHash: hashToken(token) };
+    const next: RecordApp = { app: { ...app, status: previous?.app.status ?? (trusted.has(app.id) && !blocked(app) ? "granted" : "pending"), kinds: kinds(app), permissions: previous?.app.permissions ?? [] }, tokenHash: hashToken(token) };
     const rows = previous ? this.rows.map(row => row === previous ? next : row) : [...this.rows, next];
     await atomicJson(this.filename, rows); this.rows = rows;
     return { app: next.app, token };
@@ -54,7 +58,15 @@ export class Apps {
   async setStatus(id: string, status: "granted" | "revoked") {
     const row = this.rows.find(row => row.app.id === id); if (!row) throw new ServiceError("not_found", 404);
     if (status === "granted" && blocked(row.app)) throw new ServiceError("forbidden", 403);
-    const app = { ...row.app, status }, rows = this.rows.map(current => current === row ? { ...row, app } : current);
+    const app = { ...row.app, status, permissions: status === "revoked" ? [] : row.app.permissions }, rows = this.rows.map(current => current === row ? { ...row, app } : current);
+    await atomicJson(this.filename, rows); this.rows = rows; return app;
+  }
+  // Recorded only after the person proved it is them; an agent or a blocked app can never hold one.
+  async grant(id: string, permission: "import") {
+    const row = this.rows.find(row => row.app.id === id); if (!row) throw new ServiceError("not_found", 404);
+    if (blocked(row.app) || isAgent(row.app) || row.app.status !== "granted") throw new ServiceError("forbidden", 403);
+    if (row.app.permissions.includes(permission)) return row.app;
+    const app = { ...row.app, permissions: [...row.app.permissions, permission] }, rows = this.rows.map(current => current === row ? { ...row, app } : current);
     await atomicJson(this.filename, rows); this.rows = rows; return app;
   }
 }

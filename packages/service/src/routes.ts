@@ -34,6 +34,8 @@ async function approve(c: Context, batchId: unknown, proof: () => Promise<unknow
   catch (error) { if (error instanceof ServiceError && ["not_found", "conflict"].includes(error.code)) c.runs.fail(batch.id, error.code); throw error; }
   c.runs.start(batch.id, values); return { ok: true };
 }
+// A permission is recorded only after the same proof that unlocks Vault, so an app cannot give itself one.
+async function permit(c: Context, proof: () => Promise<unknown>) { await proof(); return c.apps.grant(c.app!.id, "import"); }
 export const routes: Route[] = [
   { method: "GET", path: "/v1/health", access: "public", keys: "", handle: () => ({ ok: true, pid: process.pid, serviceVersion: "0.1.0" }) },
   { method: "POST", path: "/v1/apps/register", access: "bootstrap", keys: "id,kind,name", handle: c => c.apps.register(c.body) },
@@ -61,11 +63,14 @@ export const routes: Route[] = [
   { method: "POST", path: "/v1/runs/approve", access: "manage", keys: "id,password", handle: c => { active(c); return approve(c, c.body.id, () => c.vault.auth.unlock(text(c.body.password, 128))); } },
   { method: "POST", path: "/v1/runs/approve/hello", access: "manage", keys: "hwnd,id", handle: c => { active(c); const hwnd = windowHandle(c.body.hwnd); return approve(c, c.body.id, () => c.hello.unlock(hwnd)); } },
   { method: "POST", path: "/v1/runs/reject", access: "manage", keys: "id", handle: c => { c.runs.reject(c.body.id); return { ok: true }; } },
-  { method: "POST", path: "/v1/import", access: "manage", keys: "format,text", handle: c => { if (!formats.includes(String(c.body.format))) throw new ServiceError("invalid"); const parsed = parseImport(c.body.format as ImportFormat, text(c.body.text, 8 * 1024 * 1024)); return c.vault.import(c.app!, parsed.entries, parsed.skipped); } },
+  { method: "POST", path: "/v1/import", access: "granted", keys: "format,text", handle: c => { if (!manages(c.app!) && !c.app!.permissions.includes("import")) throw new ServiceError("permission_required", 403); if (!formats.includes(String(c.body.format))) throw new ServiceError("invalid"); const parsed = parseImport(c.body.format as ImportFormat, text(c.body.text, 8 * 1024 * 1024)); return c.vault.import(c.app!, parsed.entries, parsed.skipped); } },
   { method: "POST", path: "/v1/import/env", access: "manage", keys: "project,text", handle: c => { const parsed = dotenv(text(c.body.text, 4 * 1024 * 1024)); return c.vault.importEnv(c.app!, text(c.body.project, 500), parsed.variables, parsed.skipped); } },
   { method: "POST", path: "/v1/export", access: "manage", keys: "password", handle: c => c.vault.export(password(c.body.password)) },
   { method: "POST", path: "/v1/restore", access: "manage", keys: "backup,password", handle: c => c.vault.restore(c.app!, c.body.backup, text(c.body.password, 128)) },
   { method: "GET", path: "/v1/apps", access: "manage", keys: "", handle: c => c.apps.list() },
+  { method: "GET", path: "/v1/apps/self", access: "granted", keys: "", handle: c => { active(c); return c.apps.list().find(app => app.id === c.app!.id); } },
+  { method: "POST", path: "/v1/apps/permissions/import", access: "granted", keys: "password", handle: c => { active(c); return permit(c, () => c.vault.auth.unlock(text(c.body.password, 128))); } },
+  { method: "POST", path: "/v1/apps/permissions/import/hello", access: "granted", keys: "hwnd", handle: c => { active(c); const hwnd = windowHandle(c.body.hwnd); return permit(c, () => c.hello.unlock(hwnd)); } },
   { method: "POST", path: "/v1/apps/{id}/allow", access: "manage", keys: "", handle: c => c.apps.setStatus(c.id!, "granted") },
   { method: "POST", path: "/v1/apps/{id}/revoke", access: "manage", keys: "", handle: async c => { const app = await c.apps.setStatus(c.id!, "revoked"); c.lifecycle.revoke(app.id); return app; } },
 ];
