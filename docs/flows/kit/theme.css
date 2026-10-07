@@ -1,0 +1,44 @@
+/* Vault's identity fonts, all OFL. The families are named "Vault ..." so a font
+   installed on the machine never stands in for them. */
+@font-face {
+  font-family: "Vault Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+  src: url(/p/Vault/assets/fonts/inter.woff2) format("woff2");
+}
+@font-face {
+  font-family: "Vault DM Sans";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+  src: url(/p/Vault/assets/fonts/dm-sans.woff2) format("woff2");
+}
+@font-face {
+  font-family: "Vault Space Grotesk";
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: block;
+  src: url(/p/Vault/assets/fonts/space-grotesk.woff2) format("woff2");
+}
+@font-face {
+  font-family: "Vault Lora";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: block;
+  src: url(/p/Vault/assets/fonts/lora.woff2) format("woff2");
+}
+@font-face {
+  font-family: "Vault Nunito";
+  font-style: normal;
+  font-weight: 200 900;
+  font-display: block;
+  src: url(/p/Vault/assets/fonts/nunito.woff2) format("woff2");
+}
+@font-face {
+  font-family: "Vault Mono";
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: block;
+  src: url(/p/Vault/assets/fonts/jetbrains-mono.woff2) format("woff2");
+}
