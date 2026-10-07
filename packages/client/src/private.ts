@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { VaultClientError } from "./errors.ts";
 
 // ACLs protect all service data, including ciphertext, discovery and audit records.
+// A fresh descriptor carries only the owner and the access list; rewriting the one Get-Acl returns also writes the audit list, which needs a privilege users lack once the folder is protected.
 export function privateDirectory(directory: string): void {
   directory = resolve(directory);
   try {
@@ -17,7 +18,7 @@ export function privateDirectory(directory: string): void {
     if ((process.platform === "win32" ? actual.toLowerCase() !== directory.toLowerCase() : actual !== directory) || fs.lstatSync(directory).isSymbolicLink()) throw new Error();
     if (process.platform !== "win32") { if (fs.statSync(directory).uid !== process.getuid?.()) throw new Error(); fs.chmodSync(directory, 0o700); return; }
     const executable = join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    const script = "$ErrorActionPreference='Stop'; $p=$env:VAULT_PRIVATE_PATH; $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=Get-Acl -LiteralPath $p; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false); foreach($rule in @($acl.Access)){$acl.RemoveAccessRuleSpecific($rule)}; foreach($s in @($sid.Value,'S-1-5-18','S-1-5-32-544')){$r=[Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($s),'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $acl.AddAccessRule($r)}; Set-Acl -LiteralPath $p -AclObject $acl; $a=Get-Acl -LiteralPath $p; if(-not $a.AreAccessRulesProtected -or $a.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value){exit 1}; foreach($r in $a.Access){if($r.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -notin @($sid.Value,'S-1-5-18','S-1-5-32-544') -or $r.AccessControlType -ne 'Allow'){exit 1}}";
+    const script = "$ErrorActionPreference='Stop'; $p=$env:VAULT_PRIVATE_PATH; $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=[Security.AccessControl.DirectorySecurity]::new(); $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false); foreach($s in @($sid.Value,'S-1-5-18','S-1-5-32-544')){$r=[Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($s),'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $acl.AddAccessRule($r)}; (Get-Item -LiteralPath $p).SetAccessControl($acl); $a=Get-Acl -LiteralPath $p; if(-not $a.AreAccessRulesProtected -or $a.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value){exit 1}; foreach($r in $a.Access){if($r.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -notin @($sid.Value,'S-1-5-18','S-1-5-32-544') -or $r.AccessControlType -ne 'Allow'){exit 1}}";
     execFileSync(executable, ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, stdio: "ignore", timeout: 10000, env: { ...process.env, VAULT_PRIVATE_PATH: directory } });
   } catch { throw new VaultClientError("unsafe_location"); }
 }
