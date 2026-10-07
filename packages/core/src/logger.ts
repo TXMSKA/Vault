@@ -17,7 +17,9 @@ export function createLogger(sink: (record: LogRecord) => void, clock = Date.now
     try {
       const safe = Object.fromEntries(Object.entries(fields).map(([name, value]) => {
         const safeName = /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name) && !token.test(name) ? name : "redacted";
-        return [safeName, secret.test(name) || safeName === "redacted" ? "[redacted]" : clean(value)];
+        // Server-generated request IDs are public correlation handles, not credentials.
+        const requestId = safeName === "requestId" && typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
+        return [safeName, secret.test(name) || safeName === "redacted" ? "[redacted]" : requestId ? value : clean(value)];
       }));
       sink({ time: new Date(clock()).toISOString(), event: clean(event) as string, fields: safe });
     } catch { throw new VaultError("unavailable"); }

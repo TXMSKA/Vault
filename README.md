@@ -1,118 +1,229 @@
-# Vault
+﻿# Vault
 
-The shared base of Vault, the password store of TXMSKA's apps. Nebula,
-Horizon and Nova build their own interfaces on top of it (Tom, 2026-10-07).
-The package is private, consumed through a local `file:` dependency, and
-never published. It runs in Node 24 or 26 and Electron's main process.
+Vault is the private local password service shared by Nebula, Horizon and
+Nova. Each app builds its own interface and reaches the same vault through
+`vault-client`. Unlocking in one app unlocks it for the others. The service
+keeps the data key in memory and encrypts every entry before saving it.
+
+The repository is private. Packages are consumed through local `file:`
+dependencies and are never published. Node 24 or 26 is required. There are
+no runtime dependencies outside the workspaces.
 
 ## What is here
 
-- `src/model.ts`: the entry model and the limits.
-- `src/crypto.ts`: AES-GCM encryption, master password and recovery key
-  envelopes, password generation and TOTP codes. The model and crypto come
-  from Nebula's `lib/vault/` at `0d3bf34`. Only the crypto import extension
-  changed for Node ESM: envelope fields, additional data contexts
-  `nebula-vault:1:*` and 600000 PBKDF2 iterations stay unchanged.
-- `src/store.ts`: the storage interface, sealed input validation and stable
-  error codes. The validation and limits follow Nebula's service.
-- `src/file-store.ts`: one shared vault folder, with a separate versioned
-  JSON file for the envelope, each entry and each attachment chunk.
-- `src/unlock.ts`: master password unlock and recovery against a store.
-  Recovery retains the data key, replaces the envelope with an expected
-  version and returns a new recovery key. Failed attempts impose a growing
-  process-local delay, from one second to thirty seconds. Controllers for
-  the same file store share the delay; restarting the process resets it.
-- `src/memory.ts`: the unlocked key and generation tickets. The host passes
-  an idle duration in milliseconds; `null` means no idle lock. The default
-  remains five minutes. Hosts call `lock()` on exit and check expiry during
-  use or on their own timer.
-- `src/hello.ts`: Windows Hello availability and desktop verification through
-  PowerShell and `UserConsentVerifier`, without a native module. The host
-  supplies the window handle, a key protector and storage for the wrapped
-  key. Horizon can use Electron's `safeStorage` as the protector. The key
-  is released only after verification. Disabling deletes the wrapped key;
-  envelope replacement invalidates it. Linux, missing Hello configuration
-  and verifier errors leave master password unlock available.
-- `src/logger.ts`: a logger with a host-supplied sink. It redacts secret
-  field names and token-shaped values before writing, accepts scalar fields
-  and never serializes bodies or arbitrary error details. Unlock, denial,
-  rate limit, recovery and lock events can use this sink.
+- `packages/core`: task 001's model, crypto, file store, memory, unlock,
+  recovery, redacting logger and Windows Hello adapter, with its tests.
+- `packages/service`: a background process on `127.0.0.1`, on a port chosen
+  by the system. It owns the shared key, grants and presence leases.
+- `packages/client`: discovery, startup, registration, typed calls and
+  heartbeat. It builds to ESM JavaScript with declarations and has no
+  runtime dependencies. Apps use this package only.
+- `packages/cli`: the `vault` developer command. Copy follows the system's
+  Spanish or English locale. Passwords and recovery keys use hidden prompts.
 
-## Storage
+The core keeps Nebula's format 1 envelope, `nebula-vault:1:*` encryption
+contexts and 600000 PBKDF2 iterations. `env` is an added entry kind; existing
+kinds and sealed data stay compatible. Nebula's migration is a later task.
 
-The default folder is `%LOCALAPPDATA%/Cosmic/vault` on Windows and
-`$XDG_DATA_HOME/Cosmic/vault` or `~/.local/share/Cosmic/vault` on Linux.
-Pass a folder to `new FileVaultStore(folder)` to choose another location.
-Tests always pass a fresh folder inside the repository's `.test-tmp/`.
+## Development
 
-Every operation takes an exclusive `wx` lock file. Versions, the 250 entry
-limit, the 6400 chunk limit and attachment claims are checked while holding
-that lock. New entries use expected version `0`; updates and removals use
-current positive versions. A stale version returns `conflict`. Chunks
-are immutable and a chunk can be claimed by only one entry. Replacing or
-removing an entry removes its released chunks; removing a claimed chunk
-returns `conflict`. UUID case is preserved for entry encryption contexts,
-with case-insensitive file identities to prevent collisions on Windows.
+The development dependencies are already installed. Build before starting
+so the service can load the core. The service and CLI run TypeScript using
+Node's type stripping; the core and client build to `dist/`.
 
-Writes use a temporary file, flush it, then rename it over the old file.
-On POSIX the directory is flushed too. Folders use `0700` and files use
-`0600` where supported. Windows uses the user's inherited folder ACLs;
-POSIX permission tests are skipped there. Lock recovery requires both a
-timeout and a dead owner. A live owner is never displaced. A separate
-recovery claim prevents competing processes from removing a new lock.
-An interrupted recovery claim or a lock without valid owner metadata fails
-closed; it requires inspection after all hosts have stopped.
+```
+npm run typecheck
+npm test
+npm run build
+node packages/cli/src/main.ts dev-install
+node packages/cli/src/main.ts status
+```
 
-Passwords, recovery phrases, data keys and entry contents never go into
-these JSON files as plaintext. The envelope holds wrapped keys, salts and
-proof hashes. Entry IDs, versions and attachment claims remain visible.
-The storage interface operates on sealed data and is not an authentication
-boundary: hosts keep it in their trusted process and gate their UI with
-`VaultMemory`. Raw key bytes returned by the crypto API must be cleared
-after use; the unlock and Hello adapters clear their temporary bytes.
+`dev-install` records this checkout's absolute service command. The next
+client connection starts it as a hidden detached process with an argument
+array. `status` reports a stopped service without starting it. `serve`
+runs it in the foreground. The workspace's `vault` executable can also be
+used after relinking with `npm install --offline --ignore-scripts`.
 
-For a host with no idle lock:
+Hosts add `"vault-client": "file:../Vault/packages/client"` (adjust the
+path for their layout). They connect in their trusted Node or Electron main
+process and close the client when their window or app closes:
 
 ```js
-import { FileVaultStore, VaultMemory, createVaultUnlock } from "vault";
+import { connect } from "vault-client";
 
-const store = new FileVaultStore();
-const memory = new VaultMemory(Date.now, null);
-const vault = createVaultUnlock(store, { memory });
-// Use vault.unlock(password), vault.recover(recovery, newPassword) and vault.lock().
+const vault = await connect({
+  app: { id: "horizon", name: "Horizon", kind: "cosmic" },
+  tokens: hostTokenStore,
+});
+// hostTokenStore implements async get() and set(token).
+// The host supplies the password through its own hidden input.
+await vault.unlock(password);
+const rows = await vault.logins("https://example.com");
+// Render only the fields the person asks to see.
+await vault.close();
 ```
+
+The client provides `status`, `create`, `unlock`, `recover`, `lock`,
+`hello`, `logins`, `entries`, `environment`, `import`, `export`, `restore`,
+`apps`, `present` and `close`. A private file token store is the default;
+apps can supply their own protected token storage. Never put this client
+or its tokens in a renderer or browser page. Do not retry a failed write
+blindly: a dropped response can follow a completed write.
+
+## Storage and access
+
+The data root is `%LOCALAPPDATA%/Cosmic/apps/Vault` on Windows and
+`$XDG_DATA_HOME/Cosmic/apps/Vault` or `~/.local/share/Cosmic/apps/Vault` on
+Linux. `VAULT_HOME` overrides it for tests. Inside are `install.json`,
+`run/service.json`, `run/service.lock`, `secrets/`, `store/` and `logs/`.
+The old core default at `Cosmic/vault` is not migrated automatically.
+
+The service protects directories with private Windows ACLs for the user,
+SYSTEM and Administrators, or `0700` on POSIX. Files use `0600` on POSIX.
+Bootstrap credentials and CLI token files are private; app token hashes
+are stored in `secrets/apps.json` and compared in constant time.
+
+Horizon gets login entries through `logins(origin)` only. Matches use the
+exact normalized HTTP or HTTPS origin, including port, without subdomain
+or suffix matching. Nova gets `env` entries only. An environment entry's
+title is the project name; field IDs are variable names, and every value
+must be secret. Nebula, `vault-app` and `vault-cli` get all kinds. Other apps
+stay pending until allowed. Agent identities and Lyra cannot be allowed.
+Only `vault-app` and `vault-cli` manage apps, recovery, import and export.
+Saving or removing checks both the existing and replacement entry kind.
+An entry outside the caller's kinds returns 404 on read, update, remove and
+environment access, like a missing entry. Lists omit those entries. Horizon
+cannot use generic entry reads to bypass origin filtering.
+
+These grants are consent and revocation within one user's account. Like
+Lyra's bootstrap design, another process running as that user can read the
+bootstrap file and claim a trusted app name. This is not a sandbox between
+processes of the same user. The service refuses all `Origin` headers,
+cross-site fetch metadata and foreign Host headers. Browser code cannot
+call it directly. HTTP stays on loopback; values are not sent to a network
+service.
+
+Each connection holds a separate presence with a 20 second heartbeat and
+60 second expiry. Heartbeats do not count as activity. The key drops after
+five minutes without value access, after the last presence leaves or
+expires, and on service exit. A short CLI invocation closes its presence
+when done, so `unlock` alone locks again if no other app is open. Commands
+that need values ask to unlock when necessary. Lock invalidates in-flight
+key operations. The service exits when locked after ten minutes without a
+present app. A later client connection starts it again, with the vault locked.
+
+Entries and attachment chunks keep task 001's per-file versions, exclusive
+write lock, flush and atomic rename. Updates require the expected version;
+0 creates an entry. The limits are 4096 entries and 6400 chunks. A
+failed multi-entry import or restore can leave some completed writes or
+sealed orphan chunks after an I/O failure; rerunning skips duplicates.
+There is no multi-file transaction or automatic orphan cleanup.
+
+## CLI
+
+```
+vault create --kit <file.txt>
+vault unlock
+vault recover --kit <file.txt>
+vault lock
+vault status
+vault apps
+vault apps allow <id>
+vault apps revoke <id>
+vault run --project <name> -- <command> [args...]
+vault get <entry-id> [field-id] [--reveal]
+vault import <file> --from chrome|edge|firefox|bitwarden|1password|keepass
+vault export <file>
+vault restore <file>
+```
+
+Creation generates a recovery key. It is returned once to the requesting
+app and written by the CLI into the chosen plain-text recovery kit. The
+CLI never prints it. Keep the kit offline and private: it can replace the
+master password. Recovery preserves the data key and entries, changes the
+master password, rotates the recovery key and invalidates Hello setup.
+Existing output files are not overwritten.
+
+`run` requires stdin to be a terminal and explicit confirmation before value
+access. `get` prints a field value only with `--reveal` and the same terminal
+confirmation; the default field is `password`. Without that flag it prints
+instructions without reading values.
+Refusal or cancellation occurs before connecting or fetching values. These
+checks prevent unattended CLI use; the same-user bootstrap limitation above
+still applies to direct clients.
+
+`run` loads only the named project's variables and spawns the command with
+an argument array and `shell: false`. Vault prints neither the variables
+nor the command arguments. The child controls its own output, so choose
+commands that do not print their environment. Windows `.cmd` and `.bat`
+files need an explicitly chosen interpreter. Vault does not insert one.
+
+Imports read only the file named by the person, capped at 8 MiB, as UTF-8.
+The strict CSV reader handles quoting, escaped quotes, CRLF and multiline
+cells. Chrome, Edge and Firefox CSV, Bitwarden unencrypted JSON and CSV,
+1Password CSV, KeePass and KeePassXC CSV, and KeePass 2.x XML become logins. The
+XML reader is dependency-free, capped at 8 MiB, 64 levels and 200000 elements,
+with no DTD or external entity support. It reads current entries in nested
+groups and ignores history and attachments. Protected ciphertext values are
+refused. 1PUX and KDBX are not supported. Duplicate
+website and username pairs are skipped and counted. Non-login Bitwarden
+items are counted as skipped. Bitwarden JSON with several URIs creates a
+login for each URI. Import does not copy attachments, passkeys or arbitrary
+custom fields from other managers. Export schemas and links are recorded
+in `docs/import-formats.md`; no manager's code is included.
+
+`export` makes an encrypted backup with a separate password supplied at a
+hidden prompt. `restore` opens it into the currently unlocked vault,
+reseals entries and attachment chunks with its data key, and skips
+duplicates. Backup payloads are capped at 6 MiB, with an 8 MiB file limit.
+The backup password has the same 15 to 128 character requirement as the
+master password.
+
+## Checks and limits
+
+Tests use synthetic values and temporary `VAULT_HOME` folders, remove them
+afterward, and suppress assertion details that could show values. They fail
+if a default data root is used. A preloaded filesystem guard also rejects
+explicit access beneath the machine's default Cosmic directories, including
+in workers and detached test processes. Tests cover the core regressions,
+concurrent file writes, actual detached client
+startup, request and grant checks, kind and origin filtering, shared
+unlock, idle and presence locks, recovery, every import format, encrypted
+backup restoration including chunks, confirmed terminal value access,
+argument-array environment runs, 4096-entry boundaries and idle shutdown
+through an injected clock. Windows tests round-trip synthetic bytes through
+DPAPI without triggering an interactive Hello prompt.
+The DPAPI round-trip test is mandatory on Windows; an OS refusal fails the
+suite after the other regressions run. This sandbox currently denies that
+operation, so a successful round trip still needs an unrestricted Windows run.
+
+Every route declares its access and allowed body and query fields. The
+service caps ordinary bodies at 256 KiB, import and restore bodies at
+12 MiB, connections at 64, and queued requests at 20. Rates are 240 requests
+per app per minute, 30 registrations per minute, and 600 local requests
+per minute. Failed unlocks also use the core's growing delay. Rate state
+is process-local. Errors return a stable code and request ID. Logs contain
+redacted scalar security events and never request bodies or entry values.
+
+Windows Hello uses task 001's desktop verifier with the caller's HWND and
+a service-owned DPAPI wrapper for the current user. `hello.enable` needs
+the master password; `hello.unlock` requires verification before unwrapping.
+Interactive Hello verification needs a person and a real host window.
+Automated tests never trigger its prompt. Background-process verification with
+a real host window remains to be tested with Tom; master-password unlock is
+the tested interactive path.
+
+The managed Windows sandbox refuses `Set-Acl`. Production fails closed if
+private ACLs cannot be applied. A test-only fixture adapts that OS call solely
+inside synthetic service scratch folders, and is explicitly preloaded by
+tests. Real Windows ACL application needs verification outside this sandbox.
+POSIX permissions are implemented but were not exercised on Linux here.
 
 ## Not here
 
-Host interfaces, clipboard policy, settings, Electron's protector and its
-wrapped-key persistence belong to the consuming apps. The host must refuse
-a protector that cannot encrypt securely. Nebula still uses its own store;
-its migration is a later task, and this repository does not edit it.
-
-There is no network service, cloud sync, backup scheduler or migration run
-by the build. Log retention, access protection and alerts belong to the
-host's sink. Multi-file crash recovery is not a transaction: an interrupted
-attachment upload or cleanup can leave sealed orphan chunks, which a host
-can remove explicitly. Unlock does not collect them automatically because
-another app may still be uploading them.
-
-Interactive Windows Hello verification needs a person and a host window.
-Automated tests call availability only, never the verification prompt.
-
-## Commands
-
-The development dependencies are already installed. No runtime dependencies
-are needed.
-
-```
-npm test
-npm run typecheck
-npm run build
-node -e "import('./dist/index.js').then(m=>console.log(Object.keys(m).join(',')))"
-```
-
-The build emits ESM JavaScript and declarations to `dist/`; package exports
-point there. Tests include the original 31 crypto, model and memory checks,
-the file store and recovery, and two independent Node processes updating
-one vault. All test secrets are synthetic and scratch folders are removed
-after the run.
+The small Vault app, host interfaces, cloud sync, installers, startup with
+the computer and Nebula's migration are later tasks. Hosts own clipboard
+policy and their UI. There is no backup scheduler. Log retention and alerts
+have not been decided. The final joint security audit with Lyra remains a
+separate audit; the task's relevant safeguards are covered here by tests.

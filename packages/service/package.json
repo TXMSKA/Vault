@@ -1,0 +1,1 @@
+{ "name": "vault-service", "version": "0.1.0", "private": true, "type": "module", "dependencies": { "vault-core": "file:../core" }, "scripts": { "start": "node src/main.ts" } }

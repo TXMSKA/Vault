@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import "../../../test/guard.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { access, chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
@@ -9,6 +10,11 @@ import * as vault from "../dist/index.js";
 const parent = resolve(".test-tmp"); await mkdir(parent, { recursive: true, mode: 0o700 });
 const scratch = await mkdtemp(join(parent, "shared-"));
 let checks = 0, stage = "setup";
+let started = performance.now();
+function timing(next) {
+  console.log(`Vault shared stage ${stage}: ${((performance.now() - started) / 1000).toFixed(3)} s.`);
+  stage = next; started = performance.now();
+}
 const payload = (size = 48) => ({ iv: randomBytes(12).toString("base64"), data: randomBytes(size).toString("base64") });
 const code = expected => error => error instanceof vault.VaultError && error.code === expected && error.message === expected;
 const reject = (operation, expected) => assert.rejects(operation, code(expected));
@@ -18,11 +24,15 @@ const children = new Set();
 const wait = ms => new Promise(done => setTimeout(done, ms));
 function child(folder, mode, entry = "", chunk = "") {
   const signal = join(scratch, `signal-${randomUUID()}`);
-  const process = spawn(globalThis.process.execPath, [worker, folder, mode, entry, chunk, signal], { stdio: "inherit", windowsHide: true }); children.add(process);
+  const process = spawn(globalThis.process.execPath, [worker, folder, mode, entry, chunk, signal], { stdio: "inherit", windowsHide: true });
+  let ended = false;
+  const closed = new Promise(done => process.once("close", done)), record = { process, closed }; children.add(record);
   const finished = new Promise((done, fail) => {
+    const timer = setTimeout(() => { process.kill(); fail(new vault.VaultError("unavailable")); }, 30000); timer.unref();
     process.once("error", fail);
-    process.once("exit", async status => {
-      children.delete(process);
+    // close follows release of the child handle and inherited stdio, including on Windows.
+    process.once("close", async status => {
+      ended = true; clearTimeout(timer); children.delete(record);
       if (status !== 0) { fail(new vault.VaultError("unavailable")); return; }
       try { const result = mode === "claim" ? await readFile(`${signal}.result`, "utf8") : "done"; done({ claimed: result === "claimed" }); }
       catch { fail(new vault.VaultError("unavailable")); }
@@ -32,12 +42,13 @@ function child(folder, mode, entry = "", chunk = "") {
   const ready = mode === "abandon" ? Promise.resolve() : (async () => {
     const deadline = Date.now() + 15000;
     while (true) {
+      if (ended) throw new vault.VaultError("unavailable");
       try { await access(`${signal}.ready`); return; } catch (error) { if (error.code !== "ENOENT") throw error; }
       if (Date.now() > deadline) throw new vault.VaultError("unavailable"); await wait(10);
     }
   })();
   ready.catch(() => undefined);
-  return { process, finished, ready, signal };
+  return { process, finished, ready, signal, closed };
 }
 async function together(folder, mode, entry, chunk) {
   const a = child(folder, mode, entry, chunk), b = child(folder, mode, entry, chunk);
@@ -55,7 +66,7 @@ async function fixture(folder, kind, count, value) {
   }
 }
 try {
-  stage = "store operations";
+  timing("store operations");
   const folder = join(scratch, "vault"), store = new vault.FileVaultStore(folder), other = new vault.FileVaultStore(folder);
   assert.deepEqual(await store.envelope(), { state: null, version: 0 });
   const master = password(), initial = await vault.createEnvelope(master);
@@ -90,7 +101,7 @@ try {
   await store.remove(second, 1); await reject(() => store.getChunk(removal), "not_found");
   await reject(() => store.remove(second, 1), "not_found"); await store.removeChunk(randomUUID()); checks += 9;
 
-  stage = "validation and limits";
+  timing("validation and limits");
   for (const bad of ["../escape", "bad", randomUUID().replace(/-/g, ""), "00000000-0000-0000-0000-000000000000"]) await reject(async () => store.save(bad, payload(), 0, []), "invalid");
   for (const bad of [-1, 1.5, NaN, Number.MAX_SAFE_INTEGER + 1, "0"]) await reject(async () => store.save(randomUUID(), payload(), bad, []), "invalid");
   for (const bad of [{ ...payload(), iv: "invalid" }, payload(15), payload(220001), { ...payload(), extra: true }, { ...payload(), data: "AA" }, null]) await reject(async () => store.save(randomUUID(), bad, 0, []), "invalid");
@@ -100,18 +111,26 @@ try {
   await reject(async () => store.putChunk(randomUUID(), payload(32785)), "invalid");
   const edge = randomUUID(); await store.save(edge, payload(220000), 0, []); await store.remove(edge, 1);
   const edgeChunk = randomUUID(); await store.putChunk(edgeChunk, payload(32784)); await store.removeChunk(edgeChunk); checks += 25;
-  const quotaFolder = join(scratch, "entry-quota"); await fixture(quotaFolder, "entry", 250, { sealed: payload(), chunks: [] });
-  const quota = new vault.FileVaultStore(quotaFolder); await reject(() => quota.save(randomUUID(), payload(), 0, []), "limited");
+  assert.equal(vault.MAX_ENTRIES, 4096);
+  timing("entry quota fixture");
+  const quotaFolder = join(scratch, "entry-quota"); await fixture(quotaFolder, "entry", vault.MAX_ENTRIES - 1, { sealed: payload(), chunks: [] });
+  timing("entry quota operations");
+  const quota = new vault.FileVaultStore(quotaFolder); await quota.save(randomUUID(), payload(), 0, []);
+  assert.equal((await quota.entries()).length, 4096);
+  await reject(() => quota.save(randomUUID(), payload(), 0, []), "limited");
   const quotaRows = await quota.entries(); await quota.save(quotaRows[0].id, payload(), 1, []);
-  await quota.remove(quotaRows[1].id, 1); await quota.save(randomUUID(), payload(), 0, []); assert.equal((await quota.entries()).length, 250);
+  await quota.remove(quotaRows[1].id, 1); await quota.save(randomUUID(), payload(), 0, []); assert.equal((await quota.entries()).length, 4096);
+  timing("chunk quota fixture");
   const chunkFolder = join(scratch, "chunk-quota"); await fixture(chunkFolder, "chunk", 6400, payload());
+  timing("chunk quota operations");
   const chunkQuota = new vault.FileVaultStore(chunkFolder); await reject(() => chunkQuota.putChunk(randomUUID(), payload()), "limited");
-  const name = (await readdir(chunkFolder)).find(name => name.startsWith("chunk-")); await chunkQuota.removeChunk(name.slice(6, -5)); await chunkQuota.putChunk(randomUUID(), payload()); checks += 5;
+  const name = (await readdir(chunkFolder)).find(name => name.startsWith("chunk-")); await chunkQuota.removeChunk(name.slice(6, -5)); await chunkQuota.putChunk(randomUUID(), payload()); checks += 7;
+  timing("maximum chunk claims");
   const maximum = randomUUID(), maxClaims = (await readdir(chunkFolder)).filter(name => name.startsWith("chunk-")).slice(0, 2560).map(name => name.slice(6, -5));
   await chunkQuota.save(maximum, payload(220000), 0, maxClaims);
   assert.equal((await chunkQuota.entries())[0].chunks.length, 2560); await chunkQuota.remove(maximum, 1); checks++;
 
-  stage = "unlock and recovery";
+  timing("unlock and recovery");
   let now = 10000; const logs = [], memory = new vault.VaultMemory(() => now, null);
   const auth = vault.createVaultUnlock(store, { clock: () => now, memory, logger: vault.createLogger(record => logs.push(record), () => now) });
   const key = await auth.unlock(master); const row = (await other.entries()).find(row => row.id === entry.id);
@@ -143,7 +162,7 @@ try {
   }
   checks += 2;
 
-  stage = "memory policy and cancellation";
+  timing("memory policy and cancellation");
   for (const idle of [null, 50]) {
     const mem = new vault.VaultMemory(() => now, idle), ticket = mem.ticket(); mem.open(initial.key, ticket); now += 500;
     assert.equal(mem.expired(), idle !== null); assert.equal(mem.touch(), idle === null);
@@ -155,7 +174,7 @@ try {
   const pendingAuth = vault.createVaultUnlock(cancelStore); const interrupted = pendingAuth.unlock(master); pendingAuth.lock();
   await reject(() => interrupted, "locked"); assert.throws(() => pendingAuth.memory.get(pendingAuth.memory.ticket()), /locked/); checks += 16;
 
-  stage = "two processes";
+  timing("two processes");
   const concurrentFolder = join(scratch, "concurrent"), concurrent = new vault.FileVaultStore(concurrentFolder);
   await concurrent.create(initial.state); const counter = randomUUID(); await concurrent.save(counter, payload(), 0, []);
   await together(concurrentFolder, "write", counter);
@@ -164,7 +183,7 @@ try {
   const claims = await together(concurrentFolder, "claim", "", claimChunk); assert.equal(claims.filter(row => row.claimed).length, 1);
   assert.equal((await concurrent.entries()).filter(row => row.chunks.includes(claimChunk)).length, 1); checks += 4;
 
-  stage = "lock recovery and failures";
+  timing("lock recovery and failures");
   const abandoned = child(concurrentFolder, "abandon"); await abandoned.finished;
   await together(concurrentFolder, "write", counter); assert.equal((await concurrent.entries()).find(row => row.id === counter).version, 81);
   await writeFile(join(concurrentFolder, ".lock"), JSON.stringify({ pid: process.pid, token: randomUUID(), time: 0 }), { mode: 0o600 });
@@ -176,7 +195,7 @@ try {
   const blocked = join(scratch, "blocked"); await writeFile(blocked, randomBytes(16));
   await reject(() => new vault.FileVaultStore(blocked).entries(), "unavailable"); checks += 5;
 
-  stage = "logger and Hello availability";
+  timing("logger and Hello availability");
   const records = [], log = vault.createLogger(record => records.push(record)); const secret = password();
   log("sample", { password: secret, recoveryPhrase: secret, accessToken: secret, key: secret, harmless: secret, body: { nested: secret }, object: { nested: secret }, error: new Error(secret), outcome: "denied", count: 2 });
   assert.equal(JSON.stringify(records).includes(secret), false); assert.equal(records[0].fields.outcome, "denied"); assert.equal(records[0].fields.count, 2);
@@ -196,7 +215,11 @@ try {
   if (error?.stack) console.error(error.stack.split("\n").filter(line => line.trim().startsWith("at ")).join("\n"));
   throw new Error("shared base check failed");
 } finally {
-  for (const process of children) process.kill();
+  timing("cleanup");
+  const running = [...children];
+  for (const { process } of running) process.kill();
+  await Promise.all(running.map(({ closed }) => closed));
   // Only the verified child of the repository's test scratch folder is removed.
-  assert.equal(dirname(scratch), parent); await rm(scratch, { recursive: true, force: true });
+  assert.equal(dirname(scratch), parent); await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 10 });
+  timing("done");
 }

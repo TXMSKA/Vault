@@ -2,22 +2,18 @@
   "name": "vault",
   "version": "0.1.0",
   "private": true,
-  "description": "The shared base of Vault, the password store used by Nebula, Horizon and Nova.",
+  "description": "Vault, the private local password service shared by Cosmic apps.",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
-  },
-  "files": ["dist", "README.md"],
+  "workspaces": ["packages/core", "packages/client", "packages/service", "packages/cli"],
+  "bin": { "vault": "packages/cli/src/main.ts" },
   "engines": {
     "node": "^24.0.0 || ^26.0.0",
     "npm": ">=11.19.0 <12"
   },
   "scripts": {
-    "test": "npm run build && node test/run.mjs",
-    "typecheck": "tsc --noEmit",
-    "build": "tsc"
+    "test": "npm run build && node packages/core/test/run.mjs && node packages/service/test/run.mjs",
+    "typecheck": "tsc -p packages/core --noEmit && tsc -p packages/client --noEmit && tsc -p packages/service && tsc -p packages/cli",
+    "build": "tsc -p packages/core && tsc -p packages/client"
   },
   "devDependencies": {
     "@types/node": "24.19.0",
