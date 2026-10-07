@@ -293,6 +293,49 @@ try {
   leases.present("synthetic", randomUUID()); expiryClock += 100 + DISCONNECTED_MS - 1; assert.equal(leases.shouldExit(), false);
   expiryClock++; assert.equal(leases.shouldExit(), true);
   checks += 9;
+  stage = "horizon hold and login list";
+  {
+    let held = 0;
+    const holdHome = join(scratch, "hold-home"), keeper = await startService({ home: holdHome, now: () => held, idleMs: 5000, presenceMs: 60000 }); services.push(keeper);
+    const step = async ms => { for (let spent = 0; spent < ms; spent += 1000) { held += 1000; keeper.lifecycle.check(); } };
+    const open = () => { try { keeper.vault.memory.get(keeper.vault.memory.ticket()); return true; } catch { return false; } };
+    const horizonTokens = tokenStore(), horizonApp = await connect({ home: holdHome, app: { id: "horizon", name: "Synthetic app", kind: "cosmic" }, tokens: horizonTokens }); clients.push(horizonApp);
+    const admin = await app("vault-cli", "cosmic", holdHome); await admin.create(password);
+    const loginA = entry("login"), loginB = entry("login", "https://two.example"), secretEnv = entry("env"), secretNote = entry("note");
+    loginA.title = "First login"; loginA.note = "synthetic-note"; loginA.totp = "synthetic-totp"; loginB.title = "Second login"; loginB.fields.find(field => field.id === "username").value = "other-user";
+    loginA.fields.push({ id: "extra", name: "Extra", value: "synthetic-extra", secret: true });
+    for (const value of [loginA, loginB, secretEnv, secretNote]) await admin.entries.save(value, 0);
+    const novaApp = await app("nova", "cosmic", holdHome);
+    const listed = await horizonApp.listLogins(), byId = new Map(listed.map(row => [row.id, row]));
+    assert.equal(listed.length, 2); assert.deepEqual(Object.keys(listed[0]).sort(), ["id", "title", "username", "version", "website"]);
+    assert.deepEqual(byId.get(loginA.id), { id: loginA.id, version: 1, title: "First login", username: "synthetic-user", website: "https://one.example/login" });
+    assert.equal(byId.get(loginB.id).username, "other-user"); assert.equal(byId.has(secretEnv.id) || byId.has(secretNote.id), false);
+    for (const hidden of [canary, "synthetic-note", "synthetic-totp", "synthetic-extra"]) assert.equal(JSON.stringify(listed).includes(hidden), false);
+    assert.equal((await admin.listLogins()).length, 2); assert.equal((await horizonApp.logins("https://one.example")).length, 1); checks += 11;
+    const read = await horizonApp.getLogin(loginA.id.toUpperCase());
+    assert.equal(read.version, 1); assert.equal(read.entry.fields.find(field => field.id === "password").value, canary); assert.equal(read.entry.note, "synthetic-note");
+    await rejects(() => horizonApp.getLogin(secretEnv.id), "not_found"); await rejects(() => horizonApp.getLogin(secretNote.id), "not_found");
+    await rejects(() => horizonApp.getLogin(randomUUID()), "not_found"); await rejects(() => admin.getLogin(secretEnv.id), "not_found"); await rejects(() => horizonApp.getLogin("synthetic"), "invalid");
+    await rejects(() => novaApp.listLogins(), "not_found"); await rejects(() => novaApp.getLogin(loginA.id), "not_found"); await rejects(() => novaApp.getLogin(secretEnv.id), "not_found");
+    const horizonAuth = `Bearer ${horizonTokens.token()}`;
+    assert.equal((await probe(keeper, "/v1/logins/all?site=one", { auth: horizonAuth })).status, 400); assert.equal((await probe(keeper, "/v1/logins/get", { auth: horizonAuth })).status, 400);
+    assert.equal((await probe(keeper, "/v1/apps/present", { method: "POST", auth: horizonAuth, body: { session: randomUUID(), hold: true } })).status, 400); checks += 14;
+
+    stage = "horizon hold";
+    await admin.close(); assert.equal(keeper.lifecycle.presences.size, 2); await step(30000); assert.equal(open(), true); assert.equal((await horizonApp.listLogins()).length, 2); checks += 3;
+    await novaApp.close(); await step(10000); assert.equal(open(), true);
+    await horizonApp.close(); assert.equal(open(), false); assert.equal(keeper.lifecycle.presences.size, 0); checks += 3;
+    const expiring = await app("horizon", "cosmic", holdHome); await expiring.unlock(password); assert.equal(open(), true);
+    await step(59000); assert.equal(open(), true); assert.equal(keeper.lifecycle.presences.size, 1);
+    await step(1000); assert.equal(open(), false); assert.equal(keeper.lifecycle.presences.size, 0); await rejects(() => expiring.listLogins(), "locked"); checks += 6;
+    const alone = await app("nova", "cosmic", holdHome); await alone.unlock(password); await step(4000); assert.equal(open(), true);
+    await step(1000); assert.equal(open(), false); assert.equal(keeper.lifecycle.presences.size, 1); checks += 3;
+    const leaving = await app("horizon", "cosmic", holdHome); await alone.unlock(password); await step(10000); assert.equal(open(), true);
+    await leaving.close(); assert.equal(open(), true); await step(4000); assert.equal(open(), true); await step(1000); assert.equal(open(), false); checks += 4;
+    let tick = 0; const frozen = new VaultMemory(() => tick, 100), holder = new Lifecycle(frozen, () => tick, 60000);
+    frozen.open(sourceKey, frozen.ticket()); holder.present("horizon", randomUUID()); tick = 100; holder.check();
+    assert.equal(frozen.touch(), false); assert.throws(() => frozen.get(frozen.ticket())); tick = 120; holder.check(); assert.throws(() => frozen.get(frozen.ticket())); checks += 3;
+  }
   console.log(`Vault service: ${checks} checks passed.`);
   // Run the other regressions even when this OS refuses DPAPI, but never count a skip as success.
   if (dpapiFailure) { stage = "DPAPI synthetic round trip"; throw new Error("dpapi_round_trip_failed"); }

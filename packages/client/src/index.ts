@@ -6,7 +6,7 @@ import { resolveHome, appIdPattern, serviceEnv } from "./paths.ts";
 import { privateDirectory, privateFile } from "./private.ts";
 import { readCapped, FILE_CAP } from "./files.ts";
 import { VaultClientError } from "./errors.ts";
-import type { AppView, Backup, Client, ConnectOptions, EntryRow, ImportCount, InstallRecord, ServiceRecord, Status, TokenStore } from "./types.ts";
+import type { AppView, Backup, Client, ConnectOptions, EntryRow, ImportCount, InstallRecord, LoginSummary, ServiceRecord, Status, TokenStore } from "./types.ts";
 export type * from "./types.ts";
 export { VaultClientError, resolveHome, readCapped, FILE_CAP };
 const pause = (ms: number) => new Promise<void>(done => setTimeout(done, ms));
@@ -100,6 +100,7 @@ export async function connect(options: ConnectOptions): Promise<Client> {
     lock: () => call("POST", "/v1/lock", {}), present,
     async close() { if (closed) return; clearInterval(timer); try { await call("POST", "/v1/apps/leave", { session }); } finally { closed = true; } },
     logins: origin => call<EntryRow[]>("GET", `/v1/logins?origin=${encodeURIComponent(origin)}`),
+    listLogins: () => call<LoginSummary[]>("GET", "/v1/logins/all"), getLogin: id => call<EntryRow>("GET", `/v1/logins/get?id=${encodeURIComponent(id)}`),
     entries: { list: () => call<EntryRow[]>("GET", "/v1/entries"), get: id => call<EntryRow>("GET", `/v1/entries/get?id=${encodeURIComponent(id)}`), save: (entry, expected) => call("POST", "/v1/entries", { entry, expected }), remove: (id, expected) => call("POST", "/v1/entries/remove", { id, expected }) },
     environment: project => call("GET", `/v1/env?project=${encodeURIComponent(project)}`),
     import: (format, text) => call<ImportCount>("POST", "/v1/import", { format, text }), export: password => call<Backup>("POST", "/v1/export", { password }), restore: (backup, password) => call<ImportCount>("POST", "/v1/restore", { backup, password }),

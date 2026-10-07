@@ -6,6 +6,7 @@ export type Entry = {
   totp: string; recovery: { value: string; used: boolean }[]; files: Attachment[]; updatedAt: string;
 };
 export type EntryRow = { entry: Entry; version: number };
+export type LoginSummary = { id: string; version: number; title: string; username: string; website: string };
 export type AppIdentity = { id: string; name: string; kind: "cosmic" | "app" | "agent" };
 export type AppView = AppIdentity & { status: "granted" | "pending" | "revoked"; kinds: Kind[] };
 export type Status = { created: boolean; unlocked: boolean; present: number; idleMs: number };
@@ -26,6 +27,8 @@ export interface Client {
   present(): Promise<{ ok: true }>;
   close(): Promise<void>;
   logins(origin: string): Promise<EntryRow[]>;
+  listLogins(): Promise<LoginSummary[]>;
+  getLogin(id: string): Promise<EntryRow>;
   entries: { list(): Promise<EntryRow[]>; get(id: string): Promise<EntryRow>; save(entry: Entry, expected: number): Promise<{ version: number }>; remove(id: string, expected: number): Promise<{ ok: true }> };
   environment(project: string): Promise<Record<string, string>>;
   import(format: ImportFormat, text: string): Promise<ImportCount>;

@@ -79,7 +79,7 @@ export async function startService(options: ServiceOptions = {}) {
         const result = await route.handle({ app, apps, vault, lifecycle, hello, body: body as Record<string, unknown>, query: url.searchParams, id: routeId, idleMs });
         authenticate(); lifecycle.check();
         // A response that contains values must still have a live key after async work.
-        if (["/v1/entries", "/v1/entries/get", "/v1/logins", "/v1/env", "/v1/export"].includes(route.path)) vault.memory.get(vault.memory.ticket());
+        if (["/v1/entries", "/v1/entries/get", "/v1/logins", "/v1/logins/all", "/v1/logins/get", "/v1/env", "/v1/export"].includes(route.path)) vault.memory.get(vault.memory.ticket());
         logger(event, { actor: app?.id ?? "unknown", source: "loopback", outcome: "allowed", requestId }); respond(response, 200, result);
       };
       // Lock and presence departures invalidate in-flight key work immediately.

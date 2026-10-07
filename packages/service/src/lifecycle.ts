@@ -1,5 +1,6 @@
 import { VaultMemory } from "vault-core";
 import { ServiceError } from "./errors.ts";
+import { holds } from "./secrets.ts";
 type Presence = { app: string; until: number };
 export const DISCONNECTED_MS = 10 * 60 * 1000;
 export class Lifecycle {
@@ -19,6 +20,8 @@ export class Lifecycle {
     for (const [session, presence] of this.presences) if (presence.until <= this.now()) { this.presences.delete(session); expired = true; lastExpiry = Math.max(lastExpiry, presence.until); }
     if (expired && !this.presences.size) this.absentSince = lastExpiry;
     if (this.memory.expired() || expired && !this.presences.size) this.memory.lock();
+    // Only a memory that has not expired is kept alive; touch() cannot revive one that has.
+    else if ([...this.presences.values()].some(presence => holds(presence.app))) this.memory.touch();
   }
   shouldExit() {
     this.check(); if (this.presences.size || this.now() - this.absentSince < DISCONNECTED_MS) return false;

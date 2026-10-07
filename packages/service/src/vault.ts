@@ -1,6 +1,6 @@
 import { FileVaultStore, VaultMemory, createVaultUnlock, createEnvelope, encryptJson, decryptJson, encrypt, decrypt, unlock, KINDS, id, version, chunkIds, VaultError } from "vault-core";
 import type { Entry, VaultLogger } from "vault-core";
-import type { AppView, Backup, EntryRow, ImportCount } from "../../client/src/types.ts";
+import type { AppView, Backup, EntryRow, ImportCount, LoginSummary } from "../../client/src/types.ts";
 import { ServiceError, object, text } from "./errors.ts";
 import { duplicateKey, MAX_ENTRIES } from "./imports.ts";
 export function validateEntry(value: unknown): Entry {
@@ -25,6 +25,7 @@ export function origin(value: string): string {
   let url; try { url = new URL(value); } catch { throw new ServiceError("invalid"); }
   if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) throw new ServiceError("invalid"); return url.origin;
 }
+const fieldValue = (entry: Entry, name: string) => entry.fields.find(field => field.id === name)?.value ?? "";
 export class Vault {
   store: FileVaultStore; memory: VaultMemory; auth: ReturnType<typeof createVaultUnlock>;
   constructor(home: string, now: () => number, idle: number, logger: VaultLogger) {
@@ -50,6 +51,16 @@ export class Vault {
     return (await this.rows()).filter(row => app.kinds.includes(row.entry.kind) && (requested === undefined || row.entry.kind === "login" && row.entry.fields.some(field => {
       if (field.id !== "website") return false; try { return origin(field.value) === requested; } catch { return false; }
     })));
+  }
+  async summaries(app: AppView): Promise<LoginSummary[]> {
+    this.allowed(app, "login");
+    return (await this.rows()).filter(row => row.entry.kind === "login").map(({ entry, version }) => ({ id: entry.id, version, title: entry.title, username: fieldValue(entry, "username"), website: fieldValue(entry, "website") }));
+  }
+  async login(app: AppView, entryId: unknown) {
+    const entry = id(entryId); this.allowed(app, "login");
+    const row = (await this.rows()).find(row => row.entry.id.toLowerCase() === entry.toLowerCase());
+    if (!row || row.entry.kind !== "login") throw new ServiceError("not_found", 404);
+    return row;
   }
   async save(app: AppView, input: unknown, expected: unknown) {
     // Check the stored kind before replacement validation so hidden IDs stay indistinguishable.
