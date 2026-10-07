@@ -290,6 +290,15 @@ export function entryHead(name, kind, ...actions) {
   );
 }
 
+/** The head of a new entry: the kind's icon in place of a monogram, since the entry has no name yet. */
+export function kindHead(title, kind, glyph) {
+  return row(
+    { gap: 14 },
+    stack({ w: 48, h: 48, radius: d.r.control, fill: "surface-3" }, icon(glyph, { size: 22, color: "text", place: "center" })),
+    col({ gap: 2, grow: 1 }, t.display(title, { size: 20, weight: 600, color: "title" }), t.ui(kind, { color: "soft" })),
+  );
+}
+
 /** A small outlined button with an icon, for the head of an entry. */
 export const smallButton = (glyph, value, ref) =>
   row({ h: 32, pad: [0, 12], gap: 6, radius: d.r.control, stroke: "field-line", name: ref ?? slug(value), label: value }, icon(glyph, { size: 14, color: "text" }), t.ui(value, { weight: 500, color: "title" }));

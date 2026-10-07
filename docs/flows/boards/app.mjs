@@ -11,7 +11,7 @@ import { box, col, row, stack, icon, fill } from "blueprint/kit.mjs";
 import { DIAL_LIGHT } from "../kit/skins.mjs";
 import { entryField, divider, mark } from "../kit/vault.mjs";
 import {
-  d, t, SIZE, BODY_H, appWindow, view, centred, sectionHead, page, setting, listPane, detail, entryHead, smallButton, fieldGroup,
+  d, t, SIZE, BODY_H, appWindow, view, centred, sectionHead, page, setting, listPane, detail, entryHead, kindHead, smallButton, fieldGroup,
   label, strong, heading, notice, button, link, input, formField, select, toggle, checkbox, choice, menu, dialog, toast, iconButton, appIcon, CONTROL_H, slug,
 } from "../kit/app.mjs";
 
@@ -72,25 +72,24 @@ const formFoot = (save, { remove = false } = {}) =>
   row({ gap: 10 }, remove ? button("Delete entry", { danger: true, glyph: "trash2", ref: "delete" }) : null, fill(), button("Cancel"), button(save, { primary: true, ref: "save" }));
 
 /** A form in the right pane: its head, its fields, its foot at the bottom. */
-const formPane = (title, kind, fields, foot) =>
-  detail(entryHead(title, kind), col({ gap: 14, grow: 1 }, ...fields), foot);
+const formPane = (head, fields, foot) => detail(head, col({ gap: 14, grow: 1 }, ...fields), foot);
 
 const passwordInput = (value, { focus, generatorOpen } = {}) =>
   input(value, {
     mono: true,
     focus,
+    placeholder: "Type one or generate it",
     ref: "password",
     title: "Password",
     trail: [
-      reveal(true),
+      reveal(value != null),
       stack({ w: 32, h: 32, radius: d.r.control, fill: generatorOpen ? "surface-3" : undefined, name: "generate", label: "Generate a password" }, icon("wandSparkles", { size: 16, color: generatorOpen ? "primary" : "soft", place: "center" })),
     ],
   });
 
 function editPane() {
   return formPane(
-    "Northwind Mail",
-    "Login",
+    entryHead("Northwind Mail", "Login"),
     [
       formField("Name", input("Northwind Mail", { ref: "name" })),
       row({ gap: 12 }, col({ grow: 1 }, formField("Username", input("alex.rivera@northwind.example", { ref: "username" })))),
@@ -114,7 +113,7 @@ const KINDS = [
   { label: "Note", line: "Private text", glyph: "stickyNote", ref: "kind-note" },
   { label: "Key", line: "An SSH or API key", glyph: "key", ref: "kind-key" },
   { label: "Environment", line: "Values a project loads in the terminal", glyph: "squareTerminal", ref: "kind-env" },
-  { label: "Custom", line: "Fields you name yourself", glyph: "listPlus", ref: "kind-custom" },
+  { label: "Custom", line: "Fields you name yourself", glyph: "listPlus", ref: "kind-custom", head: "New custom entry" },
 ];
 
 const textArea = (value, { h = 96, mono = false, ref, placeholder } = {}) =>
@@ -125,10 +124,11 @@ const textArea = (value, { h = 96, mono = false, ref, placeholder } = {}) =>
 
 /** The fields of a new entry of each kind. */
 const NEW_FORMS = {
-  login: () => [
-    formField("Name", input(null, { placeholder: "Northside Gym", focus: true, ref: "name" })),
+  // With the generator open, the password field holds the focus and the made password.
+  login: ({ generating = false } = {}) => [
+    formField("Name", input(null, { placeholder: "Northside Gym", focus: !generating, ref: "name" })),
     formField("Username", input(null, { placeholder: "Email or user name", ref: "username" })),
-    formField("Password", passwordInput(null)),
+    formField("Password", generating ? passwordInput("k7#Rq-vW2p!eLz9@Tm4s", { focus: true, generatorOpen: true }) : passwordInput(null)),
     formField("Website", input(null, { placeholder: "https://", ref: "website" })),
   ],
   card: () => [
@@ -172,7 +172,10 @@ const NEW_FORMS = {
   ],
 };
 
-const newEntry = (kind, title) => main({ selected: -1, right: formPane(`New ${title.toLowerCase()}`, title, NEW_FORMS[kind](), formFoot("Save")) });
+const newEntry = (kind, { generating } = {}) => {
+  const { label: name, glyph, head } = KINDS.find((k) => k.ref === `kind-${kind}`);
+  return main({ selected: -1, right: formPane(kindHead(head ?? `New ${name.toLowerCase()}`, name, glyph), NEW_FORMS[kind]({ generating }), formFoot("Save")) }, generating ? [generator()] : []);
+};
 
 /** The generator, open under the password field. */
 function generator() {
@@ -386,7 +389,7 @@ const SOURCES = [
 
 const sourceTile = ([name, line], on) =>
   row(
-    { w: 270, pad: [12, 14], gap: 12, radius: d.r.group, stroke: on ? "primary" : "line", strokeWidth: on ? 2 : 1, fill: on ? "selected" : undefined, name: `source-${slug(name)}`, label: name },
+    { grow: 1, pad: [12, 14], gap: 12, radius: d.r.group, stroke: on ? "primary" : "line", strokeWidth: on ? 2 : 1, fill: on ? "selected" : undefined, name: `source-${slug(name)}`, label: name },
     stack({ w: 18, h: 18, radius: "pill", stroke: on ? "primary" : "field-line", strokeWidth: 2 }, on ? box({ w: 8, h: 8, radius: "pill", fill: "primary", place: "center" }) : null),
     col({ gap: 2, grow: 1 }, strong(name), t.ui(line, { size: 12, color: "soft" })),
   );
@@ -399,7 +402,7 @@ function importSource({ chosen } = {}) {
       sectionHead("Import"),
       page(
         t.body("Choose where the passwords come from, then the file you exported from it.", { color: "text" }),
-        col({ gap: 10 }, ...[0, 2, 4].map((i) => row({ gap: 10 }, sourceTile(SOURCES[i], i === 0), sourceTile(SOURCES[i + 1], false)))),
+        col({ gap: 10 }, ...[0, 3].map((i) => row({ gap: 10 }, ...SOURCES.slice(i, i + 3).map((source, j) => sourceTile(source, i + j === 0))))),
         chosen
           ? row(
               { gap: 10, pad: [10, 14], radius: d.r.control, fill: "surface-2", name: "chosen-file", label: "Chosen file" },
@@ -464,7 +467,7 @@ function exportView({ plain = false } = {}) {
               ),
               formField("Master password", input("•".repeat(16), { mono: true, focus: true, ref: "master", trail: [reveal(false)] }), { hint: "Asked again for a plain export." }),
             )
-          : row({ gap: 12 }, col({ grow: 1 }, formField("Backup password", input("•".repeat(18), { mono: true, ref: "backup-password", trail: [reveal(false)] }), { hint: "15 to 128 characters." })), col({ grow: 1 }, formField("Repeat it", input(null, { placeholder: "Repeat the backup password", mono: true, focus: true, ref: "repeat" })))),
+          : row({ gap: 12, align: "start" }, col({ grow: 1 }, formField("Backup password", input("•".repeat(18), { mono: true, ref: "backup-password", trail: [reveal(false)] }), { hint: "15 to 128 characters." })), col({ grow: 1 }, formField("Repeat it", input(null, { placeholder: "Repeat the backup password", mono: true, focus: true, ref: "repeat" })))),
         fill(),
         row({}, fill(), plain ? button("Export plain file", { danger: true, glyph: "download", ref: "export-plain" }) : button("Save backup", { primary: true, glyph: "download", ref: "save-backup" })),
       ),
@@ -585,14 +588,14 @@ const screens = [
   screen("deleted", "Deleted, with undo", 2, 3, () => main({ entries: AFTER_DELETE, selected: -1, right: detail(col({ grow: 1, align: "center", justify: "center" }, t.ui("Choose an entry to see it.", { size: 14, color: "soft" }))) }, [toast("Northwind Mail deleted.", { action: "Undo", glyph: "trash2" })]), "Undo puts it back for as long as the toast is shown."),
   // Adding
   screen("add-open", "Add, kinds", 0, 4, () => main({ addOpen: true }, [menu(KINDS, { w: 300, at: { x: 300 - 14 - 36, y: LIST_TOP + CONTROL_H + 6 }, name: "kinds", title: "Add" })]), "Every kind says what it is for."),
-  screen("add-login", "New login", 1, 4, () => newEntry("login", "Login"), "The generator opens from the wand in the password field."),
-  screen("generator", "Password generator", 2, 4, () => main({ selected: -1, right: formPane("New login", "Login", NEW_FORMS.login().map((f, i) => (i === 2 ? formField("Password", passwordInput("k7#Rq-vW2p!eLz9@Tm4s", { generatorOpen: true })) : f)), formFoot("Save")) }, [generator()]), "Length, symbols, numbers and uppercase. Use this password fills the field."),
-  screen("add-card", "New card", 3, 4, () => newEntry("card", "Card")),
-  screen("add-document", "New document", 4, 4, () => newEntry("document", "Document")),
-  screen("add-note", "New note", 5, 4, () => newEntry("note", "Note")),
-  screen("add-key", "New key", 6, 4, () => newEntry("key", "Key")),
-  screen("add-env", "New environment", 7, 4, () => newEntry("env", "Environment"), "Nova reads these; the terminal loads them with vault env."),
-  screen("add-custom", "New custom entry", 8, 4, () => newEntry("custom", "Custom")),
+  screen("add-login", "New login", 1, 4, () => newEntry("login"), "The generator opens from the wand in the password field."),
+  screen("generator", "Password generator", 2, 4, () => newEntry("login", { generating: true }), "Length, symbols, numbers and uppercase. Use this password fills the field."),
+  screen("add-card", "New card", 3, 4, () => newEntry("card")),
+  screen("add-document", "New document", 4, 4, () => newEntry("document")),
+  screen("add-note", "New note", 5, 4, () => newEntry("note")),
+  screen("add-key", "New key", 6, 4, () => newEntry("key")),
+  screen("add-env", "New environment", 7, 4, () => newEntry("env"), "Nova reads these; the terminal loads them with vault env."),
+  screen("add-custom", "New custom entry", 8, 4, () => newEntry("custom")),
   // Import
   screen("import", "Import, source", 0, 5, () => importSource(), "Choose file opens the system file picker."),
   screen("import-file", "Import, file chosen", 1, 5, () => importSource({ chosen: true })),
