@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { readCapped, VaultClientError } from "../../client/src/index.ts";
 import type { Client, RunProgress, RunRequest, RunSummary } from "../../client/src/types.ts";
-import { copy } from "./copy.ts";
+import { copy, yes, no } from "./copy.ts";
 import { foregroundWindow } from "./window.ts";
 import type { CliIO } from "./main.ts";
 export const AGENTS: Record<string, string> = { agent: "Agent", "claude-code": "Claude Code", codex: "Codex", cursor: "Cursor", opencode: "OpenCode", antigravity: "Antigravity", copilot: "GitHub Copilot" };
@@ -126,9 +126,9 @@ export async function approve(api: Client, io: CliIO): Promise<number> {
   if (!waiting.length) { io.write(copy("No requests are waiting.", "No hay pedidos esperando.")); return 0; }
   for (const batch of waiting) {
     describe(io, batch);
-    const answer = (await io.ask(copy("Type yes to approve or no to reject: ", "Escribí sí para aprobar o no para rechazar: "))).trim().toLowerCase();
-    if (answer === copy("yes", "sí")) { await prove(api, io, batch.id, password); io.write(copy("Approved. The commands are running; their output goes to whoever asked.", "Aprobado. Los comandos se están ejecutando; la salida le llega a quien lo pidió.")); }
-    else if (answer === "no") { await api.runs.reject(batch.id); io.write(copy("Rejected.", "Rechazado.")); }
+    const answer = await io.ask(copy("Approve? (y/n, Enter leaves it waiting): ", "¿Aprobar? (s/n, Enter lo deja esperando): "));
+    if (yes(answer)) { await prove(api, io, batch.id, password); io.write(copy("Approved. The commands are running; their output goes to whoever asked.", "Aprobado. Los comandos se están ejecutando; la salida le llega a quien lo pidió.")); }
+    else if (no(answer)) { await api.runs.reject(batch.id); io.write(copy("Rejected.", "Rechazado.")); }
     else io.write(copy("Left waiting.", "Quedó esperando."));
   }
   return 0;

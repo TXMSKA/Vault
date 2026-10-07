@@ -10,7 +10,7 @@ import { serve } from "../../service/src/main.ts";
 import { appIdPattern } from "../../client/src/paths.ts";
 import { hiddenPrompt } from "./prompt.ts";
 import { AGENTS, approve, run, runOptions, visible } from "./run.ts";
-import { copy } from "./copy.ts";
+import { copy, yes } from "./copy.ts";
 const usage = () => copy(
   "vault status\nvault create --kit <file.txt>\nvault unlock\nvault recover --kit <file.txt>\nvault lock\nvault apps [allow|revoke <id>]\nvault run --project <name> [--agent <id>] -- <command> [args...]\nvault run --project <name> [--agent <id>] --batch <file.json>\nvault run --attach <request> [--agent <id>]\nvault approve\nvault reject <request>\nvault import <file> --from chrome|edge|firefox|bitwarden|1password|keepass\nvault import <file.env> --from dotenv --project <name>\nvault export <file>\nvault restore <file>\nvault dev-install\nvault serve",
   "vault status: consultar el estado\nvault create --kit <archivo.txt>: crear la bóveda y guardar el kit\nvault unlock: desbloquear\nvault recover --kit <archivo.txt>: recuperar y guardar un kit nuevo\nvault lock: bloquear\nvault apps [allow|revoke <id>]: listar, permitir o revocar apps\nvault run --project <nombre> [--agent <id>] -- <comando> [args...]: pedir que se ejecute con las variables del proyecto\nvault run --project <nombre> [--agent <id>] --batch <archivo.json>: pedir varios comandos juntos\nvault run --attach <pedido> [--agent <id>]: volver a seguir un pedido\nvault approve: ver los pedidos que esperan y aprobarlos o rechazarlos\nvault reject <pedido>: rechazar un pedido o detenerlo\nvault import <archivo> --from chrome|edge|firefox|bitwarden|1password|keepass: importar\nvault import <archivo.env> --from dotenv --project <nombre>: guardar las variables de un proyecto\nvault export <archivo>: guardar una copia cifrada\nvault restore <archivo>: restaurar una copia cifrada\nvault dev-install: guardar la instalación de desarrollo\nvault serve: ejecutar el servicio");
@@ -41,8 +41,8 @@ export type CliIO = { isTTY(): boolean; ask(label: string): Promise<string>; wri
 const terminal: CliIO = { isTTY: () => !!process.stdin.isTTY, ask: hiddenPrompt, write: text => process.stdout.write(`${text}\n`), error: text => process.stderr.write(`${text}\n`), out: text => process.stdout.write(text), err: text => process.stderr.write(text) };
 async function confirmValues(io: CliIO) {
   if (!io.isTTY()) throw new VaultClientError("terminal_required");
-  const answer = await io.ask(copy("Allow this command to access a value? Type yes: ", "¿Permitir que este comando acceda a un valor? Escribí sí: "));
-  if (answer.trim().toLowerCase() !== copy("yes", "sí")) throw new VaultClientError("cancelled");
+  const answer = await io.ask(copy("Allow this command to read a value? (y/n): ", "¿Permitir que este comando lea un valor? (s/n): "));
+  if (!yes(answer)) throw new VaultClientError("cancelled");
 }
 async function confirmedPassword(io: CliIO) {
   const password = await io.ask(copy("New master password (15 to 128 characters): ", "Contraseña maestra nueva (15 a 128 caracteres): "));
@@ -88,7 +88,7 @@ export async function main(args = process.argv.slice(2), io: CliIO = terminal): 
     else if (command === "lock") { await api.lock(); io.write(copy("Vault locked.", "Vault bloqueado.")); }
     else if (command === "apps") {
       if (sub === "allow") await api.apps.allow(third); else if (sub === "revoke") await api.apps.revoke(third);
-      else for (const app of await api.apps.list()) io.write(`${app.id} | ${copy(app.status, ({ granted: "autorizada", pending: "pendiente", revoked: "revocada" })[app.status])} | ${app.kinds.join(",")}`);
+      else for (const app of await api.apps.list()) io.write(`${app.id} | ${copy(app.status, ({ granted: "autorizada", pending: "pendiente", revoked: "revocada" })[app.status])} | ${app.kinds.join(",")}${app.permissions.length ? ` | ${app.permissions.join(",")}` : ""}`);
       if (sub) io.write(copy("Saved.", "Se guardó."));
     } else if (command === "run") return await run(api, io, options!, agent);
     else if (command === "approve") return await approve(api, io);
@@ -102,8 +102,8 @@ export async function main(args = process.argv.slice(2), io: CliIO = terminal): 
       const file = resolve(sub), counts = await api.importEnv(args[5], await readCapped(file)), shown = visible(file);
       io.write(copy(`Saved in ${visible(args[5])}: ${counts.added} new, ${counts.replaced} changed, ${counts.unchanged} the same, ${counts.kept} kept from before; ${counts.skipped} lines skipped.`, `Guardado en ${visible(args[5])}: ${counts.added} nuevas, ${counts.replaced} cambiadas, ${counts.unchanged} iguales, ${counts.kept} que ya estaban; ${counts.skipped} líneas omitidas.`));
       // The file is deleted only on the person's answer; without a terminal there is nobody to ask.
-      const answer = io.isTTY() ? await io.ask(copy(`Delete ${shown} now? It holds the values in plain text. Type yes to delete it: `, `¿Borrar ${shown} ahora? Tiene las variables en texto plano. Escribí sí para borrarlo: `)) : "";
-      if (answer.trim().toLowerCase() === copy("yes", "sí")) { await rm(file); io.write(copy("Deleted.", "Se borró.")); }
+      const answer = io.isTTY() ? await io.ask(copy(`Delete ${shown} now? It holds the values in plain text. (y/n): `, `¿Borrar ${shown} ahora? Tiene las variables en texto plano. (s/n): `)) : "";
+      if (yes(answer)) { await rm(file); io.write(copy("Deleted.", "Se borró.")); }
       else io.write(copy(`${shown} was kept. It holds the values in plain text.`, `Se dejó ${shown}. Tiene las variables en texto plano.`));
     }
     else if (command === "import") { const counts = await api.import(args[3] as ImportFormat, await readCapped(resolve(sub))); io.write(copy(`Imported: ${counts.imported}; duplicates: ${counts.duplicates}; skipped: ${counts.skipped}.`, `Importados: ${counts.imported}; duplicados: ${counts.duplicates}; omitidos: ${counts.skipped}.`)); }
