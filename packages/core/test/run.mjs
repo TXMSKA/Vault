@@ -1,10 +1,11 @@
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import "../../../test/guard.mjs";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { resolve, join, dirname } from "node:path";
 import assert from "node:assert/strict";
 process.chdir(fileURLToPath(new URL("../", import.meta.url)));
-const parent = resolve(".test-tmp"); await mkdir(parent, { recursive: true });
+const parent = resolve(tmpdir()); await mkdir(parent, { recursive: true });
 const scratch = await mkdtemp(join(parent, "run-")), previousHome = process.env.VAULT_HOME;
 process.env.VAULT_HOME = scratch;
 const started = performance.now();
@@ -17,6 +18,7 @@ try {
   await timed("crypto, model and memory", () => import("./vault.test.mjs"));
   await timed("file store regressions", () => import("./file-store.test.mjs"));
   await timed("shared base", () => import("./shared.test.mjs"));
+  await timed("sync packages", () => import("./sync.test.mjs"));
 } catch (error) {
   // Assertion output can contain the synthetic secrets under test.
   console.error(`Vault tests failed: ${error?.name === "AssertionError" ? "assertion" : "unexpected error"}.`);

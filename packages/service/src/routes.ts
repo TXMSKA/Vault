@@ -9,8 +9,9 @@ import type { helloAdapter } from "./hello.ts";
 import { parseImport, formats } from "./imports.ts";
 import { dotenv } from "./dotenv.ts";
 import type { Runs } from "./runs.ts";
+import type { Sync } from "./sync.ts";
 import type { ImportFormat } from "../../client/src/types.ts";
-export type Context = { app?: AppView; apps: Apps; vault: Vault; lifecycle: Lifecycle; runs: Runs; hello: ReturnType<typeof helloAdapter>; body: Record<string, unknown>; query: URLSearchParams; id?: string; idleMs: number };
+export type Context = { app?: AppView; apps: Apps; vault: Vault; lifecycle: Lifecycle; runs: Runs; sync: Sync; hello: ReturnType<typeof helloAdapter>; body: Record<string, unknown>; query: URLSearchParams; id?: string; idleMs: number };
 export type Route = { method: string; path: string; access: "public" | "bootstrap" | "granted" | "manage" | "run"; keys: string; query?: string; handle(c: Context): unknown | Promise<unknown> };
 const password = (value: unknown) => { const result = text(value, 128); if (result.length < 15) throw new ServiceError("invalid"); return result; };
 const active = (c: Context) => c.lifecycle.requirePresence(c.app!.id);
@@ -37,6 +38,14 @@ async function approve(c: Context, batchId: unknown, proof: () => Promise<unknow
 // A permission is recorded only after the same proof that unlocks Vault, so an app cannot give itself one.
 async function permit(c: Context, proof: () => Promise<unknown>) { await proof(); return c.apps.grant(c.app!.id, "import"); }
 export const routes: Route[] = [
+  { method: "GET", path: "/v1/sync", access: "manage", keys: "", handle: c => c.sync.status() },
+  { method: "POST", path: "/v1/sync/setup", access: "manage", keys: "folder", handle: c => { active(c); return c.sync.setup(text(c.body.folder, 4096)); } },
+  { method: "POST", path: "/v1/sync/join", access: "manage", keys: "folder,password|folder,recovery", handle: c => { active(c); return c.sync.join(text(c.body.folder, 4096), text(c.body.password ?? c.body.recovery, 128), Object.hasOwn(c.body, "recovery")); } },
+  { method: "POST", path: "/v1/sync/now", access: "manage", keys: "", handle: c => { active(c); return c.sync.pulse(); } },
+  { method: "GET", path: "/v1/sync/conflicts", access: "manage", keys: "", handle: c => c.sync.conflicts() },
+  { method: "POST", path: "/v1/sync/conflicts/restore", access: "manage", keys: "id", handle: c => { active(c); return c.sync.resolveConflict(id(c.body.id), true); } },
+  { method: "POST", path: "/v1/sync/conflicts/dismiss", access: "manage", keys: "id", handle: c => c.sync.resolveConflict(id(c.body.id), false) },
+  { method: "POST", path: "/v1/sync/leave", access: "manage", keys: "remove", handle: c => { if (typeof c.body.remove !== "boolean") throw new ServiceError("invalid"); return c.sync.leave(c.body.remove); } },
   { method: "GET", path: "/v1/health", access: "public", keys: "", handle: () => ({ ok: true, pid: process.pid, serviceVersion: "0.1.0" }) },
   { method: "POST", path: "/v1/apps/register", access: "bootstrap", keys: "id,kind,name", handle: c => c.apps.register(c.body) },
   { method: "GET", path: "/v1/status", access: "granted", keys: "", handle: async c => { c.lifecycle.check(); let unlocked = false; try { c.vault.memory.get(c.vault.memory.ticket()); unlocked = true; } catch {} return { created: !!(await c.vault.store.envelope()).state, unlocked, present: c.lifecycle.presences.size, idleMs: c.idleMs }; } },
@@ -79,6 +88,7 @@ export function validateRoutes(table: Route[]) {
   for (const route of table) { const key = `${route.method} ${route.path}`; if (!["public", "bootstrap", "granted", "manage", "run"].includes(route.access) || typeof route.keys !== "string" || seen.has(key)) throw new ServiceError("invalid_routes", 500); seen.add(key); }
 }
 export function validateInput(route: Route, body: unknown, query: URLSearchParams) {
-  object(body, route.keys);
+  const keys = body && typeof body === "object" && !Array.isArray(body) ? Object.keys(body).sort().join() : undefined;
+  if (!route.keys.split("|").includes(keys!)) throw new ServiceError("invalid"); object(body, keys!);
   if ([...query.keys()].sort().join() !== (route.query ?? "")) throw new ServiceError("invalid");
 }

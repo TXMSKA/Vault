@@ -1,7 +1,7 @@
 import type { EncryptedEntry, Sealed, VaultState } from "./model.js";
 
 export class VaultError extends Error {
-  constructor(public code: "invalid" | "locked" | "conflict" | "unavailable" | "not_found" | "limited") { super(code); }
+  constructor(public code: "invalid" | "locked" | "conflict" | "unavailable" | "not_found" | "limited", options?: ErrorOptions) { super(code, options); }
 }
 export type StoredEnvelope = { state: VaultState | null; version: number };
 export type StoredEntry = EncryptedEntry & { chunks: string[] };

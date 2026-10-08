@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import "../../../test/guard.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -8,7 +9,7 @@ import { mock } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import { FileVaultStore, VaultError } from "../dist/index.js";
 
-const parent = resolve(".test-tmp"); await fs.mkdir(parent, { recursive: true });
+const parent = resolve(tmpdir()); await fs.mkdir(parent, { recursive: true });
 const scratch = await fs.mkdtemp(join(parent, "locks-"));
 const deadPid = 2147483647, owner = () => ({ pid: deadPid, token: randomUUID(), time: 0 });
 const code = expected => error => error instanceof VaultError && error.code === expected;

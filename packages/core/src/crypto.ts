@@ -2,8 +2,8 @@
 import type { Envelope, Sealed, VaultState } from "./model.js";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-export function base64(bytes: Uint8Array): string { return btoa(Array.from(bytes, b => String.fromCharCode(b)).join("")); }
-export function unbase64(value: string): Uint8Array<ArrayBuffer> { return Uint8Array.from(atob(value), c => c.charCodeAt(0)); }
+export function base64(bytes: Uint8Array): string { const parts: string[] = []; for (let start = 0; start < bytes.length; start += 32768) parts.push(String.fromCharCode(...bytes.subarray(start, start + 32768))); return btoa(parts.join("")); }
+export function unbase64(value: string): Uint8Array<ArrayBuffer> { const binary = atob(value), bytes = new Uint8Array(binary.length); for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i); return bytes; }
 const random = (size: number) => crypto.getRandomValues(new Uint8Array(size));
 async function derived(secret: string, salt: string): Promise<CryptoKey> {
   const material = await crypto.subtle.importKey("raw", encoder.encode(secret), "PBKDF2", false, ["deriveKey"]);

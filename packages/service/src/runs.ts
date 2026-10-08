@@ -164,7 +164,8 @@ export class Runs {
       };
       for (const stream of ["stdout", "stderr"] as const) child[stream]?.on("data", (data: Buffer) => emit(stream, streams[stream].push(decoders[stream].write(data))));
       const timer = setTimeout(() => { command.reason = "timeout"; kill(child); }, this.limits.commandMs); timer.unref();
-      batch.stop = () => { command.reason = "stopped"; kill(child); };
+      // Windows termination can outlast the deadline; cancellation must keep its own outcome.
+      batch.stop = () => { clearTimeout(timer); command.reason = "stopped"; kill(child); };
       let settled = false;
       const settle = (code: number | null, failure = false) => {
         if (settled) return; settled = true; clearTimeout(timer); batch.stop = undefined;

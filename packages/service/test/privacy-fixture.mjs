@@ -1,14 +1,14 @@
+import { tmpdir } from "node:os";
 import childProcess from "node:child_process";
 import "../../../test/guard.mjs";
 import { syncBuiltinESMExports } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 // The managed Windows sandbox refuses Set-Acl. The adapter is test-only,
 // never imported by production and never selected by an environment flag.
 if (process.platform === "win32") {
-  const root = path.resolve(fileURLToPath(new URL("../../../", import.meta.url)), ".test-tmp");
+  const root = path.resolve(tmpdir());
   const original = childProcess.execFileSync;
   childProcess.execFileSync = (file, args = [], options) => {
     const candidate = options?.env?.VAULT_PRIVATE_PATH;

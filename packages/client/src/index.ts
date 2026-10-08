@@ -6,7 +6,7 @@ import { resolveHome, appIdPattern, serviceEnv } from "./paths.ts";
 import { privateDirectory, privateFile } from "./private.ts";
 import { readCapped, FILE_CAP } from "./files.ts";
 import { VaultClientError } from "./errors.ts";
-import type { AppView, Backup, Client, ConnectOptions, EntryRow, EnvImportCount, ImportCount, InstallRecord, LoginSummary, RunProgress, RunSummary, ServiceRecord, Status, TokenStore } from "./types.ts";
+import type { AppView, Backup, Client, ConnectOptions, EntryRow, EnvImportCount, ImportCount, InstallRecord, LoginSummary, RunProgress, RunSummary, ServiceRecord, Status, SyncStatus, SyncConflict, TokenStore } from "./types.ts";
 export type * from "./types.ts";
 export { VaultClientError, resolveHome, readCapped, FILE_CAP };
 const pause = (ms: number) => new Promise<void>(done => setTimeout(done, ms));
@@ -97,6 +97,7 @@ export async function connect(options: ConnectOptions): Promise<Client> {
   const appPath = (id: string) => { if (!appIdPattern.test(id)) throw new VaultClientError("invalid"); return `/v1/apps/${id}`; };
   return {
     status: () => call<Status>("GET", "/v1/status"), create: password => call("POST", "/v1/create", { password }),
+    sync: { status: () => call<SyncStatus>("GET", "/v1/sync"), setup: folder => call<SyncStatus>("POST", "/v1/sync/setup", { folder }, 130000), join: (folder, credentials) => call<SyncStatus>("POST", "/v1/sync/join", { folder, ...credentials }, 130000), now: () => call<SyncStatus>("POST", "/v1/sync/now", {}, 130000), conflicts: () => call<SyncConflict[]>("GET", "/v1/sync/conflicts"), restore: id => call("POST", "/v1/sync/conflicts/restore", { id }), dismiss: id => call("POST", "/v1/sync/conflicts/dismiss", { id }), leave: remove => call("POST", "/v1/sync/leave", { remove }) },
     unlock: password => call("POST", "/v1/unlock", { password }), recover: (recovery, password) => call("POST", "/v1/recover", { recovery, password }),
     hello: { enable: password => call("POST", "/v1/unlock/hello/enable", { password }), unlock: hwnd => call("POST", "/v1/unlock/hello", { hwnd }), disable: () => call("POST", "/v1/unlock/hello/disable", {}) },
     lock: () => call("POST", "/v1/lock", {}), present,

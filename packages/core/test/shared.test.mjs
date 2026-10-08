@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import "../../../test/guard.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -7,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as vault from "../dist/index.js";
 
-const parent = resolve(".test-tmp"); await mkdir(parent, { recursive: true, mode: 0o700 });
+const parent = resolve(tmpdir()); await mkdir(parent, { recursive: true, mode: 0o700 });
 const scratch = await mkdtemp(join(parent, "shared-"));
 let checks = 0, stage = "setup";
 let started = performance.now();
@@ -100,6 +101,15 @@ try {
   const removal = randomUUID(); await store.putChunk(removal, payload()); await store.save(second, payload(), 0, [removal]);
   await store.remove(second, 1); await reject(() => store.getChunk(removal), "not_found");
   await reject(() => store.remove(second, 1), "not_found"); await store.removeChunk(randomUUID()); checks += 9;
+
+  const staged = new vault.FileVaultStore(join(scratch, "staged")), stagedEntry = randomUUID(), stagedChunk = randomUUID(); let escaped;
+  await staged.staged(async tx => {
+    escaped = tx; await tx.create(initial.state); await tx.putChunk(stagedChunk, payload()); await tx.save(stagedEntry, payload(), 0, [stagedChunk]);
+    await reject(() => tx.save(stagedEntry, payload(), 0, []), "conflict"); await reject(() => tx.save(randomUUID(), payload(), 0, [stagedChunk]), "conflict");
+    await tx.save(stagedEntry, payload(), 1, [stagedChunk]); assert.equal((await tx.entries())[0].version, 2); await tx.replace(initial.state, 1); await tx.remove(stagedEntry, 2);
+    await reject(() => tx.getChunk(stagedChunk), "not_found");
+  });
+  assert.deepEqual(await staged.entries(), []); assert.equal((await staged.envelope()).version, 2); await reject(() => escaped.entries(), "invalid"); checks += 6;
 
   timing("validation and limits");
   for (const bad of ["../escape", "bad", randomUUID().replace(/-/g, ""), "00000000-0000-0000-0000-000000000000"]) await reject(async () => store.save(bad, payload(), 0, []), "invalid");

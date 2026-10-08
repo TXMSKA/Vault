@@ -6,3 +6,4 @@ export * from "./file-store.js";
 export * from "./unlock.js";
 export * from "./hello.js";
 export * from "./logger.js";
+export * from "./sync.js";

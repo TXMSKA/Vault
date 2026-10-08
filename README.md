@@ -180,6 +180,21 @@ duplicates. Backup payloads are capped at 6 MiB, with an 8 MiB file limit.
 The backup password has the same 15 to 128 character requirement as the
 master password.
 
+## Sync between computers
+
+Run `vault sync setup <folder>` on the computer with your vault, then
+`vault sync join <folder>` on an empty computer with the same master
+password (or `--recovery` for the recovery key). Both ask before sharing
+encrypted copies. The folder holds your vault protected by the master
+password, so choose a strong one and keep your recovery kit safe.
+`vault sync status` shows the folder, last sync, computers and conflicts;
+`vault sync now` syncs while unlocked. Conflicts keep the other version
+until you restore or dismiss it. Under `Vault Sync/<datasetId>`,
+`dataset.vsync` holds the wrapped envelope, and each writer's own
+`writers/<deviceId>/<generationId>/` holds immutable encrypted batches,
+checkpoint parts, blobs and wrapped envelopes. Local bookkeeping stays
+under `<home>/sync/`.
+
 ## Checks and limits
 
 Tests use synthetic values and temporary `VAULT_HOME` folders, remove them
@@ -222,7 +237,7 @@ POSIX permissions are implemented but were not exercised on Linux here.
 
 ## Not here
 
-The small Vault app, host interfaces, cloud sync, installers, startup with
+The small Vault app, host interfaces, installers, startup with
 the computer and Nebula's migration are later tasks. Hosts own clipboard
 policy and their UI. There is no backup scheduler. Log retention and alerts
 have not been decided. The final joint security audit with Lyra remains a

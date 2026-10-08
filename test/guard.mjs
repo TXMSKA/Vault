@@ -15,6 +15,7 @@ function guard(value) {
   if (Buffer.isBuffer(value)) value = value.toString();
   if (typeof value !== "string") return;
   const candidate = resolve(value);
+  if (candidate.split(/[\\/]/).some(part => /^onedrive(?: - .*)?$/i.test(part))) throw new Error("test_cloud_root");
   for (const root of defaultRoots) {
     const inside = relative(root, candidate);
     if (!inside || !inside.startsWith("..") && !isAbsolute(inside)) throw new Error("test_default_root");
@@ -22,8 +23,8 @@ function guard(value) {
 }
 // Guard OS access as well as path resolution, including explicitly supplied defaults.
 // Test workers preload this fixture so a missing VAULT_HOME cannot reach real data.
-for (const name of ["access", "appendFile", "chmod", "chown", "copyFile", "cp", "exists", "lstat", "mkdir", "mkdtemp", "open", "opendir", "readFile", "readdir", "readlink", "realpath", "rename", "rm", "rmdir", "stat", "truncate", "unlink", "watch", "writeFile", "createReadStream", "createWriteStream"]) {
-  const wrap = original => function (...args) { guard(args[0]); if (["copyFile", "cp", "rename"].includes(name)) guard(args[1]); return original.apply(this, args); };
+for (const name of ["access", "appendFile", "chmod", "chown", "copyFile", "cp", "exists", "link", "lstat", "mkdir", "mkdtemp", "open", "opendir", "readFile", "readdir", "readlink", "realpath", "rename", "rm", "rmdir", "stat", "truncate", "unlink", "watch", "writeFile", "createReadStream", "createWriteStream"]) {
+  const wrap = original => function (...args) { guard(args[0]); if (["copyFile", "cp", "link", "rename"].includes(name)) guard(args[1]); return original.apply(this, args); };
   if (typeof fs[name] === "function") fs[name] = wrap(fs[name]);
   if (typeof fs[`${name}Sync`] === "function") {
     const original = fs[`${name}Sync`], wrapped = wrap(original);

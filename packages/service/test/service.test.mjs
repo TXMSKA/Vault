@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile, rm, readdir, open } from "node:fs/promises";
@@ -20,7 +21,7 @@ import { connect, ensureRunning, findService, VaultClientError, readCapped } fro
 import { newEntry, encrypt, decrypt, FileVaultStore, defaultVaultFolder, VaultMemory } from "vault-core";
 import { main } from "../../cli/src/main.ts";
 
-const parent = resolve(".test-tmp"); await mkdir(parent, { recursive: true });
+const parent = resolve(tmpdir()); await mkdir(parent, { recursive: true });
 const scratch = await mkdtemp(join(parent, "service-")), home = join(scratch, "home");
 const originalHome = process.env.VAULT_HOME; process.env.VAULT_HOME = home;
 await import("./privacy-fixture.mjs");
@@ -298,7 +299,7 @@ try {
         const progress = await api.runs.get(id, after); seen.push(JSON.stringify(progress));
         text += progress.chunks.map(chunk => chunk.text).join(""); after = progress.next;
         if (!progress.more && !["pending", "running"].includes(progress.status)) return { progress, text };
-        await wait(100);
+        await wait(500);
       }
       throw new Error("run_timeout");
     };
@@ -510,7 +511,8 @@ try {
   // Run the other regressions even when this OS refuses DPAPI, but never count a skip as success.
   if (dpapiFailure) { stage = "DPAPI synthetic round trip"; throw new Error("dpapi_round_trip_failed"); }
 } catch (error) {
-  console.error(`Vault service check failed at ${stage}.`); throw error;
+  const cause = ["locked", "unavailable", "busy", "rate_limited", "limited", "not_found", "conflict", "invalid", "internal", "expired", "not_pending"].includes(error?.code) ? error.code : error?.name === "AssertionError" ? "assertion" : "operation";
+  console.error(`Vault service check failed at ${stage}: ${cause}.`); throw error;
 } finally {
   for (const client of clients) await client.close().catch(() => undefined);
   for (const service of services) await service.shutdown();

@@ -138,7 +138,7 @@ export class FileVaultStore implements VaultStore {
           await settle(() => unlink(join(this.folder, ".lock")), deadline);
         } finally { await this.erase(`.tmp-${owner.token}`); }
       }
-    } catch (error) { throw error instanceof VaultError ? error : new VaultError("unavailable"); }
+    } catch (error) { throw error instanceof VaultError ? error : new VaultError("unavailable", { cause: error }); }
   }
   private async write(name: string, value: unknown) {
     const temp = join(this.folder, `.tmp-${randomUUID()}`); let present = true;
@@ -233,6 +233,31 @@ export class FileVaultStore implements VaultStore {
     return this.locked(async () => {
       if ((await this.inventory()).some(row => row.chunks.includes(chunk))) throw new VaultError("conflict");
       await this.erase(`chunk-${chunk}.json`);
+    });
+  }
+  // A private staging store can apply a whole sync pulse under one lock without rereading every entry on each save.
+  staged<T>(operation: (store: VaultStore) => Promise<T>): Promise<T> {
+    return this.locked(async () => {
+      const rows = new Map((await this.inventory()).map(row => [row.id.toLowerCase(), row])), chunks = new Set((await this.names("chunk", 6400)).map(name => name.slice(6, -5))), envelopeRow = await this.row("envelope.json", 2048);
+      let envelope: StoredEnvelope = envelopeRow ? { state: stateInput(envelopeRow.value), version: envelopeRow.version } : { state: null, version: 0 }, active = true;
+      const check = () => { if (!active) throw new VaultError("invalid"); };
+      const getChunk = async (chunkId: string) => { check(); const chunk = id(chunkId).toLowerCase(), row = await this.row(`chunk-${chunk}.json`, 47000); if (!row) throw new VaultError("not_found"); return sealed(row.value, 32784); };
+      const store: VaultStore = {
+        identity: this.identity, async envelope() { check(); return structuredClone(envelope); }, async entries() { check(); return structuredClone([...rows.values()]); }, getChunk,
+        create: async value => { check(); const state = stateInput(value); if (envelope.state) throw new VaultError("conflict"); await this.write("envelope.json", { version: 1, value: state }); envelope = { state, version: 1 }; return { version: 1 }; },
+        replace: async (value, expected) => { check(); const state = stateInput(value); version(expected); if (!envelope.state || envelope.version !== expected) throw new VaultError("conflict"); const next = version(expected + 1); await this.write("envelope.json", { version: next, value: state }); envelope = { state, version: next }; return { version: next }; },
+        putChunk: async (chunkId, value) => { check(); const chunk = id(chunkId).toLowerCase(), payload = sealed(value, 32784); if (chunks.has(chunk)) throw new VaultError("conflict"); if (chunks.size >= 6400) throw new VaultError("limited"); await this.write(`chunk-${chunk}.json`, { version: 1, value: payload }); chunks.add(chunk); return { version: 1 }; },
+        removeChunk: async chunkId => { check(); const chunk = id(chunkId).toLowerCase(); if ([...rows.values()].some(row => row.chunks.includes(chunk))) throw new VaultError("conflict"); await this.erase(`chunk-${chunk}.json`); chunks.delete(chunk); },
+        save: async (entryId, value, expected, claims) => {
+          check(); const entry = id(entryId).toLowerCase(), payload = sealed(value, 220000), chunkList = chunkIds(claims).map(value => value.toLowerCase()), current = rows.get(entry); version(expected, true);
+          if ((current?.version ?? 0) !== expected) throw new VaultError("conflict"); if (current && current.id !== entryId) throw new VaultError("invalid"); if (!current && rows.size >= MAX_ENTRIES) throw new VaultError("limited");
+          await batch(chunkList, getChunk); if ([...rows.values()].some(row => row.id.toLowerCase() !== entry && row.chunks.some(chunk => chunkList.includes(chunk)))) throw new VaultError("conflict");
+          const next = version(expected + 1); await this.write(`entry-${entry}.json`, { version: next, value: { id: entryId, sealed: payload, chunks: chunkList } }); rows.set(entry, { id: entryId, version: next, sealed: payload, chunks: chunkList });
+          await batch((current?.chunks ?? []).filter(chunk => !chunkList.includes(chunk)), async chunk => { await this.erase(`chunk-${chunk}.json`); chunks.delete(chunk); }); return { version: next };
+        },
+        remove: async (entryId, expected) => { check(); const entry = id(entryId).toLowerCase(), row = rows.get(entry); version(expected); if (!row) throw new VaultError("not_found"); if (row.version !== expected) throw new VaultError("conflict"); await this.erase(`entry-${entry}.json`); await batch(row.chunks, async chunk => { await this.erase(`chunk-${chunk}.json`); chunks.delete(chunk); }); rows.delete(entry); },
+      };
+      try { return await operation(store); } finally { active = false; }
     });
   }
 }
