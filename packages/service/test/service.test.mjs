@@ -435,6 +435,8 @@ try {
   stage = "discovery and detached startup";
   const discoveryHome = join(scratch, "discovery"); process.env.VAULT_HOME = discoveryHome;
   assert.equal(await main(["dev-install"], io), 0); assert.equal(await findService(discoveryHome), undefined);
+  // With VAULT_HOME set the launcher is written but the user Path is left alone.
+  { const launcher = await readFile(join(discoveryHome, "bin", process.platform === "win32" ? "vault.cmd" : "vault"), "utf8"); assert.equal(launcher.includes(join("cli", "src", "main.ts")), true); assert.equal(launcher.includes(process.execPath), true); checks += 2; }
   {
     const installPath = join(discoveryHome, "install.json"), install = JSON.parse(await readFile(installPath, "utf8"));
     install.args.unshift("--import", new URL("./privacy-fixture.mjs", import.meta.url).href);

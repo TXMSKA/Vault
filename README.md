@@ -39,7 +39,11 @@ node packages/cli/src/main.ts dev-install
 node packages/cli/src/main.ts status
 ```
 
-`dev-install` records this checkout's absolute service command. The next
+`dev-install` records this checkout's absolute service command and writes a
+`vault` launcher in the data root's `bin/`. On Windows that folder joins the
+user Path; on Linux `~/.local/bin/vault` links to it. With `VAULT_HOME` set
+the Path is left alone and the folder is printed. Open a new terminal after
+installing. The next
 client connection starts it as a hidden detached process with an argument
 array. `status` reports a stopped service without starting it. `serve`
 runs it in the foreground. The workspace's `vault` executable can also be
@@ -76,7 +80,7 @@ blindly: a dropped response can follow a completed write.
 The data root is `%LOCALAPPDATA%/Cosmic/apps/Vault` on Windows and
 `$XDG_DATA_HOME/Cosmic/apps/Vault` or `~/.local/share/Cosmic/apps/Vault` on
 Linux. `VAULT_HOME` overrides it for tests. Inside are `install.json`,
-`run/service.json`, `run/service.lock`, `secrets/`, `store/` and `logs/`.
+`run/service.json`, `run/service.lock`, `secrets/`, `store/`, `logs/` and `bin/`.
 The old core default at `Cosmic/vault` is not migrated automatically.
 
 The service protects directories with private Windows ACLs for the user,
