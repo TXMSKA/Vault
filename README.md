@@ -1,12 +1,12 @@
-﻿# Vault
+# Vault
 
-Vault is the private local password service shared by Nebula, Horizon and
-Nova. Each app builds its own interface and reaches the same vault through
+Vault is the local password service shared by Nebula, Horizon and Nova.
+Each app builds its own interface and reaches the same vault through
 `vault-client`. Unlocking in one app unlocks it for the others. The service
 keeps the data key in memory and encrypts every entry before saving it.
 
-The repository is private. Packages are consumed through local `file:`
-dependencies and are never published. Node 24 or 26 is required. There are
+Vault is open source under the Apache License 2.0; see `LICENSE`. Packages
+are consumed through local `file:` dependencies and are never published. Node 24 or 26 is required. There are
 no runtime dependencies outside the workspaces.
 
 ## What is here
