@@ -30,8 +30,8 @@ export type HelperVerb = keyof typeof calls;
 type Typed = { [V in HelperVerb]: { request: Infer<(typeof calls)[V]["request"]>; response: Infer<(typeof calls)[V]["response"]> } };
 export type HelperRequest<V extends HelperVerb> = Typed[V]["request"];
 export type HelperResponse<V extends HelperVerb> = Typed[V]["response"];
-/** `timeout` is in milliseconds: 15 seconds, or 2 minutes for hello-verify, which waits for the person. */
-export type HelperOptions = { timeout?: number };
+/** `timeout` is in milliseconds: 60 seconds, since a new unsigned helper build waits on the antivirus for up to half a minute on its first run, or 2 minutes for hello-verify, which waits for the person. `home` names the Vault install whose record gives the helper, as `connect` does; it defaults to the resolved one. */
+export type HelperOptions = { timeout?: number; home?: string };
 const unavailable = () => new VaultClientError("unavailable");
 const absolute = /^(?:[A-Za-z]:[\\/]|\/)/;
 // Exactly the expected keys, each passing its check; anything else is refused.
@@ -41,10 +41,10 @@ function exact(shape: Shape, value: unknown): boolean {
   return Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key) && shape[key]((value as Record<string, unknown>)[key]));
 }
 // The "helper" field of install.json, or nothing while it is absent or names no file; a malformed one is refused.
-function recorded(): string | undefined {
+function recorded(home?: string): string | undefined {
   let install: unknown;
   try {
-    const file = openSync(join(resolveHome(), "install.json"), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const file = openSync(join(home ?? resolveHome(), "install.json"), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
       const stat = fstatSync(file); if (!stat.isFile() || stat.size > 16384) return undefined;
       const text = Buffer.alloc(stat.size); readSync(file, text, 0, stat.size, 0); install = JSON.parse(text.toString("utf8"));
@@ -56,16 +56,16 @@ function recorded(): string | undefined {
   return statSync(helper, { throwIfNoEntry: false })?.isFile() ? helper : undefined;
 }
 // VAULT_HELPER (tests), then the install record, then the build beside this checkout.
-function executable(): string {
+function executable(home?: string): string {
   const named = process.env.VAULT_HELPER;
   if (named) { if (!absolute.test(named)) throw new VaultClientError("invalid"); return named; }
-  return recorded() ?? fileURLToPath(new URL("../../helper/bin/vault-helper.exe", import.meta.url));
+  return recorded(home) ?? fileURLToPath(new URL("../../helper/bin/vault-helper.exe", import.meta.url));
 }
 function plan<V extends HelperVerb>(verb: V, request: HelperRequest<V>, options: HelperOptions) {
   if (!Object.hasOwn(calls, verb) || !exact(calls[verb].request, request)) throw new VaultClientError("invalid");
-  const timeout = options.timeout ?? (verb === "hello-verify" ? 120000 : 15000);
+  const timeout = options.timeout ?? (verb === "hello-verify" ? 120000 : 60000);
   if (!Number.isSafeInteger(timeout) || timeout < 1) throw new VaultClientError("invalid");
-  return { executable: executable(), input: Buffer.from(`${JSON.stringify(request)}\n`), timeout };
+  return { executable: executable(options.home), input: Buffer.from(`${JSON.stringify(request)}\n`), timeout };
 }
 // One line ending in a newline, valid JSON, exactly the verb's answer keys.
 function accept<V extends HelperVerb>(verb: V, output: Buffer): HelperResponse<V> {

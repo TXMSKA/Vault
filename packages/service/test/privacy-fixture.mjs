@@ -4,6 +4,8 @@ import "../../../test/guard.mjs";
 import { syncBuiltinESMExports } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
+import { EventEmitter } from "node:events";
+import { PassThrough, Writable } from "node:stream";
 
 // The managed Windows sandbox refuses the ACL change. The adapter is test-only,
 // never imported by production and never selected by an environment flag. It
@@ -25,6 +27,24 @@ if (process.platform === "win32") {
       }
     }
     return original(file, args, options);
+  };
+  // The client's async form sends the same request through spawn; the same synthetic folders get the same answer.
+  const scratchPath = candidate => { const relative = path.relative(root, candidate), first = relative.split(path.sep)[0]; return Boolean(candidate) && /^service-[a-zA-Z0-9_-]+$/.test(first) && !relative.startsWith("..") && !path.isAbsolute(relative) && fs.existsSync(candidate); };
+  const originalSpawn = childProcess.spawn;
+  childProcess.spawn = (file, args = [], options = {}) => {
+    if (path.basename(String(file)).toLowerCase() !== "vault-helper.exe" || !["protect-folder", "check-file"].includes(args[0])) return originalSpawn(file, args, options);
+    const child = new EventEmitter(), stdout = new PassThrough(); let input = "";
+    const answer = () => {
+      let request; try { request = JSON.parse(input); } catch { request = undefined; }
+      if (scratchPath(typeof request?.path === "string" ? request.path : "")) {
+        if (args.length !== 1 || Object.keys(request).join() !== "path" || options.shell || !input.endsWith("\n")) { child.emit("error", new Error("invalid_test_acl")); return; }
+        stdout.end('{"ok":true}\n'); setImmediate(() => child.emit("close", 0)); return;
+      }
+      const real = originalSpawn(file, args, options); real.stdout.pipe(stdout); real.on("error", error => child.emit("error", error)); real.on("close", code => child.emit("close", code)); real.stdin.end(input);
+    };
+    child.stdin = new Writable({ write(chunk, _encoding, done) { input += chunk; done(); }, final(done) { done(); setImmediate(answer); } });
+    child.stdout = stdout; child.kill = () => true;
+    return child;
   };
   syncBuiltinESMExports();
 }

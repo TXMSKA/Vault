@@ -126,6 +126,8 @@ try {
       for (const bad of [5, null, "", "relative.exe"]) { await write(bad); await fake("ok", () => assert.rejects(() => runHelper("hello-available", {}), refused("invalid_install")), { VAULT_HELPER: undefined }); checks++; }
       if (process.platform === "win32") { await write(missing); await fake("ok", async () => assert.equal(typeof (await runHelper("hello-available", {})).available, "boolean"), { VAULT_HELPER: undefined, NODE_OPTIONS: undefined }); checks++; }
     } finally { process.env.VAULT_HOME = home; }
+    // A caller's own home wins over the resolved one, as connect's home option does.
+    await write("relative.exe"); await fake("ok", () => assert.rejects(() => runHelper("hello-available", {}, { home: recordHome }), refused("invalid_install")), { VAULT_HELPER: undefined }); checks++;
   }
 
   if (process.platform === "win32") {

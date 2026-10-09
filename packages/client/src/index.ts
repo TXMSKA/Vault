@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { resolveHome, appIdPattern, serviceEnv } from "./paths.ts";
-import { privateDirectory, privateFile } from "./private.ts";
+import { privateDirectoryAsync, privateFileAsync } from "./private.ts";
 import { readCapped, FILE_CAP } from "./files.ts";
 import { VaultClientError } from "./errors.ts";
 import type { AppView, Backup, Client, ConnectOptions, EntryRow, EnvImportCount, ImportCount, InstallRecord, LoginSummary, RunProgress, RunSummary, ServiceRecord, Status, SyncStatus, SyncConflict, TokenStore } from "./types.ts";
@@ -54,17 +54,17 @@ export function fileTokenStore(home: string, appId: string): TokenStore {
   if (!appIdPattern.test(appId)) throw new VaultClientError("invalid");
   const directory = join(resolve(home), "secrets", "clients"), filename = join(directory, `${appId}.token`);
   let prepared = false;
-  const prepare = () => { if (!prepared) { privateDirectory(directory); prepared = true; } };
+  const prepare = async () => { if (!prepared) { await privateDirectoryAsync(directory, home); prepared = true; } };
   return {
     async get() {
-      prepare();
+      await prepare();
       try { await lstat(filename); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw new VaultClientError("unavailable"); }
-      privateFile(filename); const token = await readCapped(filename, 43); if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw new VaultClientError("invalid"); return token;
+      await privateFileAsync(filename, home); const token = await readCapped(filename, 43); if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw new VaultClientError("invalid"); return token;
     },
     async set(token) {
-      if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw new VaultClientError("invalid"); prepare();
+      if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw new VaultClientError("invalid"); await prepare();
       const temporary = `${filename}.${randomUUID()}.tmp`;
-      try { await writeFile(temporary, token, { flag: "wx", mode: 0o600 }); privateFile(temporary); await rename(temporary, filename); } finally { await rm(temporary, { force: true }); }
+      try { await writeFile(temporary, token, { flag: "wx", mode: 0o600 }); await privateFileAsync(temporary, home); await rename(temporary, filename); } finally { await rm(temporary, { force: true }); }
     },
   };
 }
@@ -74,7 +74,7 @@ export async function connect(options: ConnectOptions): Promise<Client> {
   let record: ServiceRecord | undefined = await ensureRunning(home, options.startTimeoutMs);
   let token = await tokens.get(), granted = true, closed = false;
   if (!token) {
-    const keyFile = join(home, "secrets", "bootstrap.key"); privateFile(keyFile);
+    const keyFile = join(home, "secrets", "bootstrap.key"); await privateFileAsync(keyFile, home);
     const key = await readCapped(keyFile, 43);
     if (!/^[A-Za-z0-9_-]{43}$/.test(key)) throw new VaultClientError("unavailable");
     const result = await request<{ token: string; app: AppView }>(record, "POST", "/v1/apps/register", `Bootstrap ${key}`, options.app);

@@ -51,6 +51,13 @@ Framework 4 compiler every Windows 10 and 11 includes, `csc.exe` in
 `%SystemRoot%\Microsoft.NET\Framework64\v4.0.30319`, so there is no SDK, package
 or download. Other platforms have no helper and skip the step.
 
+Each build has a new hash, and while the helper is unsigned the antivirus can
+hold its first run for up to half a minute (28 seconds measured on Windows 11
+with Norton). Helper calls therefore allow 60 seconds, `dev-install` runs the
+helper once while it protects the data folder, and the client's `connect` and
+file token store call it asynchronously, so a host's main thread never waits
+on it.
+
 `dev-install` records this checkout's absolute service command, on Windows the
 absolute path of the helper too (the optional `helper` field of `install.json`),
 and writes a `vault` launcher in the data root's `bin/`. On Windows that folder joins the
