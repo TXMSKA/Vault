@@ -40,7 +40,7 @@ export async function ensureRunning(home = resolveHome(), timeout = 15000): Prom
     let install: InstallRecord;
     try { install = JSON.parse(await readCapped(join(home, "install.json"), 16384)); }
     catch { throw new VaultClientError("not_installed"); }
-    if (install.version !== 1 || typeof install.command !== "string" || !/^(?:[A-Za-z]:[\\/]|\/)/.test(install.command) || !Array.isArray(install.args) || install.args.length > 32 || !install.args.every(arg => typeof arg === "string" && arg.length < 4096)) throw new VaultClientError("invalid_install");
+    if (install.version !== 1 || typeof install.command !== "string" || !/^(?:[A-Za-z]:[\\/]|\/)/.test(install.command) || !Array.isArray(install.args) || install.args.length > 32 || !install.args.every(arg => typeof arg === "string" && arg.length < 4096) || install.helper !== undefined && (typeof install.helper !== "string" || !/^(?:[A-Za-z]:[\\/]|\/)/.test(install.helper))) throw new VaultClientError("invalid_install");
     const child = spawn(install.command, install.args, { shell: false, detached: true, windowsHide: true, stdio: "ignore", env: serviceEnv(home) });
     let failed = false; child.once("error", () => { failed = true; }); child.unref();
     const deadline = Date.now() + timeout;

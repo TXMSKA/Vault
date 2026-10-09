@@ -1,10 +1,10 @@
 import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, writeFile, rm, readdir, open } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile, rm, readdir, open, stat } from "node:fs/promises";
 import { join, resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import http from "node:http";
 import { startService } from "../src/server.ts";
 import { routes, validateRoutes } from "../src/routes.ts";
@@ -17,15 +17,18 @@ import { dotenv } from "../src/dotenv.ts";
 import { Apps } from "../src/secrets.ts";
 import { defaultRoots } from "../../../test/guard.mjs";
 import { resolveHome } from "../../client/src/paths.ts";
+import { runHelper, runHelperSync } from "../../client/src/helper.ts";
+import { privateDirectory, privateFile } from "../../client/src/private.ts";
+import { foregroundWindow } from "../../cli/src/window.ts";
 import { connect, ensureRunning, findService, VaultClientError, readCapped } from "../../client/dist/index.js";
-import { newEntry, encrypt, decrypt, FileVaultStore, defaultVaultFolder, VaultMemory } from "vault-core";
+import { newEntry, encrypt, decrypt, FileVaultStore, defaultVaultFolder, VaultMemory, helloAvailable } from "vault-core";
 import { main } from "../../cli/src/main.ts";
 
 const parent = resolve(tmpdir()); await mkdir(parent, { recursive: true });
 const scratch = await mkdtemp(join(parent, "service-")), home = join(scratch, "home");
 const originalHome = process.env.VAULT_HOME; process.env.VAULT_HOME = home;
 await import("./privacy-fixture.mjs");
-const services = [], clients = [], detached = new Set(); let checks = 0, stage = "setup", now = 10000, dpapiFailure = false;
+const services = [], clients = [], detached = new Set(); let checks = 0, stage = "setup", now = 10000, dpapiFailure = false, aclFailure = false;
 const password = randomBytes(30).toString("base64"), nextPassword = randomBytes(30).toString("base64"), canary = randomBytes(30).toString("base64"), backupPassword = randomBytes(30).toString("base64");
 const rejects = (operation, code) => assert.rejects(operation, error => error instanceof VaultClientError && error.code === code);
 const wait = ms => new Promise(done => setTimeout(done, ms));
@@ -73,6 +76,87 @@ try {
     } catch { dpapiFailure = true; }
     finally { bytes.fill(0); protectedBytes?.fill(0); opened?.fill(0); }
   } else await assert.rejects(() => dpapi(randomBytes(32)));
+  if (process.platform === "win32") { await assert.rejects(() => dpapi(randomBytes(32), true)); await assert.rejects(() => dpapi(new Uint8Array(0))); checks += 2; }
+
+  stage = "no shell in sources";
+  {
+    const packages = fileURLToPath(new URL("../../", import.meta.url)), found = [], seen = [];
+    const walk = async folder => { for (const item of await readdir(folder, { withFileTypes: true })) { const path = join(folder, item.name); if (item.isDirectory()) await walk(path); else { seen.push(path); if (/powershell/i.test(await readFile(path, "utf8"))) found.push(path); } } };
+    for (const item of await readdir(packages, { withFileTypes: true })) if (item.isDirectory()) await walk(join(packages, item.name, "src"));
+    assert.deepEqual(found, []); assert.equal(seen.some(path => path.endsWith("vault-helper.cs")), true); assert.equal(seen.some(path => path.endsWith("helper.ts")), true); checks += 3;
+  }
+
+  stage = "helper runner output and time limits";
+  {
+    const fakeUrl = pathToFileURL(fileURLToPath(new URL("./fake-helper.mjs", import.meta.url))).href, names = ["VAULT_HELPER", "NODE_OPTIONS", "VAULT_FAKE_HELPER", "VAULT_FAKE_LOG"];
+    // A copy of node stands in for the helper: --import answers, then exits before node looks for its script. An undefined value removes the variable.
+    const fake = async (mode, operation, extra = {}) => {
+      const saved = names.map(name => process.env[name]), values = { VAULT_HELPER: process.execPath, NODE_OPTIONS: `--import=${fakeUrl}`, VAULT_FAKE_HELPER: mode, ...extra };
+      for (const [name, value] of Object.entries(values)) if (value === undefined) delete process.env[name]; else process.env[name] = value;
+      try { return await operation(); } finally { names.forEach((name, i) => { if (saved[i] === undefined) delete process.env[name]; else process.env[name] = saved[i]; }); }
+    };
+    const refused = code => error => error?.name === "VaultClientError" && error.code === code;
+    const record = join(scratch, "fake-record.json"), request = { data: Buffer.from(canary).toString("base64") };
+    assert.deepEqual(await fake("ok", () => runHelper("hello-available", {})), { available: true });
+    assert.deepEqual(await fake("ok", () => runHelperSync("hello-available", {})), { available: true }); checks += 2;
+    for (const mode of ["garbage", "extra", "type", "two-lines", "no-newline", "empty", "array", "nonzero", "huge", "proto", "unknown"]) { await fake(mode, () => assert.rejects(() => runHelper("hello-available", {}), refused("unavailable"))); checks++; }
+    for (const mode of ["garbage", "extra", "nonzero", "huge"]) { await fake(mode, () => assert.throws(() => runHelperSync("hello-available", {}), refused("unavailable"))); checks++; }
+    const hang = join(scratch, "fake-hang.pid"), started = Date.now();
+    for (const call of [() => assert.rejects(() => runHelper("hello-available", {}, { timeout: 1500 }), refused("unavailable")), () => assert.throws(() => runHelperSync("hello-available", {}, { timeout: 1500 }), refused("unavailable"))]) {
+      await fake("hang", call, { VAULT_FAKE_LOG: hang });
+      const pid = Number(await readFile(hang, "utf8").catch(() => "0")); let alive = pid > 0;
+      for (let i = 0; i < 100 && alive; i++) { try { process.kill(pid, 0); await wait(50); } catch { alive = false; } }
+      assert.equal(alive, false); await rm(hang, { force: true }); checks += 2;
+    }
+    assert.equal(Date.now() - started < 20000, true); checks++;
+    // The values travel on stdin only: the helper sees the verb alone as its argument and the request in its input.
+    await fake("record", async () => { assert.deepEqual(await runHelper("dpapi-protect", request), { data: "AAAA" }); }, { VAULT_FAKE_LOG: record });
+    const observed = JSON.parse(await readFile(record, "utf8"));
+    assert.equal(observed.verb, "dpapi-protect"); assert.deepEqual(observed.args, []); assert.equal(observed.input, `${JSON.stringify(request)}\n`);
+    assert.equal(observed.environment.includes(request.data), false); assert.equal(observed.environment.includes(canary), false); checks += 5;
+    for (const [verb, bad] of [["hello-available", { extra: "1" }], ["dpapi-protect", {}], ["dpapi-protect", { data: "!" }], ["dpapi-protect", { data: "AAAA", extra: "1" }], ["dpapi-protect", { data: 5 }], ["protect-folder", { path: "relative" }], ["check-file", { path: "C:\\a\u0000b" }], ["nonsense", {}]]) { await fake("ok", () => assert.rejects(() => runHelper(verb, bad), refused("invalid"))); checks++; }
+    await fake("ok", () => assert.rejects(() => runHelper("hello-available", {}, { timeout: 0 }), refused("invalid"))); checks++;
+    // Where the helper is: VAULT_HELPER first, then the install record, then the build beside this checkout.
+    await fake("ok", () => assert.rejects(() => runHelper("hello-available", {}), refused("invalid")), { VAULT_HELPER: "relative.exe" }); checks++;
+    const recordHome = join(scratch, "record-home"), installFile = join(recordHome, "install.json"), write = helper => writeFile(installFile, JSON.stringify({ version: 1, command: process.execPath, args: [], helper })), missing = join(scratch, "missing-helper.exe");
+    await mkdir(recordHome); process.env.VAULT_HOME = recordHome;
+    try {
+      await write(missing); await fake("record", () => runHelper("hello-available", {}), { VAULT_FAKE_LOG: record }); assert.equal(JSON.parse(await readFile(record, "utf8")).verb, "hello-available"); await rm(record); checks++;
+      await write(process.execPath); await fake("record", () => runHelper("hello-available", {}), { VAULT_HELPER: undefined, VAULT_FAKE_LOG: record }); assert.equal(JSON.parse(await readFile(record, "utf8")).verb, "hello-available"); checks++;
+      for (const bad of [5, null, "", "relative.exe"]) { await write(bad); await fake("ok", () => assert.rejects(() => runHelper("hello-available", {}), refused("invalid_install")), { VAULT_HELPER: undefined }); checks++; }
+      if (process.platform === "win32") { await write(missing); await fake("ok", async () => assert.equal(typeof (await runHelper("hello-available", {})).available, "boolean"), { VAULT_HELPER: undefined, NODE_OPTIONS: undefined }); checks++; }
+    } finally { process.env.VAULT_HOME = home; }
+  }
+
+  if (process.platform === "win32") {
+    stage = "native helper";
+    const exe = fileURLToPath(new URL("../../helper/bin/vault-helper.exe", import.meta.url)), raw = (args, input) => spawnSync(exe, args, { input, windowsHide: true });
+    const availability = await runHelper("hello-available", {}); assert.equal(typeof availability.available, "boolean"); assert.equal(await helloAvailable(runHelper), availability.available); checks += 2;
+    // A locked or detached desktop has no foreground window, so a refusal is as valid as a handle.
+    try { assert.match(await foregroundWindow(), /^[1-9][0-9]{0,18}$/); } catch (error) { assert.equal(error?.code, "unavailable"); } checks++;
+    const refusals = [
+      [[], "{}\n"], [["bogus"], "{}\n"], [["Hello-Available"], "{}\n"], [["hello-available", "extra"], "{}\n"], [["hello-available", "hello-available"], "{}\n"],
+      [["hello-available"], '{"extra":"1"}\n'], [["hello-available"], "[]\n"], [["hello-available"], "{}\n{}\n"], [["hello-available"], "{} x\n"], [["hello-available"], ""],
+      [["dpapi-protect"], '{"data":"!!!!"}\n'], [["dpapi-protect"], '{"data":"AAAA","data":"AAAA"}\n'], [["dpapi-protect"], '{"data":"AAAA","other":"AAAA"}\n'], [["dpapi-protect"], '{"data":1}\n'],
+      [["dpapi-protect"], `{"data":"${"A".repeat(70000)}"}\n`], [["dpapi-unprotect"], '{"data":"AAAA"}\n'],
+      [["protect-folder"], '{"path":"relative"}\n'], [["protect-folder"], `{"path":${JSON.stringify(join(parent, "missing-helper-folder"))}}\n`], [["check-file"], `{"path":${JSON.stringify(parent)}}\n`],
+    ];
+    for (const [args, input] of refusals) { const result = raw(args, input); assert.equal(result.status !== 0 && result.stdout.length === 0, true); checks++; }
+    const sealedRaw = raw(["dpapi-protect"], '{"data":"AAAA"}\n'); assert.equal(sealedRaw.status, 0); assert.match(sealedRaw.stdout.toString(), /^\{"data":"[A-Za-z0-9+/]+=*"\}\n$/); assert.equal(sealedRaw.stderr.length, 0); checks += 3;
+
+    stage = "real ACL on a temporary folder";
+    const aclRoot = await mkdtemp(join(parent, "helper-")), icacls = join(process.env.SystemRoot || "C:\\Windows", "System32", "icacls.exe"), unsafe = error => error?.code === "unsafe_location";
+    try {
+      const wide = join(aclRoot, "wide.txt"), narrow = join(aclRoot, "narrow.txt");
+      execFileSync(icacls, [aclRoot, "/grant", "*S-1-1-0:(OI)(CI)R"], { windowsHide: true, stdio: "ignore" });
+      await writeFile(wide, "synthetic"); assert.throws(() => privateFile(wide), unsafe);
+      privateDirectory(aclRoot); privateFile(wide);
+      await writeFile(narrow, "synthetic"); privateFile(narrow);
+      execFileSync(icacls, [narrow, "/grant", "*S-1-1-0:R"], { windowsHide: true, stdio: "ignore" }); assert.throws(() => privateFile(narrow), unsafe);
+      assert.throws(() => runHelperSync("protect-folder", { path: join(aclRoot, "missing") }), error => error?.code === "unavailable"); checks += 6;
+    } catch { aclFailure = true; }
+    finally { await rm(aclRoot, { recursive: true, force: true }); }
+  }
   stage = "request boundaries";
   const service = await startService({ home, now: () => now, idleMs: 5000, presenceMs: 60000 }); services.push(service);
   assert.equal(service.server.address().address, "127.0.0.1");
@@ -439,6 +523,10 @@ try {
   { const launcher = await readFile(join(discoveryHome, "bin", process.platform === "win32" ? "vault.cmd" : "vault"), "utf8"); assert.equal(launcher.includes(join("cli", "src", "main.ts")), true); assert.equal(launcher.includes(process.execPath), true); checks += 2; }
   {
     const installPath = join(discoveryHome, "install.json"), install = JSON.parse(await readFile(installPath, "utf8"));
+    // dev-install records the helper where there is one, and a malformed field stops startup as a malformed command does.
+    if (process.platform === "win32") { assert.equal(install.helper, fileURLToPath(new URL("../../helper/bin/vault-helper.exe", import.meta.url))); assert.equal((await stat(install.helper)).isFile(), true); } else assert.equal(install.helper, undefined);
+    for (const bad of [5, null, "", "relative.exe"]) { await writeFile(installPath, JSON.stringify({ ...install, helper: bad })); await rejects(() => ensureRunning(discoveryHome), "invalid_install"); }
+    checks += 5;
     install.args.unshift("--import", new URL("./privacy-fixture.mjs", import.meta.url).href);
     await writeFile(installPath, JSON.stringify(install));
   }
@@ -512,6 +600,7 @@ try {
   console.log(`Vault service: ${checks} checks passed.`);
   // Run the other regressions even when this OS refuses DPAPI, but never count a skip as success.
   if (dpapiFailure) { stage = "DPAPI synthetic round trip"; throw new Error("dpapi_round_trip_failed"); }
+  if (aclFailure) { stage = "real ACL on a temporary folder"; throw new Error("acl_failed"); }
 } catch (error) {
   const cause = ["locked", "unavailable", "busy", "rate_limited", "limited", "not_found", "conflict", "invalid", "internal", "expired", "not_pending"].includes(error?.code) ? error.code : error?.name === "AssertionError" ? "assertion" : "operation";
   console.error(`Vault service check failed at ${stage}: ${cause}.`); throw error;

@@ -20,6 +20,10 @@ no runtime dependencies outside the workspaces.
   runtime dependencies. Apps use this package only.
 - `packages/cli`: the `vault` developer command. Copy follows the system's
   Spanish or English locale. Passwords and recovery keys use hidden prompts.
+- `packages/helper`: `vault-helper.exe`, the one small native program Vault
+  starts on Windows. It does Windows Hello consent and availability, DPAPI,
+  the foreground window, private ACLs and the user Path. Vault starts no
+  shell for any of them.
 
 The core keeps Nebula's format 1 envelope, `nebula-vault:1:*` encryption
 contexts and 600000 PBKDF2 iterations. `env` is an added entry kind; existing
@@ -39,8 +43,15 @@ node packages/cli/src/main.ts dev-install
 node packages/cli/src/main.ts status
 ```
 
-`dev-install` records this checkout's absolute service command and writes a
-`vault` launcher in the data root's `bin/`. On Windows that folder joins the
+`npm run build` also compiles the helper from `packages/helper/src/vault-helper.cs`
+into `packages/helper/bin/vault-helper.exe` (ignored by git). It uses the .NET
+Framework 4 compiler every Windows 10 and 11 includes, `csc.exe` in
+`%SystemRoot%\Microsoft.NET\Framework64\v4.0.30319`, so there is no SDK, package
+or download. Other platforms have no helper and skip the step.
+
+`dev-install` records this checkout's absolute service command, on Windows the
+absolute path of the helper too (the optional `helper` field of `install.json`),
+and writes a `vault` launcher in the data root's `bin/`. On Windows that folder joins the
 user Path; on Linux `~/.local/bin/vault` links to it. With `VAULT_HOME` set
 the Path is left alone and the folder is printed. Open a new terminal after
 installing. The next
@@ -48,6 +59,16 @@ client connection starts it as a hidden detached process with an argument
 array. `status` reports a stopped service without starting it. `serve`
 runs it in the foreground. The workspace's `vault` executable can also be
 used after relinking with `npm install --offline --ignore-scripts`.
+
+The client finds the helper in `VAULT_HELPER` when it is set (tests only), then in
+the `helper` field of `<data root>/install.json`, then beside this checkout. It
+starts it with an argument array holding one fixed verb, writes the request as one
+JSON line on stdin (at most 64 KiB, unknown fields refused) and reads one JSON line
+from stdout (at most 64 KiB, exact keys, a time limit of 15 seconds or 2 minutes
+for Hello consent). Values never reach arguments, the environment, logs or errors.
+The verbs are `hello-available`, `hello-verify`, `dpapi-protect`, `dpapi-unprotect`,
+`foreground-window`, `protect-folder`, `check-file` and `user-path-add`; the core
+receives the runner from the service and never starts a process itself.
 
 Hosts add `"vault-client": "file:../Vault/packages/client"` (adjust the
 path for their layout). They connect in their trusted Node or Electron main
@@ -83,8 +104,8 @@ Linux. `VAULT_HOME` overrides it for tests. Inside are `install.json`,
 `run/service.json`, `run/service.lock`, `secrets/`, `store/`, `logs/` and `bin/`.
 The old core default at `Cosmic/vault` is not migrated automatically.
 
-The service protects directories with private Windows ACLs for the user,
-SYSTEM and Administrators, or `0700` on POSIX. Files use `0600` on POSIX.
+The service protects directories with private Windows ACLs, set and checked by the
+helper, for the user, SYSTEM and Administrators, or `0700` on POSIX. Files use `0600` on POSIX.
 Bootstrap credentials and CLI token files are private; app token hashes
 are stored in `secrets/apps.json` and compared in constant time.
 
@@ -212,7 +233,11 @@ unlock, idle and presence locks, recovery, every import format, encrypted
 backup restoration including chunks, confirmed terminal value access,
 argument-array environment runs, 4096-entry boundaries and idle shutdown
 through an injected clock. Windows tests round-trip synthetic bytes through
-DPAPI without triggering an interactive Hello prompt.
+the helper's DPAPI without triggering an interactive Hello prompt, ask the real helper
+whether Hello is available, apply and check a real ACL on a temporary folder, and
+refuse malformed helper requests. The runner tests use a stand-in that answers with
+bad output or never answers, and a test fails if any file under `packages/*/src` names
+a shell.
 The DPAPI round-trip test is mandatory on Windows; an OS refusal fails the
 suite after the other regressions run. This sandbox currently denies that
 operation, so a successful round trip still needs an unrestricted Windows run.
@@ -225,18 +250,21 @@ per minute. Failed unlocks also use the core's growing delay. Rate state
 is process-local. Errors return a stable code and request ID. Logs contain
 redacted scalar security events and never request bodies or entry values.
 
-Windows Hello uses task 001's desktop verifier with the caller's HWND and
-a service-owned DPAPI wrapper for the current user. `hello.enable` needs
+Windows Hello uses task 001's desktop verifier, now inside the helper, with the
+caller's HWND and a service-owned DPAPI wrapper for the current user. `hello.enable` needs
 the master password; `hello.unlock` requires verification before unwrapping.
 Interactive Hello verification needs a person and a real host window.
 Automated tests never trigger its prompt. Background-process verification with
 a real host window remains to be tested with Tom; master-password unlock is
 the tested interactive path.
 
-The managed Windows sandbox refuses `Set-Acl`. Production fails closed if
-private ACLs cannot be applied. A test-only fixture adapts that OS call solely
-inside synthetic service scratch folders, and is explicitly preloaded by
-tests. Real Windows ACL application needs verification outside this sandbox.
+The managed Windows sandbox refuses the ACL change. Production fails closed if
+private ACLs cannot be applied. A test-only fixture answers the helper's
+`protect-folder` and `check-file` verbs solely inside synthetic service scratch
+folders, and is explicitly preloaded by tests; the real ACL test uses another
+temporary folder and needs an unrestricted Windows run. Hello consent, which needs
+a person, and `user-path-add`, which edits the real user Path, are never called by
+tests.
 POSIX permissions are implemented but were not exercised on Linux here.
 
 ## Not here

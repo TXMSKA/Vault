@@ -11,7 +11,7 @@ export type AppIdentity = { id: string; name: string; kind: "cosmic" | "app" | "
 export type AppView = AppIdentity & { status: "granted" | "pending" | "revoked"; kinds: Kind[]; permissions: "import"[] };
 export type Status = { created: boolean; unlocked: boolean; present: number; idleMs: number };
 export type ServiceRecord = { version: 1; pid: number; port: number; serviceVersion: string; startedAt: string };
-export type InstallRecord = { version: 1; command: string; args: string[] };
+export type InstallRecord = { version: 1; command: string; args: string[]; helper?: string };
 export interface TokenStore { get(): Promise<string | undefined>; set(token: string): Promise<void> }
 export type ConnectOptions = { app: AppIdentity; tokens?: TokenStore; home?: string; startTimeoutMs?: number; heartbeatMs?: number };
 export type ImportFormat = "chrome" | "edge" | "firefox" | "bitwarden" | "1password" | "keepass";

@@ -7,6 +7,7 @@ import { access, chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, un
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as vault from "../dist/index.js";
+import { runHelper } from "../../client/dist/helper.js";
 
 const parent = resolve(tmpdir()); await mkdir(parent, { recursive: true, mode: 0o700 });
 const scratch = await mkdtemp(join(parent, "shared-"));
@@ -212,10 +213,16 @@ try {
   assert.equal(records[0].fields.error, "unavailable");
   log("sample", { [secret]: "private", securityCode: secret, license: secret }); assert.equal(JSON.stringify(records).includes(secret), false);
   assert.throws(() => vault.createLogger(() => { throw new Error(secret); })("sample"), code("unavailable")); checks += 2;
-  const available = await vault.helloAvailable(); assert.equal(typeof available, "boolean");
+  const available = await vault.helloAvailable(runHelper); assert.equal(typeof available, "boolean");
+  // The runner is injected: a stub shows what the core asks for, and that any refusal or failure leaves password unlock as the only path.
+  const asked = [], stub = result => async (verb, request) => { asked.push([verb, request]); if (result instanceof Error) throw result; return result; };
+  assert.equal(await vault.helloAvailable(stub({ available: true })), process.platform === "win32");
+  assert.equal(await vault.helloAvailable(stub({ available: false })), false); assert.equal(await vault.helloAvailable(stub(new Error("synthetic"))), false);
+  assert.deepEqual(asked, process.platform === "win32" ? [["hello-available", {}], ["hello-available", {}], ["hello-available", {}]] : []); checks += 4;
+  if (process.platform === "win32") { assert.equal(available, (await runHelper("hello-available", {})).available); checks++; }
   let wrapped = { version: 1, blob: randomBytes(32).toString("base64") }, touched = false;
   const hello = vault.createHelloAdapter(store, { protect() { touched = true; throw new Error("unused"); }, unprotect() { touched = true; throw new Error("unused"); } },
-    { async read() { return wrapped; }, async write(value) { wrapped = value; }, async remove() { wrapped = null; } }, memory);
+    { async read() { return wrapped; }, async write(value) { wrapped = value; }, async remove() { wrapped = null; } }, memory, runHelper);
   await hello.disable(); assert.equal(wrapped, null); assert.equal(touched, false); checks += 7;
   console.log(`Vault shared base: ${checks} checks passed; Hello availability: ${available}.`);
 } catch (error) {

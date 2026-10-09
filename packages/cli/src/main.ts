@@ -67,7 +67,7 @@ export async function main(args = process.argv.slice(2), io: CliIO = terminal): 
     if (command === "help" && args.length <= 1) { io.write(`${usage()}\n${copy("vault get <entry-id> [field-id] [--reveal]", "vault get <id-entrada> [id-campo] [--reveal]: consultar un campo")}`); return 0; }
     if (command === "serve" && args.length === 1) { await serve(); return 0; }
     if (command === "dev-install" && args.length === 1) {
-      prepareHome(home); await atomicJson(join(home, "install.json"), { version: 1, command: process.execPath, args: [fileURLToPath(new URL("../../service/src/main.ts", import.meta.url))] });
+      prepareHome(home); await atomicJson(join(home, "install.json"), { version: 1, command: process.execPath, args: [fileURLToPath(new URL("../../service/src/main.ts", import.meta.url))], ...process.platform === "win32" ? { helper: fileURLToPath(new URL("../../helper/bin/vault-helper.exe", import.meta.url)) } : {} });
       const manual = await installLauncher(home, fileURLToPath(import.meta.url));
       io.write(manual ? copy(`Development installation saved. Add ${manual} to PATH to use vault.`, `Se guardó la instalación de desarrollo. Agregá ${manual} al PATH para usar vault.`) : copy("Development installation saved. Open a new terminal to use vault.", "Se guardó la instalación de desarrollo. Abrí una terminal nueva para usar vault.")); return 0;
     }

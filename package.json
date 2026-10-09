@@ -14,7 +14,7 @@
   "scripts": {
     "test": "npm run build && node packages/core/test/run.mjs && node packages/service/test/run.mjs",
     "typecheck": "tsc -p packages/core --noEmit && tsc -p packages/client --noEmit && tsc -p packages/service && tsc -p packages/cli",
-    "build": "tsc -p packages/core && tsc -p packages/client"
+    "build": "node scripts/build-helper.mjs && tsc -p packages/core && tsc -p packages/client"
   },
   "devDependencies": {
     "@types/node": "24.19.0",
