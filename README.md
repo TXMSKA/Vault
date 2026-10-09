@@ -20,6 +20,8 @@ no runtime dependencies outside the workspaces.
   runtime dependencies. Apps use this package only.
 - `packages/cli`: the `vault` developer command. Copy follows the system's
   Spanish or English locale. Passwords and recovery keys use hidden prompts.
+- `packages/app`: Vault's own window, an Electron app: first run, unlock, the
+  prompts that wait for a person and, for now, an empty list. See The app.
 - `packages/helper`: `vault-helper.exe`, the one small native program Vault
   starts on Windows. It does Windows Hello consent and availability, DPAPI,
   the foreground window, private ACLs and the user Path. Vault starts no
@@ -242,6 +244,51 @@ window too, for a person and for an agent, and `vault approve` only says that ap
 there. `--terminal` on those commands keeps the terminal flow, so agents and scripts can rely on
 it; after `--` the word belongs to the command. Without the app nothing changes: the password is
 asked in the terminal and `vault approve` lists the waiting requests.
+
+## The app
+
+`packages/app` is Vault's own window, drawn from the approved board in
+`docs/flows`. Its only dependency from outside the workspaces is `electron`
+44.5.1 (exact, development). `.npmrc` keeps install scripts off, so installing
+does not download the Electron binary: point `ELECTRON_OVERRIDE_DIST_PATH` at an
+Electron 44.5.1 folder, or run `node node_modules/electron/install.js` once.
+`npm run app` never downloads anything.
+
+```
+npm run build
+$env:VAULT_HOME = "$env:TEMP\vault-try"   # a throwaway home, unless the real one is meant
+npm run app
+```
+
+`npm run app` starts the app from this checkout against `VAULT_HOME` (the default
+home when it is not set). The app connects as `vault-app`, and the client starts the
+service from `install.json` as it does for any app, so run `dev-install` first (it
+writes to the same home). Arguments after `--` go to the app; `--prompts` is the one
+the service uses: the window stays hidden until a prompt arrives, and the app closes
+after 30 seconds if no prompt waits and nobody touches it. A second launch, with or
+without it, brings the first window forward. The browser's own files live beside the
+home, in `<home>-app`, never inside the protected folder.
+
+The main process alone talks to the service. The window is a frameless 920 by 640
+page served from `app://vault/` (no other address loads) under a strict
+Content-Security-Policy, with context isolation and the sandbox on, and it reaches the
+main process only through the frozen object of `src/preload`: one function per
+operation, each checked key by key before it runs. Passwords and recovery keys cross it
+only when a person types or reveals them and are never logged. Language and theme
+follow the settings (`system` follows the operating system). The screens are in
+`src/renderer`, in plain TypeScript and DOM; the colours, sizes and type are the
+board's, and the fonts (Inter, Space Grotesk and JetBrains Mono, all OFL) are served
+from the app.
+
+`npm test` covers the window's pure parts and its link to a real service. The whole
+app, window included, is driven by an Electron check that needs a built app and an
+Electron folder. It uses a temporary home and a stand-in for Windows Hello, and writes
+a screenshot of each screen in the dark and the light theme to `build/screens`:
+
+```
+$env:ELECTRON_OVERRIDE_DIST_PATH = "<Electron 44.5.1 folder>"
+& "$env:ELECTRON_OVERRIDE_DIST_PATH\electron.exe" packages\app\test\smoke.cjs
+```
 
 ## CLI
 

@@ -2,7 +2,7 @@
 import { open, rm } from "node:fs/promises";
 import { resolve, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { connect, findService, installedApp, resolveHome, readCapped, VaultClientError } from "../../client/src/index.ts";
+import { connect, findService, installedApp, resolveHome, readCapped, recoveryKit, VaultClientError } from "../../client/src/index.ts";
 import type { Client, ImportFormat, Backup } from "../../client/src/types.ts";
 import { atomicJson } from "../../client/src/files.ts";
 import { prepareHome } from "../../client/src/private.ts";
@@ -63,7 +63,7 @@ async function kit(filename: string, operation: () => Promise<{ recovery: string
   const file = await open(resolve(filename), "wx", 0o600); let saved = false;
   try {
     const result = await operation();
-    await file.writeFile(`VAULT\nRecovery kit / Kit de recuperación\n\nRecovery key / Clave de recuperación:\n${result.recovery}\n\nKeep this kit offline in a safe place. It can replace your master password.\nGuardá este kit fuera de línea en un lugar seguro. Permite reemplazar la contraseña maestra.\n\nMaster password / Contraseña maestra: ______________________________\n`); await file.sync(); saved = true;
+    await file.writeFile(recoveryKit(result.recovery)); await file.sync(); saved = true;
   } finally { await file.close(); if (!saved) await rm(resolve(filename), { force: true }); }
 }
 export async function main(args = process.argv.slice(2), io: CliIO = terminal): Promise<number> {

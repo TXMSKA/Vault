@@ -1,0 +1,10 @@
+{
+  "name": "vault-app", "version": "0.1.0", "private": true, "type": "module", "main": "dist/main/main.js",
+  "dependencies": { "vault-client": "file:../client", "vault-core": "file:../core" },
+  "devDependencies": { "electron": "44.5.1" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && node scripts/assets.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "start": "node scripts/start.mjs", "test": "node test/run.mjs"
+  }
+}

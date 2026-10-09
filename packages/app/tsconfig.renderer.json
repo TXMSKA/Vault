@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "src/renderer", "outDir": "dist/renderer", "module": "ES2022", "moduleResolution": "Bundler", "lib": ["ES2023", "DOM", "DOM.Iterable"], "types": [] },
+  "include": ["src/renderer", "src/shared"]
+}

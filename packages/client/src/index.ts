@@ -9,9 +9,10 @@ import { VaultClientError } from "./errors.ts";
 import { isSettings } from "./settings.ts";
 import { isPromptId, isReason } from "./prompts.ts";
 import { installedApp } from "./app.ts";
+import { recoveryKit } from "./kit.ts";
 import type { AppView, Backup, Client, ConnectOptions, EntryRow, EnvImportCount, ImportCount, InstallRecord, LoginSummary, Prompt, PromptState, PromptTicket, RunProgress, RunSummary, ServiceRecord, Settings, Status, SyncStatus, SyncConflict, TokenStore } from "./types.ts";
 export type * from "./types.ts";
-export { VaultClientError, resolveHome, readCapped, FILE_CAP, installedApp };
+export { VaultClientError, resolveHome, readCapped, FILE_CAP, installedApp, recoveryKit };
 const pause = (ms: number) => new Promise<void>(done => setTimeout(done, ms));
 async function request<T>(record: ServiceRecord, method: string, route: string, auth?: string, body?: unknown, timeout = 15000): Promise<T> {
   try {

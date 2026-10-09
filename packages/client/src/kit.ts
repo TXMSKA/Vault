@@ -1,0 +1,2 @@
+/** The plain-text recovery kit that `vault create --kit` and the Vault app save: the recovery key, in both languages, and a line to write the master password on. */
+export const recoveryKit = (recovery: string) => `VAULT\nRecovery kit / Kit de recuperación\n\nRecovery key / Clave de recuperación:\n${recovery}\n\nKeep this kit offline in a safe place. It can replace your master password.\nGuardá este kit fuera de línea en un lugar seguro. Permite reemplazar la contraseña maestra.\n\nMaster password / Contraseña maestra: ______________________________\n`;
