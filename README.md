@@ -24,6 +24,8 @@ no runtime dependencies outside the workspaces.
   starts on Windows. It does Windows Hello consent and availability, DPAPI,
   the foreground window, private ACLs and the user Path. Vault starts no
   shell for any of them.
+- `assets/icon`: the app icon, a brass keyhole on a steel field, as SVG and
+  512 and 1024 px PNG. Other documents and repositories take it from here.
 
 The core keeps Nebula's format 1 envelope, `nebula-vault:1:*` encryption
 contexts and 600000 PBKDF2 iterations. `env` is an added entry kind; existing
