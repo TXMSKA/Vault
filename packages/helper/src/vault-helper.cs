@@ -58,7 +58,8 @@ static class VaultHelper {
       case "foreground-window": Request(); return "{\"hwnd\":" + Quote(Foreground()) + "}";
       case "protect-folder": ProtectFolder(Absolute(Request("path")["path"])); return "{\"ok\":true}";
       case "check-file": CheckFile(Absolute(Request("path")["path"])); return "{\"ok\":true}";
-      case "user-path-add": return "{\"changed\":" + (AddToUserPath(Absolute(Request("path")["path"])) ? "true" : "false") + "}";
+      case "user-path-add": return "{\"changed\":" + (ChangeUserPath(Absolute(Request("path")["path"]), true) ? "true" : "false") + "}";
+      case "user-path-remove": return "{\"changed\":" + (ChangeUserPath(Absolute(Request("path")["path"]), false) ? "true" : "false") + "}";
       default: throw new Refused();
     }
   }
@@ -154,8 +155,9 @@ static class VaultHelper {
     }
   }
 
-  // Reads the user Path without expanding it, keeps its kind, then tells running programs so new terminals see it.
-  static bool AddToUserPath(string folder) {
+  // Reads the user Path without expanding it, keeps its kind, adds or removes the folder, then tells running programs so new terminals see it.
+  // The answer is whether the Path changed: adding a folder already there, or removing one that is not, writes nothing.
+  static bool ChangeUserPath(string folder, bool add) {
     if (folder.IndexOf(';') >= 0) throw new Refused();
     using (RegistryKey key = Registry.CurrentUser.OpenSubKey("Environment", true)) {
       if (key == null) throw new InvalidOperationException();
@@ -166,12 +168,18 @@ static class VaultHelper {
       if (current == null || kind != RegistryValueKind.String && kind != RegistryValueKind.ExpandString) throw new InvalidOperationException();
       List<string> parts = new List<string>();
       foreach (string part in current.Split(';')) if (part.Length > 0) parts.Add(part);
-      foreach (string part in parts) if (string.Equals(part, folder, StringComparison.OrdinalIgnoreCase)) return false;
-      parts.Add(folder);
+      if (!EditPath(parts, folder, add)) return false;
       key.SetValue("Path", string.Join(";", parts.ToArray()), kind);
     }
     UIntPtr ignored; SendMessageTimeout(new IntPtr(0xffff), 0x001A, UIntPtr.Zero, "Environment", 0x0002, 5000, out ignored);
     return true;
+  }
+
+  // The folder is matched without regard to case, as Windows matches paths. True when the list changed.
+  static bool EditPath(List<string> parts, string folder, bool add) {
+    bool found = parts.Exists(delegate(string part) { return string.Equals(part, folder, StringComparison.OrdinalIgnoreCase); });
+    if (add) { if (found) return false; parts.Add(folder); return true; }
+    return parts.RemoveAll(delegate(string part) { return string.Equals(part, folder, StringComparison.OrdinalIgnoreCase); }) > 0;
   }
 
   // Arguments.

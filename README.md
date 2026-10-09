@@ -24,6 +24,8 @@ no runtime dependencies outside the workspaces.
   starts on Windows. It does Windows Hello consent and availability, DPAPI,
   the foreground window, private ACLs and the user Path. Vault starts no
   shell for any of them.
+- `scripts`: the helper build, the staging script and the console packaging
+  with `install.ps1`; see Install.
 - `assets/icon`: the app icon, a brass keyhole on a steel field, as SVG and
   512 and 1024 px PNG. Other documents and repositories take it from here.
 
@@ -35,7 +37,8 @@ kinds and sealed data stay compatible. Nebula's migration is a later task.
 
 The development dependencies are already installed. Build before starting
 so the service can load the core. The service and CLI run TypeScript using
-Node's type stripping; the core and client build to `dist/`.
+Node's type stripping, straight from the sources. All four packages also build
+to JavaScript in `dist/`, which is what an installed copy runs.
 
 ```
 npm run typecheck
@@ -76,8 +79,9 @@ JSON line on stdin (at most 64 KiB, unknown fields refused) and reads one JSON l
 from stdout (at most 64 KiB, exact keys, a time limit of 15 seconds or 2 minutes
 for Hello consent). Values never reach arguments, the environment, logs or errors.
 The verbs are `hello-available`, `hello-verify`, `dpapi-protect`, `dpapi-unprotect`,
-`foreground-window`, `protect-folder`, `check-file` and `user-path-add`; the core
-receives the runner from the service and never starts a process itself.
+`foreground-window`, `protect-folder`, `check-file`, `user-path-add` and
+`user-path-remove`; the core receives the runner from the service and never starts
+a process itself.
 
 Hosts add `"vault-client": "file:../Vault/packages/client"` (adjust the
 path for their layout). They connect in their trusted Node or Electron main
@@ -104,6 +108,48 @@ The client provides `status`, `create`, `unlock`, `recover`, `lock`,
 apps can supply their own protected token storage. Never put this client
 or its tokens in a renderer or browser page. Do not retry a failed write
 blindly: a dropped response can follow a completed write.
+
+## Install
+
+After `npm run build`, `node scripts/stage.mjs [folder]` assembles the installable
+layout in `build/stage` (git ignores `build/`). It holds `node.exe`, a copy of the
+Node that runs the script, so CI pins the version; `lib/` with the compiled
+JavaScript of the core, client, service and CLI, the one `vault-core` link Node
+needs and `lib/helper/bin/vault-helper.exe`; `LICENSE`; and this README. No
+TypeScript and no development dependency goes in. `node scripts/package-console.mjs`
+then fills `build/release` with `vault-x64.zip` (the stage), `install.ps1` and
+`SHA256SUMS.txt`, which has a SHA-256 and a file name per line.
+
+People install from a PowerShell prompt with one line:
+
+```
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/TXMSKA/Vault/releases/latest/download/install.ps1 | iex"
+```
+
+`install.ps1` runs in Windows PowerShell 5.1 and PowerShell 7. It downloads
+`SHA256SUMS.txt` and `vault-x64.zip` from the latest GitHub release (a saved copy
+run as `.\install.ps1 -Version 0.1.0` takes that release instead), stops when the
+zip does not match its sum, unpacks it into `%LOCALAPPDATA%\Programs\Vault` and
+runs `vault install` from there. A copy already in that folder first runs its own
+`vault uninstall`, which keeps the vault. The script never asks for or handles a
+password: the vault is created afterwards with `vault create`.
+
+`vault install` runs from an installed copy and refuses anywhere else. It writes
+`install.json` with the copy's `node.exe` as the command, its service as the only
+argument, its helper and, when `Vault.exe` sits beside `node.exe` or `--app <path>`
+names a file, that app in the optional `app` field (an absolute path, checked like
+`helper`). It then writes the launcher and joins the user Path as `dev-install`
+does, pointing at the installed `node.exe`, and asks for a new terminal.
+`vault uninstall` ends a running service (`run/service.json` names it, and
+`/v1/health` must answer with that process), removes `bin/` and its Path entry
+through the helper's `user-path-remove`, deletes `install.json` and keeps the
+vault data. `vault uninstall --remove-data` also deletes the whole data folder
+after a typed `DELETE` (`BORRAR` in Spanish) at a terminal, and refuses without
+one. With `VAULT_HOME` set, neither command touches the Path and both print the
+folder. The program folder itself stays until it is deleted by hand.
+
+The installer with the Vault app comes later; this console way is the one that
+exists now.
 
 ## Storage and access
 
@@ -272,14 +318,16 @@ private ACLs cannot be applied. A test-only fixture answers the helper's
 `protect-folder` and `check-file` verbs solely inside synthetic service scratch
 folders, and is explicitly preloaded by tests; the real ACL test uses another
 temporary folder and needs an unrestricted Windows run. Hello consent, which needs
-a person, and `user-path-add`, which edits the real user Path, are never called by
-tests.
+a person, and `user-path-add` and `user-path-remove`, which edit the real user Path, are
+never called by tests: install and uninstall tests set `VAULT_HOME`, which leaves the
+Path alone, and the helper tests send those verbs only requests it refuses before
+opening the registry.
 POSIX permissions are implemented but were not exercised on Linux here.
 
 ## Not here
 
-The small Vault app, host interfaces, installers, startup with
-the computer and Nebula's migration are later tasks. Hosts own clipboard
+The small Vault app, host interfaces, the installer that carries the app,
+startup with the computer and Nebula's migration are later tasks. Hosts own clipboard
 policy and their UI. There is no backup scheduler. Log retention and alerts
 have not been decided. The final joint security audit with Lyra remains a
 separate audit; the task's relevant safeguards are covered here by tests.

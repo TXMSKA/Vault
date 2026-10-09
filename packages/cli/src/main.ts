@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { open, rm } from "node:fs/promises";
-import { resolve, join } from "node:path";
+import { resolve, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { connect, findService, resolveHome, readCapped, VaultClientError } from "../../client/src/index.ts";
 import type { Client, ImportFormat, Backup } from "../../client/src/types.ts";
@@ -12,9 +12,10 @@ import { hiddenPrompt } from "./prompt.ts";
 import { AGENTS, approve, run, runOptions, visible } from "./run.ts";
 import { copy, yes } from "./copy.ts";
 import { installLauncher } from "./launcher.ts";
+import { appFile, install, layout, uninstall } from "./install.ts";
 const usage = () => copy(
-  "vault status\nvault create --kit <file.txt>\nvault unlock\nvault recover --kit <file.txt>\nvault lock\nvault apps [allow|revoke <id>]\nvault run --project <name> [--agent <id>] -- <command> [args...]\nvault run --project <name> [--agent <id>] --batch <file.json>\nvault run --attach <request> [--agent <id>]\nvault approve\nvault reject <request>\nvault import <file> --from chrome|edge|firefox|bitwarden|1password|keepass\nvault import <file.env> --from dotenv --project <name>\nvault export <file>\nvault restore <file>\nvault sync status\nvault sync setup <folder>\nvault sync join <folder> [--recovery]\nvault sync now\nvault sync conflicts\nvault sync restore <id>\nvault sync dismiss <id>\nvault sync leave\nvault dev-install\nvault serve",
-  "vault status: consultar el estado\nvault create --kit <archivo.txt>: crear la bóveda y guardar el kit\nvault unlock: desbloquear\nvault recover --kit <archivo.txt>: recuperar y guardar un kit nuevo\nvault lock: bloquear\nvault apps [allow|revoke <id>]: listar, permitir o revocar apps\nvault run --project <nombre> [--agent <id>] -- <comando> [args...]: pedir que se ejecute con las variables del proyecto\nvault run --project <nombre> [--agent <id>] --batch <archivo.json>: pedir varios comandos juntos\nvault run --attach <pedido> [--agent <id>]: volver a seguir un pedido\nvault approve: ver los pedidos que esperan y aprobarlos o rechazarlos\nvault reject <pedido>: rechazar un pedido o detenerlo\nvault import <archivo> --from chrome|edge|firefox|bitwarden|1password|keepass: importar\nvault import <archivo.env> --from dotenv --project <nombre>: guardar las variables de un proyecto\nvault export <archivo>: guardar una copia cifrada\nvault restore <archivo>: restaurar una copia cifrada\nvault sync status: consultar la sincronización\nvault sync setup <carpeta>: configurar la carpeta compartida\nvault sync join <carpeta> [--recovery]: unir esta computadora\nvault sync now: sincronizar ahora\nvault sync conflicts: ver los conflictos\nvault sync restore <id>: restaurar una versión guardada\nvault sync dismiss <id>: descartar una versión guardada\nvault sync leave: dejar de sincronizar\nvault dev-install: guardar la instalación de desarrollo\nvault serve: ejecutar el servicio");
+  "vault status\nvault create --kit <file.txt>\nvault unlock\nvault recover --kit <file.txt>\nvault lock\nvault apps [allow|revoke <id>]\nvault run --project <name> [--agent <id>] -- <command> [args...]\nvault run --project <name> [--agent <id>] --batch <file.json>\nvault run --attach <request> [--agent <id>]\nvault approve\nvault reject <request>\nvault import <file> --from chrome|edge|firefox|bitwarden|1password|keepass\nvault import <file.env> --from dotenv --project <name>\nvault export <file>\nvault restore <file>\nvault sync status\nvault sync setup <folder>\nvault sync join <folder> [--recovery]\nvault sync now\nvault sync conflicts\nvault sync restore <id>\nvault sync dismiss <id>\nvault sync leave\nvault install [--app <path>]\nvault uninstall [--remove-data]\nvault dev-install\nvault serve",
+  "vault status: consultar el estado\nvault create --kit <archivo.txt>: crear la bóveda y guardar el kit\nvault unlock: desbloquear\nvault recover --kit <archivo.txt>: recuperar y guardar un kit nuevo\nvault lock: bloquear\nvault apps [allow|revoke <id>]: listar, permitir o revocar apps\nvault run --project <nombre> [--agent <id>] -- <comando> [args...]: pedir que se ejecute con las variables del proyecto\nvault run --project <nombre> [--agent <id>] --batch <archivo.json>: pedir varios comandos juntos\nvault run --attach <pedido> [--agent <id>]: volver a seguir un pedido\nvault approve: ver los pedidos que esperan y aprobarlos o rechazarlos\nvault reject <pedido>: rechazar un pedido o detenerlo\nvault import <archivo> --from chrome|edge|firefox|bitwarden|1password|keepass: importar\nvault import <archivo.env> --from dotenv --project <nombre>: guardar las variables de un proyecto\nvault export <archivo>: guardar una copia cifrada\nvault restore <archivo>: restaurar una copia cifrada\nvault sync status: consultar la sincronización\nvault sync setup <carpeta>: configurar la carpeta compartida\nvault sync join <carpeta> [--recovery]: unir esta computadora\nvault sync now: sincronizar ahora\nvault sync conflicts: ver los conflictos\nvault sync restore <id>: restaurar una versión guardada\nvault sync dismiss <id>: descartar una versión guardada\nvault sync leave: dejar de sincronizar\nvault install [--app <ruta>]: instalar Vault desde esta copia\nvault uninstall [--remove-data]: desinstalar Vault y conservar los datos, o borrarlos también\nvault dev-install: guardar la instalación de desarrollo\nvault serve: ejecutar el servicio");
 const messages: Record<string, [string, string]> = {
   sync_existing: ["This computer already has a vault. Export and restore it instead.", "Esta computadora ya tiene una bóveda. Exportala y restaurala."],
   sync_unconfigured: ["Set up sync first.", "Primero configurá la sincronización."],
@@ -29,6 +30,8 @@ const messages: Record<string, [string, string]> = {
   invalid: ["Invalid input. Run vault help.", "Revisá los datos. Ejecutá vault help."],
   unsafe_location: ["The data location cannot be made private.", "No se pudo proteger la carpeta de datos."],
   path_failed: ["The vault command could not be added to PATH.", "No se pudo agregar el comando vault al PATH."],
+  path_remove_failed: ["The vault command could not be removed from PATH.", "No se pudo quitar el comando vault del PATH."],
+  not_packaged: ["Run vault install from an installed copy of Vault.", "Ejecutá vault install desde una copia instalada de Vault."],
   limited: ["The limit was reached. Try again later.", "Se alcanzó el límite. Volvé a intentar más tarde."],
   rate_limited: ["Too many requests. Try again later.", "Demasiadas solicitudes. Volvé a intentar más tarde."],
   conflict: ["The data changed or already exists.", "Los datos cambiaron o ya existen."],
@@ -67,9 +70,22 @@ export async function main(args = process.argv.slice(2), io: CliIO = terminal): 
     if (command === "help" && args.length <= 1) { io.write(`${usage()}\n${copy("vault get <entry-id> [field-id] [--reveal]", "vault get <id-entrada> [id-campo] [--reveal]: consultar un campo")}`); return 0; }
     if (command === "serve" && args.length === 1) { await serve(); return 0; }
     if (command === "dev-install" && args.length === 1) {
-      prepareHome(home); await atomicJson(join(home, "install.json"), { version: 1, command: process.execPath, args: [fileURLToPath(new URL("../../service/src/main.ts", import.meta.url))], ...process.platform === "win32" ? { helper: fileURLToPath(new URL("../../helper/bin/vault-helper.exe", import.meta.url)) } : {} });
+      prepareHome(home); await atomicJson(join(home, "install.json"), { version: 1, command: process.execPath, args: [fileURLToPath(new URL(`../../service/src/main${extname(import.meta.url)}`, import.meta.url))], ...process.platform === "win32" ? { helper: fileURLToPath(new URL("../../helper/bin/vault-helper.exe", import.meta.url)) } : {} });
       const manual = await installLauncher(home, fileURLToPath(import.meta.url));
       io.write(manual ? copy(`Development installation saved. Add ${manual} to PATH to use vault.`, `Se guardó la instalación de desarrollo. Agregá ${manual} al PATH para usar vault.`) : copy("Development installation saved. Open a new terminal to use vault.", "Se guardó la instalación de desarrollo. Abrí una terminal nueva para usar vault.")); return 0;
+    }
+    if (command === "install" && (args.length === 1 || args.length === 3 && sub === "--app")) {
+      const place = layout(); if (!place) throw new VaultClientError("not_packaged");
+      const manual = await install(home, place, args.length === 3 ? appFile(third) : undefined);
+      io.write(manual ? copy(`Vault is installed. Add ${manual} to PATH to use vault.`, `Vault quedó instalado. Agregá ${manual} al PATH para usar vault.`) : copy("Vault is installed. Open a new terminal to use vault.", "Vault quedó instalado. Abrí una terminal nueva para usar vault.")); return 0;
+    }
+    if (command === "uninstall" && (args.length === 1 || args.length === 2 && sub === "--remove-data")) {
+      const wipe = args.length === 2, word = copy("DELETE", "BORRAR");
+      if (wipe && !io.isTTY()) throw new VaultClientError("terminal_required");
+      if (wipe && (await io.ask(copy(`This deletes ${visible(home)}, with your vault and all its data, for good. Type ${word} to continue: `, `Esto borra ${visible(home)}, con tu bóveda y todos sus datos, para siempre. Escribí ${word} para seguir: `))).trim() !== word) throw new VaultClientError("cancelled");
+      const manual = await uninstall(home, wipe);
+      io.write(wipe ? copy("Vault is uninstalled and its data deleted.", "Se desinstaló Vault y se borraron sus datos.") : copy("Vault is uninstalled. Your data was kept.", "Se desinstaló Vault. Se conservaron tus datos."));
+      if (manual) io.write(copy(`Remove ${manual} from PATH if you added it.`, `Quitá ${manual} del PATH si lo agregaste.`)); return 0;
     }
     if (command === "status" && args.length === 1 && !await findService(home)) { io.write(copy("Vault is stopped.", "Vault está detenido.")); return 0; }
     const options = command === "run" ? runOptions(args, appIdPattern) : undefined, dotenv = command === "import" && args.length === 6 && third === "--from" && args[3] === "dotenv" && args[4] === "--project";

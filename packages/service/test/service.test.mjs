@@ -2,7 +2,7 @@ import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile, rm, readdir, open, stat } from "node:fs/promises";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve, dirname, parse, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import http from "node:http";
@@ -20,6 +20,7 @@ import { resolveHome } from "../../client/src/paths.ts";
 import { runHelper, runHelperSync } from "../../client/src/helper.ts";
 import { privateDirectory, privateFile } from "../../client/src/private.ts";
 import { foregroundWindow } from "../../cli/src/window.ts";
+import { layout, uninstall } from "../../cli/src/install.ts";
 import { connect, ensureRunning, findService, VaultClientError, readCapped } from "../../client/dist/index.js";
 import { newEntry, encrypt, decrypt, FileVaultStore, defaultVaultFolder, VaultMemory, helloAvailable } from "vault-core";
 import { main } from "../../cli/src/main.ts";
@@ -99,6 +100,8 @@ try {
     const record = join(scratch, "fake-record.json"), request = { data: Buffer.from(canary).toString("base64") };
     assert.deepEqual(await fake("ok", () => runHelper("hello-available", {})), { available: true });
     assert.deepEqual(await fake("ok", () => runHelperSync("hello-available", {})), { available: true }); checks += 2;
+    // user-path-remove has the same request and answer shape as user-path-add; the stand-in answers, so the user Path is never touched.
+    assert.deepEqual(await fake("ok", () => runHelper("user-path-remove", { path: "C:\\synthetic" })), { changed: false }); checks++;
     for (const mode of ["garbage", "extra", "type", "two-lines", "no-newline", "empty", "array", "nonzero", "huge", "proto", "unknown"]) { await fake(mode, () => assert.rejects(() => runHelper("hello-available", {}), refused("unavailable"))); checks++; }
     for (const mode of ["garbage", "extra", "nonzero", "huge"]) { await fake(mode, () => assert.throws(() => runHelperSync("hello-available", {}), refused("unavailable"))); checks++; }
     const hang = join(scratch, "fake-hang.pid"), started = Date.now();
@@ -114,7 +117,7 @@ try {
     const observed = JSON.parse(await readFile(record, "utf8"));
     assert.equal(observed.verb, "dpapi-protect"); assert.deepEqual(observed.args, []); assert.equal(observed.input, `${JSON.stringify(request)}\n`);
     assert.equal(observed.environment.includes(request.data), false); assert.equal(observed.environment.includes(canary), false); checks += 5;
-    for (const [verb, bad] of [["hello-available", { extra: "1" }], ["dpapi-protect", {}], ["dpapi-protect", { data: "!" }], ["dpapi-protect", { data: "AAAA", extra: "1" }], ["dpapi-protect", { data: 5 }], ["protect-folder", { path: "relative" }], ["check-file", { path: "C:\\a\u0000b" }], ["nonsense", {}]]) { await fake("ok", () => assert.rejects(() => runHelper(verb, bad), refused("invalid"))); checks++; }
+    for (const [verb, bad] of [["hello-available", { extra: "1" }], ["dpapi-protect", {}], ["dpapi-protect", { data: "!" }], ["dpapi-protect", { data: "AAAA", extra: "1" }], ["dpapi-protect", { data: 5 }], ["protect-folder", { path: "relative" }], ["check-file", { path: "C:\\a\u0000b" }], ["user-path-add", { path: "relative" }], ["user-path-remove", {}], ["user-path-remove", { path: "relative" }], ["user-path-remove", { path: "C:\\a\u0000b" }], ["user-path-remove", { path: "C:\\a", extra: "1" }], ["nonsense", {}]]) { await fake("ok", () => assert.rejects(() => runHelper(verb, bad), refused("invalid"))); checks++; }
     await fake("ok", () => assert.rejects(() => runHelper("hello-available", {}, { timeout: 0 }), refused("invalid"))); checks++;
     // Where the helper is: VAULT_HELPER first, then the install record, then the build beside this checkout.
     await fake("ok", () => assert.rejects(() => runHelper("hello-available", {}), refused("invalid")), { VAULT_HELPER: "relative.exe" }); checks++;
@@ -141,7 +144,9 @@ try {
       [["hello-available"], '{"extra":"1"}\n'], [["hello-available"], "[]\n"], [["hello-available"], "{}\n{}\n"], [["hello-available"], "{} x\n"], [["hello-available"], ""],
       [["dpapi-protect"], '{"data":"!!!!"}\n'], [["dpapi-protect"], '{"data":"AAAA","data":"AAAA"}\n'], [["dpapi-protect"], '{"data":"AAAA","other":"AAAA"}\n'], [["dpapi-protect"], '{"data":1}\n'],
       [["dpapi-protect"], `{"data":"${"A".repeat(70000)}"}\n`], [["dpapi-unprotect"], '{"data":"AAAA"}\n'],
-      [["protect-folder"], '{"path":"relative"}\n'], [["protect-folder"], `{"path":${JSON.stringify(join(parent, "missing-helper-folder"))}}\n`], [["check-file"], `{"path":${JSON.stringify(parent)}}\n`],
+      // Both Path verbs refuse these before they open the registry; a path that passed would change the real user Path, so none does.
+      ...["user-path-add", "user-path-remove"].flatMap(verb => [[[verb], '{"path":"relative"}\n'], [[verb], "{}\n"], [[verb], '{"path":"C:\\\\a","extra":"1"}\n'], [[verb], '{"path":"C:\\\\a;b"}\n'], [[verb], '{"path":"\\\\\\\\server\\\\share"}\n'], [[verb], '{"path":"C:\\\\a\\\\..\\\\b"}\n'], [[verb], '{"path":"C:\\\\a\\u0001"}\n']]),
+      [["protect-folder"], '{"path":"relative"}\n'], [["protect-folder"],`{"path":${JSON.stringify(join(parent, "missing-helper-folder"))}}\n`], [["check-file"], `{"path":${JSON.stringify(parent)}}\n`],
     ];
     for (const [args, input] of refusals) { const result = raw(args, input); assert.equal(result.status !== 0 && result.stdout.length === 0, true); checks++; }
     const sealedRaw = raw(["dpapi-protect"], '{"data":"AAAA"}\n'); assert.equal(sealedRaw.status, 0); assert.match(sealedRaw.stdout.toString(), /^\{"data":"[A-Za-z0-9+/]+=*"\}\n$/); assert.equal(sealedRaw.stderr.length, 0); checks += 3;
@@ -529,6 +534,9 @@ try {
     if (process.platform === "win32") { assert.equal(install.helper, fileURLToPath(new URL("../../helper/bin/vault-helper.exe", import.meta.url))); assert.equal((await stat(install.helper)).isFile(), true); } else assert.equal(install.helper, undefined);
     for (const bad of [5, null, "", "relative.exe"]) { await writeFile(installPath, JSON.stringify({ ...install, helper: bad })); await rejects(() => ensureRunning(discoveryHome), "invalid_install"); }
     checks += 5;
+    // The optional app is held to the same rule as the helper. An absolute path is accepted, and the service then starts as it would without one.
+    for (const bad of [5, null, "", "relative.exe"]) { await writeFile(installPath, JSON.stringify({ ...install, app: bad })); await rejects(() => ensureRunning(discoveryHome), "invalid_install"); }
+    install.app = process.execPath; checks += 4;
     install.args.unshift("--import", new URL("./privacy-fixture.mjs", import.meta.url).href);
     await writeFile(installPath, JSON.stringify(install));
   }
@@ -540,6 +548,72 @@ try {
   // A new process takes over a dead lease and starts locked with the same hashed grant.
   stage = "dead lease startup";
   const restarted = await ensureRunning(discoveryHome); detached.add(restarted.pid); assert.notEqual(restarted.pid, first.pid); const restartedClient = await app("vault-app", "cosmic", discoveryHome); assert.equal((await restartedClient.status()).unlocked, false); checks += 9;
+  stage = "installed layout";
+  {
+    // The staging script lays out a copy of Node, the compiled JavaScript, the helper and the licence. None of it is TypeScript or a development dependency.
+    const staged = join(scratch, "stage"), installHome = join(scratch, "installed"), win = process.platform === "win32", installPath = join(installHome, "install.json");
+    const nodeExe = join(staged, win ? "node.exe" : "node"), cliJs = join(staged, "lib", "cli", "src", "main.js"), serviceJs = join(staged, "lib", "service", "src", "main.js"), helperExe = join(staged, "lib", "helper", "bin", "vault-helper.exe");
+    const built = spawnSync(process.execPath, [fileURLToPath(new URL("../../../scripts/stage.mjs", import.meta.url)), staged], { windowsHide: true, encoding: "utf8" });
+    assert.equal(built.status, 0);
+    const names = [], walk = async folder => { for (const item of await readdir(folder, { withFileTypes: true })) { const path = join(folder, item.name); if (item.isDirectory()) await walk(path); else names.push(relative(staged, path).split(sep).join("/")); } };
+    await walk(staged);
+    for (const needed of [win ? "node.exe" : "node", "LICENSE", "README.md", "lib/package.json", "lib/cli/src/main.js", "lib/service/src/main.js", "lib/client/src/index.js", "lib/node_modules/vault-core/package.json", "lib/node_modules/vault-core/dist/index.js"]) assert.equal(names.includes(needed), true);
+    assert.equal(names.some(name => name.endsWith(".ts")), false); assert.equal(names.some(name => /(^|\/)(typescript|@types|undici-types)\//.test(name)), false);
+    assert.equal((await stat(nodeExe)).size, (await stat(process.execPath)).size); checks += 13;
+    if (win) { assert.equal((await stat(helperExe)).size, (await stat(fileURLToPath(new URL("../../helper/bin/vault-helper.exe", import.meta.url)))).size); checks++; }
+    // A development checkout is not an installed copy, and the installed one is found from where it sits.
+    assert.equal(layout(), undefined);
+    assert.deepEqual(layout(pathToFileURL(join(staged, "lib", "cli", "src", "install.js")).href), { root: staged, node: nodeExe, cli: cliJs, service: serviceJs, ...win ? { helper: helperExe } : {} }); checks += 2;
+    // The installed copy runs as a person would run it: its own Node on its own CLI, from another folder, with no terminal. Only the ACL step is answered by the test fixture.
+    const fixture = new URL("./privacy-fixture.mjs", import.meta.url).href, bin = join(installHome, "bin"), launcherPath = join(bin, win ? "vault.cmd" : "vault");
+    const installed = (args, extra = {}) => spawnSync(nodeExe, ["--import", fixture, cliJs, ...args], { cwd: scratch, windowsHide: true, encoding: "utf8", input: "", env: { ...process.env, VAULT_HOME: installHome, LC_ALL: "en", ...extra } });
+    const record = async () => JSON.parse(await readFile(installPath, "utf8"));
+    let result = installed(["status"]); assert.equal(result.status, 0); assert.equal(result.stdout.trim(), "Vault is stopped."); checks += 2;
+
+    const previousHome = process.env.VAULT_HOME, previousLocale = process.env.LC_ALL; process.env.VAULT_HOME = installHome; prompts.length = 0;
+    try {
+      errors.length = 0; assert.equal(await main(["install"], io), 1); assert.deepEqual(errors, ["Run vault install from an installed copy of Vault."]);
+      process.env.LC_ALL = "es"; errors.length = 0; assert.equal(await main(["install"], io), 1); assert.deepEqual(errors, ["Ejecutá vault install desde una copia instalada de Vault."]); process.env.LC_ALL = "en";
+      for (const args of [["install", "x"], ["install", "--app"], ["install", "--app", "a", "b"], ["uninstall", "--keep"], ["uninstall", "--remove-data", "x"]]) assert.equal(await main(args, io), 2);
+      await assert.rejects(() => stat(installHome)); checks += 10;
+
+      stage = "installed layout: install";
+      result = installed(["install"]); assert.equal(result.status, 0); assert.equal(result.stdout, `Vault is installed. Add ${bin} to PATH to use vault.\n`);
+      assert.deepEqual(await record(), { version: 1, command: nodeExe, args: [serviceJs], ...win ? { helper: helperExe } : {} });
+      assert.equal(await readFile(launcherPath, "utf8"), win ? `@setlocal & set "VAULT_LAUNCHER=1" & "${nodeExe}" "${cliJs}" %*\r\n` : `#!/bin/sh\nexec '${nodeExe}' '${cliJs}' "$@"\n`); checks += 4;
+      // The app is recorded when it is named or sits beside the installed copy, and only when it is a file.
+      result = installed(["install", "--app", join(scratch, "missing-app.exe")]); assert.equal(result.status, 2); assert.equal((await record()).app, undefined);
+      result = installed(["install", "--app", nodeExe]); assert.equal(result.status, 0); assert.equal((await record()).app, nodeExe);
+      if (win) { const beside = join(staged, "Vault.exe"); await writeFile(beside, "synthetic"); result = installed(["install"]); assert.equal(result.status, 0); assert.equal((await record()).app, beside); await rm(beside); checks += 2; }
+      result = installed(["install"]); assert.equal(result.status, 0); assert.equal((await record()).app, undefined); checks += 6;
+
+      stage = "installed layout: service";
+      // The recorded command starts the installed service, which resolves vault-core from the installed copy.
+      const entry = await record(); entry.args.unshift("--import", fixture); await writeFile(installPath, JSON.stringify(entry));
+      const running = await ensureRunning(installHome); detached.add(running.pid); assert.equal((await findService(installHome)).pid, running.pid);
+      result = installed(["status"]); assert.equal(result.status, 0); assert.equal(result.stdout.trim(), "Vault is not created."); assert.equal((await findService(installHome)).pid, running.pid); checks += 4;
+      result = installed(["uninstall", "--remove-data"]); assert.equal(result.status, 1); assert.equal(result.stdout, ""); assert.equal(result.stderr.includes("A terminal is required"), true);
+      assert.equal((await findService(installHome)).pid, running.pid); await stat(bin); await stat(installPath); checks += 6;
+
+      stage = "installed layout: uninstall";
+      result = installed(["uninstall"]); assert.equal(result.status, 0); assert.equal(result.stdout, `Vault is uninstalled. Your data was kept.\nRemove ${bin} from PATH if you added it.\n`);
+      await assert.rejects(() => stat(bin)); await assert.rejects(() => stat(installPath)); await stat(join(installHome, "store")); await stat(join(installHome, "secrets", "bootstrap.key"));
+      assert.equal(await findService(installHome), undefined); let alive = true; for (let i = 0; i < 100 && alive; i++) { try { process.kill(running.pid, 0); await wait(50); } catch { alive = false; } }
+      assert.equal(alive, false); detached.delete(running.pid);
+      result = installed(["uninstall"]); assert.equal(result.status, 0); checks += 9;
+
+      stage = "installed layout: remove the data";
+      const asked = [], asking = { ...io, async ask(label) { asked.push(label); return prompts.shift(); } };
+      errors.length = 0; prompts.push("delete"); assert.equal(await main(["uninstall", "--remove-data"], asking), 1); assert.deepEqual(errors, ["Cancelled."]); await stat(installHome);
+      assert.equal(asked[0], `This deletes ${installHome}, with your vault and all its data, for good. Type DELETE to continue: `);
+      process.env.LC_ALL = "es"; errors.length = 0; prompts.push("DELETE"); assert.equal(await main(["uninstall", "--remove-data"], asking), 1); assert.deepEqual(errors, ["Cancelado."]); await stat(installHome);
+      assert.equal(asked[1], `Esto borra ${installHome}, con tu bóveda y todos sus datos, para siempre. Escribí BORRAR para seguir: `); process.env.LC_ALL = "en";
+      output.length = 0; prompts.push(" DELETE "); assert.equal(await main(["uninstall", "--remove-data"], asking), 0); assert.deepEqual(output, ["Vault is uninstalled and its data deleted.", `Remove ${bin} from PATH if you added it.`]); await assert.rejects(() => stat(installHome));
+      result = installed(["install"]); assert.equal(result.status, 0); await stat(installPath);
+      process.env.LC_ALL = "es"; output.length = 0; prompts.push("BORRAR"); assert.equal(await main(["uninstall", "--remove-data"], asking), 0); assert.equal(output[0], "Se desinstaló Vault y se borraron sus datos."); await assert.rejects(() => stat(installHome)); process.env.LC_ALL = "en";
+      assert.equal(asked.length, 4); assert.equal(prompts.length, 0); await assert.rejects(() => uninstall(parse(scratch).root, true), error => error?.code === "invalid"); checks += 19;
+    } finally { process.env.VAULT_HOME = previousHome; if (previousLocale === undefined) delete process.env.LC_ALL; else process.env.LC_ALL = previousLocale; }
+  }
   stage = "locked disconnected shutdown";
   let clock = 0;
   const idleHome = join(scratch, "idle-home"), idle = await startService({ home: idleHome, now: () => clock }); services.push(idle);

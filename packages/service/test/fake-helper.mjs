@@ -6,7 +6,7 @@ import { basename } from "node:path";
 const mode = process.env.VAULT_FAKE_HELPER, log = process.env.VAULT_FAKE_LOG, verb = basename(process.argv[1] ?? "");
 let input = ""; process.stdin.setEncoding("utf8"); process.stdin.on("data", chunk => { input += chunk; });
 await new Promise(done => process.stdin.on("end", done));
-const good = { "hello-available": '{"available":true}\n', "dpapi-protect": '{"data":"AAAA"}\n' }[verb] ?? "{}\n";
+const good = { "hello-available": '{"available":true}\n', "dpapi-protect": '{"data":"AAAA"}\n', "user-path-remove": '{"changed":false}\n' }[verb] ?? "{}\n";
 const outputs = {
   ok: [good, 0], record: [good, 0], garbage: ["not json\n", 0], extra: ['{"available":true,"extra":"x"}\n', 0], type: ['{"available":"yes"}\n', 0],
   "two-lines": ['{"available":true}\n{"available":true}\n', 0], "no-newline": ['{"available":true}', 0], empty: ["", 0], array: ['[{"available":true}]\n', 0],

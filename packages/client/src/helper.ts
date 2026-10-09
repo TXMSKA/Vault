@@ -25,6 +25,7 @@ const calls = {
   "protect-folder": { request: { path: location }, response: { ok: done } },
   "check-file": { request: { path: location }, response: { ok: done } },
   "user-path-add": { request: { path: location }, response: { changed: flag } },
+  "user-path-remove": { request: { path: location }, response: { changed: flag } },
 } satisfies Record<string, { request: Shape; response: Shape }>;
 export type HelperVerb = keyof typeof calls;
 type Typed = { [V in HelperVerb]: { request: Infer<(typeof calls)[V]["request"]>; response: Infer<(typeof calls)[V]["response"]> } };
