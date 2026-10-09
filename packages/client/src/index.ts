@@ -6,9 +6,12 @@ import { resolveHome, appIdPattern, serviceEnv } from "./paths.ts";
 import { privateDirectoryAsync, privateFileAsync } from "./private.ts";
 import { readCapped, FILE_CAP } from "./files.ts";
 import { VaultClientError } from "./errors.ts";
-import type { AppView, Backup, Client, ConnectOptions, EntryRow, EnvImportCount, ImportCount, InstallRecord, LoginSummary, RunProgress, RunSummary, ServiceRecord, Status, SyncStatus, SyncConflict, TokenStore } from "./types.ts";
+import { isSettings } from "./settings.ts";
+import { isPromptId, isReason } from "./prompts.ts";
+import { installedApp } from "./app.ts";
+import type { AppView, Backup, Client, ConnectOptions, EntryRow, EnvImportCount, ImportCount, InstallRecord, LoginSummary, Prompt, PromptState, PromptTicket, RunProgress, RunSummary, ServiceRecord, Settings, Status, SyncStatus, SyncConflict, TokenStore } from "./types.ts";
 export type * from "./types.ts";
-export { VaultClientError, resolveHome, readCapped, FILE_CAP };
+export { VaultClientError, resolveHome, readCapped, FILE_CAP, installedApp };
 const pause = (ms: number) => new Promise<void>(done => setTimeout(done, ms));
 async function request<T>(record: ServiceRecord, method: string, route: string, auth?: string, body?: unknown, timeout = 15000): Promise<T> {
   try {
@@ -94,7 +97,11 @@ export async function connect(options: ConnectOptions): Promise<Client> {
   const heartbeatMs = options.heartbeatMs ?? 20000;
   if (!Number.isSafeInteger(heartbeatMs) || heartbeatMs < 1 || heartbeatMs > 20000) throw new VaultClientError("invalid");
   const timer = holds ? setInterval(() => { if (!closed) void present().catch(() => undefined); }, heartbeatMs) : undefined; timer?.unref();
-  const appPath = (id: string) => { if (!appIdPattern.test(id)) throw new VaultClientError("invalid"); return `/v1/apps/${id}`; };
+  const appId = (id: string) => { if (!appIdPattern.test(id)) throw new VaultClientError("invalid"); return id; };
+  const appPath = (id: string) => `/v1/apps/${appId(id)}`, named = (app?: string) => app === undefined ? {} : { app: appId(app) };
+  const promptId = (id: string) => { if (!isPromptId(id)) throw new VaultClientError("invalid"); return id; };
+  // The long calls wait 25 seconds at the service, so they get more time than the usual 15.
+  const held = 35000;
   return {
     status: () => call<Status>("GET", "/v1/status"), create: password => call("POST", "/v1/create", { password }),
     sync: { status: () => call<SyncStatus>("GET", "/v1/sync"), setup: folder => call<SyncStatus>("POST", "/v1/sync/setup", { folder }, 130000), join: (folder, credentials) => call<SyncStatus>("POST", "/v1/sync/join", { folder, ...credentials }, 130000), now: () => call<SyncStatus>("POST", "/v1/sync/now", {}, 130000), conflicts: () => call<SyncConflict[]>("GET", "/v1/sync/conflicts"), restore: id => call("POST", "/v1/sync/conflicts/restore", { id }), dismiss: id => call("POST", "/v1/sync/conflicts/dismiss", { id }), leave: remove => call("POST", "/v1/sync/leave", { remove }) },
@@ -116,6 +123,15 @@ export async function connect(options: ConnectOptions): Promise<Client> {
     },
     apps: { list: () => call<AppView[]>("GET", "/v1/apps"), self: () => call<AppView>("GET", "/v1/apps/self"), allow: id => call("POST", `${appPath(id)}/allow`, {}), revoke: id => call("POST", `${appPath(id)}/revoke`, {}) },
     // Windows Hello waits for the person, up to two minutes.
-    permissions: { importWithPassword: password => call<AppView>("POST", "/v1/apps/permissions/import", { password }), importWithHello: hwnd => call<AppView>("POST", "/v1/apps/permissions/import/hello", { hwnd }, 130000) },
+    permissions: {
+      importWithPassword: async (password, app) => call<AppView>("POST", "/v1/apps/permissions/import", { password, ...named(app) }), importWithHello: async (hwnd, app) => call<AppView>("POST", "/v1/apps/permissions/import/hello", { hwnd, ...named(app) }, 130000),
+      request: () => call<PromptTicket>("POST", "/v1/apps/permissions/import/request", {}),
+    },
+    settings: { get: () => call<Settings>("GET", "/v1/settings"), async set(value) { if (!isSettings(value)) throw new VaultClientError("invalid"); return call<Settings>("PUT", "/v1/settings", value); } },
+    prompts: {
+      list: () => call<Prompt[]>("GET", "/v1/prompts", undefined, held), dismiss: async id => call("POST", "/v1/prompts/dismiss", { id: promptId(id) }),
+      async unlock(reason) { if (reason !== undefined && !isReason(reason)) throw new VaultClientError("invalid"); return call<PromptTicket>("POST", "/v1/prompts/unlock", reason === undefined ? {} : { reason }); },
+      wait: async id => call<{ state: PromptState }>("GET", `/v1/prompts/wait?id=${encodeURIComponent(promptId(id))}`, undefined, held),
+    },
   };
 }

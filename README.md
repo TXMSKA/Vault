@@ -156,7 +156,7 @@ exists now.
 The data root is `%LOCALAPPDATA%/Cosmic/apps/Vault` on Windows and
 `$XDG_DATA_HOME/Cosmic/apps/Vault` or `~/.local/share/Cosmic/apps/Vault` on
 Linux. `VAULT_HOME` overrides it for tests. Inside are `install.json`,
-`run/service.json`, `run/service.lock`, `secrets/`, `store/`, `logs/` and `bin/`.
+`run/service.json`, `run/service.lock`, `settings.json`, `secrets/`, `store/`, `logs/` and `bin/`.
 The old core default at `Cosmic/vault` is not migrated automatically.
 
 The service protects directories with private Windows ACLs, set and checked by the
@@ -200,18 +200,64 @@ failed multi-entry import or restore can leave some completed writes or
 sealed orphan chunks after an I/O failure; rerunning skips duplicates.
 There is no multi-file transaction or automatic orphan cleanup.
 
+## Settings, prompts and the app
+
+Four settings belong to the person, kept in `<home>/settings.json` (written atomically and
+private like the other files; a missing or unreadable file means the defaults): `idleMinutes`
+(1, 5, 15, 30, 60 or 240; 5 by default), `lockWithLastApp` (true by default), `language`
+(`system`, `en` or `es`) and `theme` (`system`, `dark` or `light`). `GET /v1/settings` and
+`PUT /v1/settings` are for `vault-app` and `vault-cli` only; a change sends all four keys,
+every value is checked and unknown keys are refused. The idle time reaches the key already in
+memory at once. With `lockWithLastApp` true Vault locks when the last app leaves, as before;
+with false it stays unlocked until the idle time runs out. The client has `settings.get()` and
+`settings.set(value)`; `vault settings` prints the four and `vault settings set <key> <value>`
+changes one.
+
+The service keeps what waits for a person in a queue in memory. An *unlock* prompt is created by
+any allowed app or the CLI (`POST /v1/prompts/unlock`, with an optional short plain-text reason)
+and is done when Vault is unlocked by any route. A *run* prompt is a pending agent run, so it
+leaves the queue when it is approved, rejected or expires. A *permission* prompt is an app asking
+for the import permission (`POST /v1/apps/permissions/import/request`); it is done when
+`vault-app` or `vault-cli` grants it by naming the app (the `app` field of the existing
+`permissions/import` calls, after their own password or Hello proof), and the app proving it for
+itself works as before. Each entry has an id, a kind, the asking app, `createdAt`, `expiresAt` and
+a summary that holds no secret value (a run's environment is never in it). Unlock and permission
+prompts expire after five minutes, runs after ten. At most 50 prompts wait in all and 5 per app;
+more answer 429. Prompts never extend the idle time.
+
+`GET /v1/prompts`, for `vault-app` only, answers the waiting list at once or, when it is empty,
+holds the call for up to 25 seconds and then answers the list, possibly empty. `POST
+/v1/prompts/dismiss` turns one down: the asking app hears `cancelled`, a run is rejected and a
+permission is refused. The app that asked follows its prompt with `GET /v1/prompts/wait?id=`
+(also up to 25 seconds; `pending`, `done`, `cancelled` or `expired`) and asks again while it is
+pending. When a prompt is created, no `vault-app` is present and `install.json` names an `app`
+that is an absolute path to an existing file, the service starts it once with `--prompts`
+(detached, no shell, not again within 30 seconds); with no app recorded nothing starts.
+
+With the app installed (`install.json` has `app`), a command that needs Vault unlocked (`unlock`,
+`get`, `import`, `export`, `restore`, and `sync` setup, now, conflicts, restore and dismiss)
+creates an unlock prompt, prints one line and waits for the person to answer it in Vault's window
+instead of asking for the master password in the terminal. `run` waits for its approval in the
+window too, for a person and for an agent, and `vault approve` only says that approvals happen
+there. `--terminal` on those commands keeps the terminal flow, so agents and scripts can rely on
+it; after `--` the word belongs to the command. Without the app nothing changes: the password is
+asked in the terminal and `vault approve` lists the waiting requests.
+
 ## CLI
 
 ```
 vault create --kit <file.txt>
-vault unlock
+vault unlock [--terminal]
 vault recover --kit <file.txt>
 vault lock
 vault status
 vault apps
 vault apps allow <id>
 vault apps revoke <id>
+vault settings
+vault settings set <key> <value>
 vault run --project <name> -- <command> [args...]
+vault approve [--terminal]
 vault get <entry-id> [field-id] [--reveal]
 vault import <file> --from chrome|edge|firefox|bitwarden|1password|keepass
 vault export <file>
@@ -287,7 +333,8 @@ startup, request and grant checks, kind and origin filtering, shared
 unlock, idle and presence locks, recovery, every import format, encrypted
 backup restoration including chunks, confirmed terminal value access,
 argument-array environment runs, 4096-entry boundaries and idle shutdown
-through an injected clock. Windows tests round-trip synthetic bytes through
+through an injected clock, the settings, the prompt queue with its limits and long polls, the
+start of the app (a small fake program), and the CLI's unlock prompts. Windows tests round-trip synthetic bytes through
 the helper's DPAPI without triggering an interactive Hello prompt, ask the real helper
 whether Hello is available, apply and check a real ACL on a temporary folder, and
 refuse malformed helper requests. The runner tests use a stand-in that answers with

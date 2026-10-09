@@ -94,15 +94,16 @@ export async function follow(api: Client, io: CliIO, id: string, wait = pause): 
 }
 /**
  * An agent's run waits for the person, who approves it in their own terminal. A person's own run, typed in a terminal,
- * shows the same request and is approved in place with the master password or Windows Hello.
+ * shows the same request and is approved in place with the master password or Windows Hello. When the Vault app is installed,
+ * every run waits in the app's window instead, and the person's own run is no different from an agent's.
  */
-export async function run(api: Client, io: CliIO, options: RunOptions, agent?: string): Promise<number> {
+export async function run(api: Client, io: CliIO, options: RunOptions, agent?: string, viaApp = false): Promise<number> {
   try {
     if (options.attach !== undefined) return await follow(api, io, options.attach);
     const list = await commands(options);
-    if (agent !== undefined) {
+    if (agent !== undefined || viaApp) {
       const { id } = await api.runs.submit(request(options.project!, list));
-      io.error(copy(`Waiting for approval: the person approves it by running "vault approve" in their own terminal. Request ${id}; it expires in 10 minutes.`, `Esperando aprobación: la persona lo aprueba ejecutando "vault approve" en su propia terminal. Pedido ${id}; vence en 10 minutos.`));
+      io.error(viaApp ? copy(`Waiting for approval in Vault's window. Request ${id}; it expires in 10 minutes.`, `Esperando aprobación en la ventana de Vault. Pedido ${id}; vence en 10 minutos.`) : copy(`Waiting for approval: the person approves it by running "vault approve" in their own terminal. Request ${id}; it expires in 10 minutes.`, `Esperando aprobación: la persona lo aprueba ejecutando "vault approve" en su propia terminal. Pedido ${id}; vence en 10 minutos.`));
       return await follow(api, io, id);
     }
     let password: string | undefined;

@@ -17,6 +17,10 @@ import { Vault } from "./vault.ts";
 import { Lifecycle } from "./lifecycle.ts";
 import { Runs } from "./runs.ts";
 import type { RunLimits } from "./runs.ts";
+import { Prompts } from "./prompts.ts";
+import type { PromptLimits } from "./prompts.ts";
+import { Settings } from "./settings.ts";
+import { appStarter } from "./starter.ts";
 import { helloAdapter } from "./hello.ts";
 import { ServiceError } from "./errors.ts";
 import { Sync, recoverSync } from "./sync.ts";
@@ -33,18 +37,22 @@ async function readBody(request: IncomingMessage, cap: number): Promise<unknown>
     request.once("end", () => { if (size > cap) return; try { done(JSON.parse(Buffer.concat(parts).toString("utf8"))); } catch { fail(new ServiceError("invalid")); } }); request.once("error", () => fail(new ServiceError("invalid"))); request.once("aborted", () => fail(new ServiceError("invalid")));
   });
 }
-export type ServiceOptions = { home?: string; now?: () => number; idleMs?: number; presenceMs?: number; routes?: Route[]; runs?: Partial<RunLimits> };
+// `idleMs` replaces the idle time stored in settings.json for this start; the next change to the settings replaces it.
+export type ServiceOptions = { home?: string; now?: () => number; idleMs?: number; presenceMs?: number; routes?: Route[]; runs?: Partial<RunLimits>; prompts?: Partial<PromptLimits> };
 export async function startService(options: ServiceOptions = {}) {
-  const home = resolve(options.home ?? resolveHome()), now = options.now ?? Date.now, idleMs = options.idleMs ?? 300000;
-  if (!Number.isSafeInteger(idleMs) || idleMs < 1) throw new ServiceError("invalid");
+  const home = resolve(options.home ?? resolveHome()), now = options.now ?? Date.now;
+  if (options.idleMs !== undefined && (!Number.isSafeInteger(options.idleMs) || options.idleMs < 1)) throw new ServiceError("invalid");
   const table = options.routes ?? routes; validateRoutes(table); prepareHome(home);
   const release = acquireLock(home), recordPath = join(home, "run", "service.json");
   const logger = createLogger(record => appendFileSync(join(home, "logs", "events.jsonl"), `${JSON.stringify(record)}\n`, { mode: 0o600 }), now);
-  let bootstrap: string, apps: Apps;
-  try { bootstrap = bootstrapKey(home); apps = new Apps(home); await apps.load(); }
+  let bootstrap: string, apps: Apps; const settings = new Settings(home);
+  try { bootstrap = bootstrapKey(home); apps = new Apps(home); await apps.load(); await settings.load(); }
   catch (error) { release(); throw error; }
   try { recoverSync(home); } catch (error) { release(); throw error; }
-  const vault = new Vault(join(home, "store"), now, idleMs, logger), lifecycle = new Lifecycle(vault.memory, now, options.presenceMs), hello = helloAdapter(home, vault), runs = new Runs(now, options.runs), sync = new Sync(home, vault, now, () => hello.disable(), logger);
+  const idleMs = options.idleMs ?? settings.idleMs, vault = new Vault(join(home, "store"), now, idleMs, logger), lifecycle = new Lifecycle(vault.memory, now, options.presenceMs), hello = helloAdapter(home, vault), runs = new Runs(now, options.runs), sync = new Sync(home, vault, now, () => hello.disable(), logger);
+  const unlocked = () => { try { vault.memory.get(vault.memory.ticket()); return true; } catch { return false; } };
+  const prompts = new Prompts(now, runs, { unlocked, start: appStarter(home, lifecycle, now) }, options.prompts);
+  lifecycle.lockWithLastApp = settings.get().lockWithLastApp; vault.memory.onOpen = () => prompts.opened();
   try { await sync.load(); } catch (error) { vault.memory.lock(); release(); throw error; }
   const limits = new Map<string, { start: number; count: number }>(); let port = 0, pending = 0, stopping: Promise<void> | undefined, queue: Promise<unknown> = Promise.resolve();
   let syncDue = now() + SYNC_PULSE_MS, syncQueued = false;
@@ -74,7 +82,7 @@ export async function startService(options: ServiceOptions = {}) {
       const matchesPath = table.filter(route => { if (!route.path.includes("{id}")) return route.path === url.pathname; const [before, after] = route.path.split("{id}"); if (!url.pathname.startsWith(before) || !url.pathname.endsWith(after)) return false; const value = url.pathname.slice(before.length, -after.length); if (!appIdPattern.test(value)) return false; routeId = value; return true; });
       if (!matchesPath.length) throw new ServiceError("not_found", 404);
       const route = matchesPath.find(route => route.method === request.method); if (!route) throw new ServiceError("method_not_allowed", 405);
-      event = ({ "/v1/sync": "sync_status", "/v1/sync/setup": "sync_setup", "/v1/sync/join": "sync_join", "/v1/sync/now": "sync_now", "/v1/sync/conflicts": "sync_conflicts", "/v1/sync/conflicts/restore": "sync_restore", "/v1/sync/conflicts/dismiss": "sync_dismiss", "/v1/sync/leave": "sync_leave", "/v1/apps/register": "app_register", "/v1/apps/{id}/allow": "app_allow", "/v1/apps/{id}/revoke": "app_revoke", "/v1/apps/permissions/import": "app_permission", "/v1/apps/permissions/import/hello": "app_permission", "/v1/unlock": "unlock", "/v1/recover": "recovery", "/v1/create": "create", "/v1/lock": "lock", "/v1/import": "import", "/v1/import/env": "import", "/v1/export": "export", "/v1/restore": "restore", "/v1/runs": "run_request", "/v1/runs/approve": "run_approve", "/v1/runs/approve/hello": "run_approve", "/v1/runs/reject": "run_reject" } as Record<string, string>)[route.method === "POST" || route.path.startsWith("/v1/sync") ? route.path : ""] ?? "request";
+      event = ({ "/v1/sync": "sync_status", "/v1/sync/setup": "sync_setup", "/v1/sync/join": "sync_join", "/v1/sync/now": "sync_now", "/v1/sync/conflicts": "sync_conflicts", "/v1/sync/conflicts/restore": "sync_restore", "/v1/sync/conflicts/dismiss": "sync_dismiss", "/v1/sync/leave": "sync_leave", "/v1/apps/register": "app_register", "/v1/apps/{id}/allow": "app_allow", "/v1/apps/{id}/revoke": "app_revoke", "/v1/apps/permissions/import": "app_permission", "/v1/apps/permissions/import/hello": "app_permission", "/v1/unlock": "unlock", "/v1/recover": "recovery", "/v1/create": "create", "/v1/lock": "lock", "/v1/import": "import", "/v1/import/env": "import", "/v1/export": "export", "/v1/restore": "restore", "/v1/runs": "run_request", "/v1/runs/approve": "run_approve", "/v1/runs/approve/hello": "run_approve", "/v1/runs/reject": "run_reject", "/v1/apps/permissions/import/request": "permission_request", "/v1/prompts/unlock": "prompt_unlock", "/v1/prompts/dismiss": "prompt_dismiss", "/v1/settings": "settings" } as Record<string, string>)[route.method !== "GET" || route.path.startsWith("/v1/sync") ? route.path : ""] ?? "request";
       const authorization = request.headers.authorization ?? "";
       const authenticate = () => {
         if (route.access === "bootstrap") { if (!authorization.startsWith("Bootstrap ") || !matches(authorization.slice(10), bootstrap)) throw new ServiceError("unauthenticated", 401); }
@@ -90,7 +98,7 @@ export async function startService(options: ServiceOptions = {}) {
       const body = await readBody(request, cap); validateInput(route, body, url.searchParams);
       const execute = async () => {
         authenticate(); lifecycle.check();
-        const result = await route.handle({ app, apps, vault, lifecycle, runs, sync, hello, body: body as Record<string, unknown>, query: url.searchParams, id: routeId, idleMs });
+        const result = await route.handle({ app, apps, vault, lifecycle, runs, sync, prompts, settings, hello, body: body as Record<string, unknown>, query: url.searchParams, id: routeId, idleMs: vault.memory.idle ?? idleMs });
         if (["/v1/unlock", "/v1/unlock/hello", "/v1/recover"].includes(route.path)) scheduleSync(0);
         else if (route.method === "POST" && ["/v1/entries", "/v1/entries/remove", "/v1/import", "/v1/import/env", "/v1/restore", "/v1/sync/conflicts/restore"].includes(route.path)) scheduleSync(SYNC_WRITE_MS);
         authenticate(); lifecycle.check();
@@ -99,8 +107,8 @@ export async function startService(options: ServiceOptions = {}) {
         logger(event, { actor: app?.id ?? "unknown", source: "loopback", outcome: "allowed", requestId }); respond(response, 200, result);
         if (["/v1/unlock", "/v1/unlock/hello", "/v1/recover"].includes(route.path)) checkSync();
       };
-      // Lock and presence departures invalidate in-flight key work immediately.
-      if (["/v1/lock", "/v1/apps/leave", "/v1/apps/present"].includes(route.path)) await execute();
+      // Lock and presence departures invalidate in-flight key work immediately; a long poll must not hold the queue.
+      if (["/v1/lock", "/v1/apps/leave", "/v1/apps/present"].includes(route.path) || route.method === "GET" && route.path.startsWith("/v1/prompts")) await execute();
       else {
         if (pending >= 20) throw new ServiceError("busy", 503); pending++;
         const enqueued = now(); const run = queue.catch(() => undefined).then(async () => { if (now() - enqueued > 30000 || stopping) throw new ServiceError("busy", 503); await execute(); }); queue = run;
@@ -119,7 +127,7 @@ export async function startService(options: ServiceOptions = {}) {
   const timer = setInterval(() => { checkSync(); void checkLifecycle().catch(() => { process.exitCode = 1; }); }, 1000); timer.unref();
   async function shutdown() {
     if (stopping) return stopping;
-    vault.memory.lock(); clearInterval(timer); runs.stopAll();
+    vault.memory.lock(); clearInterval(timer); runs.stopAll(); prompts.stop();
     stopping = (async () => {
       try { server.closeAllConnections(); await new Promise<void>(done => server.close(() => done())); await queue.catch(() => undefined); }
       finally { await rm(recordPath, { force: true }); release(); process.off("SIGINT", signal); process.off("SIGTERM", signal); }
@@ -130,5 +138,5 @@ export async function startService(options: ServiceOptions = {}) {
     await new Promise<void>((done, fail) => { server.once("error", fail); server.listen(0, "127.0.0.1", () => { server.off("error", fail); done(); }); }); port = (server.address() as { port: number }).port;
     await atomicJson(recordPath, { version: 1, pid: process.pid, port, serviceVersion: "0.1.0", startedAt: new Date(now()).toISOString() }); process.on("SIGINT", signal); process.on("SIGTERM", signal);
   } catch (error) { clearInterval(timer); server.close(); release(); throw error; }
-  return { home, port, server, vault, apps, lifecycle, runs, sync, checkSync, checkLifecycle, shutdown };
+  return { home, port, server, vault, apps, lifecycle, runs, sync, prompts, settings, checkSync, checkLifecycle, shutdown };
 }

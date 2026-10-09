@@ -1,5 +1,5 @@
 import "../../../test/guard.mjs";
-try { await import("./service.test.mjs"); await import("./sync.test.mjs"); }
+try { await import("./service.test.mjs"); await import("./sync.test.mjs"); await import("./prompts.test.mjs"); }
 catch (error) {
   // Assertions and crypto errors can include input. Only static test locations reach output.
   console.error(`Vault service tests failed: ${error?.name === "AssertionError" ? "assertion" : "operation"}.`);

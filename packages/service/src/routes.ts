@@ -10,8 +10,12 @@ import { parseImport, formats } from "./imports.ts";
 import { dotenv } from "./dotenv.ts";
 import type { Runs } from "./runs.ts";
 import type { Sync } from "./sync.ts";
+import type { Prompts } from "./prompts.ts";
+import type { Settings } from "./settings.ts";
+import { appIdPattern } from "../../client/src/paths.ts";
+import { isReason } from "../../client/src/prompts.ts";
 import type { ImportFormat } from "../../client/src/types.ts";
-export type Context = { app?: AppView; apps: Apps; vault: Vault; lifecycle: Lifecycle; runs: Runs; sync: Sync; hello: ReturnType<typeof helloAdapter>; body: Record<string, unknown>; query: URLSearchParams; id?: string; idleMs: number };
+export type Context = { app?: AppView; apps: Apps; vault: Vault; lifecycle: Lifecycle; runs: Runs; sync: Sync; prompts: Prompts; settings: Settings; hello: ReturnType<typeof helloAdapter>; body: Record<string, unknown>; query: URLSearchParams; id?: string; idleMs: number };
 export type Route = { method: string; path: string; access: "public" | "bootstrap" | "granted" | "manage" | "run"; keys: string; query?: string; handle(c: Context): unknown | Promise<unknown> };
 const password = (value: unknown) => { const result = text(value, 128); if (result.length < 15) throw new ServiceError("invalid"); return result; };
 const active = (c: Context) => c.lifecycle.requirePresence(c.app!.id);
@@ -35,8 +39,15 @@ async function approve(c: Context, batchId: unknown, proof: () => Promise<unknow
   catch (error) { if (error instanceof ServiceError && ["not_found", "conflict"].includes(error.code)) c.runs.fail(batch.id, error.code); throw error; }
   c.runs.start(batch.id, values); return { ok: true };
 }
-// A permission is recorded only after the same proof that unlocks Vault, so an app cannot give itself one.
-async function permit(c: Context, proof: () => Promise<unknown>) { await proof(); return c.apps.grant(c.app!.id, "import"); }
+// A permission is recorded only after the same proof that unlocks Vault, so an app cannot give itself one without it.
+// vault-app and vault-cli may name the app that receives it, after their own proof; any other caller can only prove for itself.
+async function permit(c: Context, proof: () => Promise<unknown>) {
+  const named = Object.hasOwn(c.body, "app"); if (named && !manages(c.app!)) throw new ServiceError("forbidden", 403);
+  const target = named ? text(c.body.app, 40) : c.app!.id; if (!appIdPattern.test(target)) throw new ServiceError("invalid");
+  await proof(); const app = await c.apps.grant(target, "import"); c.prompts.granted(target); return app;
+}
+const onlyApp = (c: Context) => { if (c.app!.id !== "vault-app") throw new ServiceError("forbidden", 403); };
+const reason = (value: unknown) => { if (value !== undefined && !isReason(value)) throw new ServiceError("invalid"); return value as string | undefined; };
 export const routes: Route[] = [
   { method: "GET", path: "/v1/sync", access: "manage", keys: "", handle: c => c.sync.status() },
   { method: "POST", path: "/v1/sync/setup", access: "manage", keys: "folder", handle: c => { active(c); return c.sync.setup(text(c.body.folder, 4096)); } },
@@ -66,7 +77,7 @@ export const routes: Route[] = [
   { method: "POST", path: "/v1/entries", access: "granted", keys: "entry,expected", handle: c => c.vault.save(c.app!, c.body.entry, c.body.expected) },
   { method: "POST", path: "/v1/entries/remove", access: "granted", keys: "expected,id", handle: c => c.vault.remove(c.app!, c.body.id, c.body.expected) },
   { method: "GET", path: "/v1/env", access: "granted", keys: "", query: "project", handle: c => { if (c.app!.id !== "nova") throw new ServiceError("not_found", 404); return c.vault.environment(c.app!, text(c.query.get("project"), 500)); } },
-  { method: "POST", path: "/v1/runs", access: "run", keys: "commands,cwd,env,project", handle: c => { proposer(c); return c.runs.submit(c.app!, c.body); } },
+  { method: "POST", path: "/v1/runs", access: "run", keys: "commands,cwd,env,project", handle: c => { proposer(c); c.prompts.room(c.app!.id); const result = c.runs.submit(c.app!, c.body); c.prompts.announce(); return result; } },
   { method: "GET", path: "/v1/runs/get", access: "run", keys: "", query: "after,id", handle: c => { proposer(c); return c.runs.progress(c.app!, c.query.get("id"), c.query.get("after"), manages(c.app!)); } },
   { method: "GET", path: "/v1/runs", access: "manage", keys: "", handle: waiting },
   { method: "POST", path: "/v1/runs/approve", access: "manage", keys: "id,password", handle: c => { active(c); return approve(c, c.body.id, () => c.vault.auth.unlock(text(c.body.password, 128))); } },
@@ -78,8 +89,16 @@ export const routes: Route[] = [
   { method: "POST", path: "/v1/restore", access: "manage", keys: "backup,password", handle: c => c.vault.restore(c.app!, c.body.backup, text(c.body.password, 128)) },
   { method: "GET", path: "/v1/apps", access: "manage", keys: "", handle: c => c.apps.list() },
   { method: "GET", path: "/v1/apps/self", access: "granted", keys: "", handle: c => { active(c); return c.apps.list().find(app => app.id === c.app!.id); } },
-  { method: "POST", path: "/v1/apps/permissions/import", access: "granted", keys: "password", handle: c => { active(c); return permit(c, () => c.vault.auth.unlock(text(c.body.password, 128))); } },
-  { method: "POST", path: "/v1/apps/permissions/import/hello", access: "granted", keys: "hwnd", handle: c => { active(c); const hwnd = windowHandle(c.body.hwnd); return permit(c, () => c.hello.unlock(hwnd)); } },
+  { method: "POST", path: "/v1/apps/permissions/import", access: "granted", keys: "password|app,password", handle: c => { active(c); return permit(c, () => c.vault.auth.unlock(text(c.body.password, 128))); } },
+  { method: "POST", path: "/v1/apps/permissions/import/hello", access: "granted", keys: "hwnd|app,hwnd", handle: c => { active(c); const hwnd = windowHandle(c.body.hwnd); return permit(c, () => c.hello.unlock(hwnd)); } },
+  { method: "POST", path: "/v1/apps/permissions/import/request", access: "granted", keys: "", handle: c => { active(c); return c.prompts.permission(c.app!, manages(c.app!) || c.app!.permissions.includes("import")); } },
+  { method: "GET", path: "/v1/settings", access: "manage", keys: "", handle: c => c.settings.get() },
+  // The choices apply to the running service at once: the idle time to the key in memory, the last-app rule to the presences.
+  { method: "PUT", path: "/v1/settings", access: "manage", keys: "idleMinutes,language,lockWithLastApp,theme", handle: async c => { const next = await c.settings.save(c.body); c.vault.memory.setIdle(c.settings.idleMs); c.lifecycle.lockWithLastApp = next.lockWithLastApp; return next; } },
+  { method: "GET", path: "/v1/prompts", access: "manage", keys: "", handle: c => { onlyApp(c); return c.prompts.poll(); } },
+  { method: "GET", path: "/v1/prompts/wait", access: "granted", keys: "", query: "id", handle: c => c.prompts.wait(c.app!, c.query.get("id")) },
+  { method: "POST", path: "/v1/prompts/unlock", access: "granted", keys: "|reason", handle: c => { active(c); return c.prompts.unlock(c.app!, reason(c.body.reason)); } },
+  { method: "POST", path: "/v1/prompts/dismiss", access: "manage", keys: "id", handle: c => { onlyApp(c); c.prompts.dismiss(c.body.id); return { ok: true }; } },
   { method: "POST", path: "/v1/apps/{id}/allow", access: "manage", keys: "", handle: c => c.apps.setStatus(c.id!, "granted") },
   { method: "POST", path: "/v1/apps/{id}/revoke", access: "manage", keys: "", handle: async c => { const app = await c.apps.setStatus(c.id!, "revoked"); c.lifecycle.revoke(app.id); return app; } },
 ];

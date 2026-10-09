@@ -10,6 +10,16 @@ export type LoginSummary = { id: string; version: number; title: string; usernam
 export type AppIdentity = { id: string; name: string; kind: "cosmic" | "app" | "agent" };
 export type AppView = AppIdentity & { status: "granted" | "pending" | "revoked"; kinds: Kind[]; permissions: "import"[] };
 export type Status = { created: boolean; unlocked: boolean; present: number; idleMs: number };
+export type Settings = { idleMinutes: 1 | 5 | 15 | 30 | 60 | 240; lockWithLastApp: boolean; language: "system" | "en" | "es"; theme: "system" | "dark" | "light" };
+export type PromptApp = { id: string; name: string };
+type PromptBase = { id: string; app: PromptApp; createdAt: string; expiresAt: string };
+/** What a prompt tells the person; never a secret value. A run's environment is not part of it. */
+export type Prompt =
+  | PromptBase & { kind: "unlock"; summary: { reason: string | null } }
+  | PromptBase & { kind: "run"; summary: { project: string; cwd: string; commands: string[][] } }
+  | PromptBase & { kind: "permission"; summary: { permission: "import" } };
+export type PromptState = "pending" | "done" | "cancelled" | "expired";
+export type PromptTicket = { id: string; expiresAt: string };
 export type ServiceRecord = { version: 1; pid: number; port: number; serviceVersion: string; startedAt: string };
 export type InstallRecord = { version: 1; command: string; args: string[]; helper?: string; app?: string };
 export interface TokenStore { get(): Promise<string | undefined>; set(token: string): Promise<void> }
@@ -54,5 +64,9 @@ export interface Client {
   export(password: string): Promise<Backup>;
   restore(backup: Backup, password: string): Promise<ImportCount>;
   apps: { list(): Promise<AppView[]>; self(): Promise<AppView>; allow(id: string): Promise<AppView>; revoke(id: string): Promise<AppView> };
-  permissions: { importWithPassword(password: string): Promise<AppView>; importWithHello(hwnd: string): Promise<AppView> };
+  /** `app` names the app that receives the permission; only vault-app and vault-cli may name one, after their own proof. */
+  permissions: { importWithPassword(password: string, app?: string): Promise<AppView>; importWithHello(hwnd: string, app?: string): Promise<AppView>; request(): Promise<PromptTicket> };
+  settings: { get(): Promise<Settings>; set(value: Settings): Promise<Settings> };
+  /** `list` (vault-app only) and `wait` (the app that asked) hold the call for up to 25 seconds; `wait` is called again while the state is pending. */
+  prompts: { list(): Promise<Prompt[]>; dismiss(id: string): Promise<{ ok: true }>; unlock(reason?: string): Promise<PromptTicket>; wait(id: string): Promise<{ state: PromptState }> };
 }

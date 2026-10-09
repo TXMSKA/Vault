@@ -2,7 +2,7 @@
 import { open, rm } from "node:fs/promises";
 import { resolve, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { connect, findService, resolveHome, readCapped, VaultClientError } from "../../client/src/index.ts";
+import { connect, findService, installedApp, resolveHome, readCapped, VaultClientError } from "../../client/src/index.ts";
 import type { Client, ImportFormat, Backup } from "../../client/src/types.ts";
 import { atomicJson } from "../../client/src/files.ts";
 import { prepareHome } from "../../client/src/private.ts";
@@ -13,13 +13,16 @@ import { AGENTS, approve, run, runOptions, visible } from "./run.ts";
 import { copy, yes } from "./copy.ts";
 import { installLauncher } from "./launcher.ts";
 import { appFile, install, layout, uninstall } from "./install.ts";
+import { unlocked } from "./unlock.ts";
+import { settingLines, withSetting } from "./settings.ts";
 const usage = () => copy(
-  "vault status\nvault create --kit <file.txt>\nvault unlock\nvault recover --kit <file.txt>\nvault lock\nvault apps [allow|revoke <id>]\nvault run --project <name> [--agent <id>] -- <command> [args...]\nvault run --project <name> [--agent <id>] --batch <file.json>\nvault run --attach <request> [--agent <id>]\nvault approve\nvault reject <request>\nvault import <file> --from chrome|edge|firefox|bitwarden|1password|keepass\nvault import <file.env> --from dotenv --project <name>\nvault export <file>\nvault restore <file>\nvault sync status\nvault sync setup <folder>\nvault sync join <folder> [--recovery]\nvault sync now\nvault sync conflicts\nvault sync restore <id>\nvault sync dismiss <id>\nvault sync leave\nvault install [--app <path>]\nvault uninstall [--remove-data]\nvault dev-install\nvault serve",
-  "vault status: consultar el estado\nvault create --kit <archivo.txt>: crear la bóveda y guardar el kit\nvault unlock: desbloquear\nvault recover --kit <archivo.txt>: recuperar y guardar un kit nuevo\nvault lock: bloquear\nvault apps [allow|revoke <id>]: listar, permitir o revocar apps\nvault run --project <nombre> [--agent <id>] -- <comando> [args...]: pedir que se ejecute con las variables del proyecto\nvault run --project <nombre> [--agent <id>] --batch <archivo.json>: pedir varios comandos juntos\nvault run --attach <pedido> [--agent <id>]: volver a seguir un pedido\nvault approve: ver los pedidos que esperan y aprobarlos o rechazarlos\nvault reject <pedido>: rechazar un pedido o detenerlo\nvault import <archivo> --from chrome|edge|firefox|bitwarden|1password|keepass: importar\nvault import <archivo.env> --from dotenv --project <nombre>: guardar las variables de un proyecto\nvault export <archivo>: guardar una copia cifrada\nvault restore <archivo>: restaurar una copia cifrada\nvault sync status: consultar la sincronización\nvault sync setup <carpeta>: configurar la carpeta compartida\nvault sync join <carpeta> [--recovery]: unir esta computadora\nvault sync now: sincronizar ahora\nvault sync conflicts: ver los conflictos\nvault sync restore <id>: restaurar una versión guardada\nvault sync dismiss <id>: descartar una versión guardada\nvault sync leave: dejar de sincronizar\nvault install [--app <ruta>]: instalar Vault desde esta copia\nvault uninstall [--remove-data]: desinstalar Vault y conservar los datos, o borrarlos también\nvault dev-install: guardar la instalación de desarrollo\nvault serve: ejecutar el servicio");
+  "vault status\nvault create --kit <file.txt>\nvault unlock [--terminal]\nvault recover --kit <file.txt>\nvault lock\nvault apps [allow|revoke <id>]\nvault settings\nvault settings set <key> <value>\nvault run --project <name> [--agent <id>] -- <command> [args...]\nvault run --project <name> [--agent <id>] --batch <file.json>\nvault run --attach <request> [--agent <id>]\nvault approve [--terminal]\nvault reject <request>\nvault import <file> --from chrome|edge|firefox|bitwarden|1password|keepass\nvault import <file.env> --from dotenv --project <name>\nvault export <file>\nvault restore <file>\nvault sync status\nvault sync setup <folder>\nvault sync join <folder> [--recovery]\nvault sync now\nvault sync conflicts\nvault sync restore <id>\nvault sync dismiss <id>\nvault sync leave\nvault install [--app <path>]\nvault uninstall [--remove-data]\nvault dev-install\nvault serve",
+  "vault status: consultar el estado\nvault create --kit <archivo.txt>: crear la bóveda y guardar el kit\nvault unlock [--terminal]: desbloquear\nvault recover --kit <archivo.txt>: recuperar y guardar un kit nuevo\nvault lock: bloquear\nvault apps [allow|revoke <id>]: listar, permitir o revocar apps\nvault settings: ver los ajustes\nvault settings set <clave> <valor>: cambiar un ajuste\nvault run --project <nombre> [--agent <id>] -- <comando> [args...]: pedir que se ejecute con las variables del proyecto\nvault run --project <nombre> [--agent <id>] --batch <archivo.json>: pedir varios comandos juntos\nvault run --attach <pedido> [--agent <id>]: volver a seguir un pedido\nvault approve [--terminal]: ver los pedidos que esperan y aprobarlos o rechazarlos\nvault reject <pedido>: rechazar un pedido o detenerlo\nvault import <archivo> --from chrome|edge|firefox|bitwarden|1password|keepass: importar\nvault import <archivo.env> --from dotenv --project <nombre>: guardar las variables de un proyecto\nvault export <archivo>: guardar una copia cifrada\nvault restore <archivo>: restaurar una copia cifrada\nvault sync status: consultar la sincronización\nvault sync setup <carpeta>: configurar la carpeta compartida\nvault sync join <carpeta> [--recovery]: unir esta computadora\nvault sync now: sincronizar ahora\nvault sync conflicts: ver los conflictos\nvault sync restore <id>: restaurar una versión guardada\nvault sync dismiss <id>: descartar una versión guardada\nvault sync leave: dejar de sincronizar\nvault install [--app <ruta>]: instalar Vault desde esta copia\nvault uninstall [--remove-data]: desinstalar Vault y conservar los datos, o borrarlos también\nvault dev-install: guardar la instalación de desarrollo\nvault serve: ejecutar el servicio");
 const messages: Record<string, [string, string]> = {
   sync_existing: ["This computer already has a vault. Export and restore it instead.", "Esta computadora ya tiene una bóveda. Exportala y restaurala."],
   sync_unconfigured: ["Set up sync first.", "Primero configurá la sincronización."],
   locked: ["Vault is locked. Run vault unlock.", "Vault está bloqueado. Ejecutá vault unlock."],
+  unlock_expired: ["Nobody unlocked Vault in time. Try again.", "Nadie desbloqueó Vault a tiempo. Volvé a intentar."],
   not_installed: ["Run vault dev-install first.", "Primero ejecutá vault dev-install."],
   pending: ["This app is awaiting approval.", "Esta app espera autorización."],
   revoked: ["This app's access was revoked.", "Se revocó el acceso de esta app."],
@@ -66,8 +69,13 @@ async function kit(filename: string, operation: () => Promise<{ recovery: string
 export async function main(args = process.argv.slice(2), io: CliIO = terminal): Promise<number> {
   const home = resolveHome(); let api: Client | undefined;
   try {
+    // --terminal keeps the password and approval prompts in this terminal even when the Vault app is installed; after "--" it belongs to the command.
+    const cut = args.indexOf("--"), head = cut < 0 ? args : args.slice(0, cut), flagged = head.filter(arg => arg === "--terminal").length;
+    if (flagged > 1) throw new VaultClientError("invalid");
+    if (flagged) args = [...head.filter(arg => arg !== "--terminal"), ...args.slice(head.length)];
     const [command = "help", sub, third] = args;
-    if (command === "help" && args.length <= 1) { io.write(`${usage()}\n${copy("vault get <entry-id> [field-id] [--reveal]", "vault get <id-entrada> [id-campo] [--reveal]: consultar un campo")}`); return 0; }
+    if (flagged && !["unlock", "approve", "get", "import", "export", "restore", "run", "sync"].includes(command)) throw new VaultClientError("invalid");
+    if (command === "help" && args.length <= 1) { io.write(`${usage()}\n${copy("vault get <entry-id> [field-id] [--reveal]", "vault get <id-entrada> [id-campo] [--reveal]: consultar un campo")}\n${copy("--terminal: ask for the password and the approvals in this terminal even when the Vault app is installed; it goes on unlock, get, import, export, restore, run, approve and sync.", "--terminal: pedir la contraseña y las aprobaciones en esta terminal aunque la app de Vault esté instalada; va en unlock, get, import, export, restore, run, approve y sync.")}`); return 0; }
     if (command === "serve" && args.length === 1) { await serve(); return 0; }
     if (command === "dev-install" && args.length === 1) {
       prepareHome(home); await atomicJson(join(home, "install.json"), { version: 1, command: process.execPath, args: [fileURLToPath(new URL(`../../service/src/main${extname(import.meta.url)}`, import.meta.url))], ...process.platform === "win32" ? { helper: fileURLToPath(new URL("../../helper/bin/vault-helper.exe", import.meta.url)) } : {} });
@@ -90,9 +98,14 @@ export async function main(args = process.argv.slice(2), io: CliIO = terminal): 
     if (command === "status" && args.length === 1 && !await findService(home)) { io.write(copy("Vault is stopped.", "Vault está detenido.")); return 0; }
     const options = command === "run" ? runOptions(args, appIdPattern) : undefined, dotenv = command === "import" && args.length === 6 && third === "--from" && args[3] === "dotenv" && args[4] === "--project";
     const syncing = command === "sync" && (["status", "now", "conflicts", "leave"].includes(sub) && args.length === 2 || ["setup", "restore", "dismiss"].includes(sub) && args.length === 3 || sub === "join" && (args.length === 3 || args.length === 4 && args[3] === "--recovery"));
-    const valid = syncing || ["status", "unlock", "lock", "approve"].includes(command) && args.length === 1 || ["create", "recover"].includes(command) && args.length === 3 && sub === "--kit" || command === "apps" && (args.length === 1 || args.length === 3 && ["allow", "revoke"].includes(sub)) || !!options || dotenv || command === "import" && args.length === 4 && third === "--from" && ["chrome", "edge", "firefox", "bitwarden", "1password", "keepass"].includes(args[3]) || ["export", "restore", "reject"].includes(command) && args.length === 2;
+    const valid = syncing || ["status", "unlock", "lock", "approve"].includes(command) && args.length === 1 || ["create", "recover"].includes(command) && args.length === 3 && sub === "--kit" || command === "apps" && (args.length === 1 || args.length === 3 && ["allow", "revoke"].includes(sub)) || command === "settings" && (args.length === 1 || args.length === 4 && sub === "set") || !!options || dotenv || command === "import" && args.length === 4 && third === "--from" && ["chrome", "edge", "firefox", "bitwarden", "1password", "keepass"].includes(args[3]) || ["export", "restore", "reject"].includes(command) && args.length === 2;
     const get = command === "get" && (args.length === 2 || args.length === 3 || args.length === 4 && args[3] === "--reveal");
     if (!valid && !get) throw new VaultClientError("invalid");
+    // Where a command needs the person's password or approval, an installed Vault app asks in its window unless --terminal was given.
+    const asks = ["unlock", "approve", "get", "import", "export", "restore", "run"].includes(command) || syncing && ["setup", "now", "conflicts", "restore", "dismiss"].includes(sub);
+    if (flagged && !asks) throw new VaultClientError("invalid");
+    const viaApp = asks && !flagged && installedApp(home) !== undefined;
+    if (command === "approve" && viaApp) { io.write(copy("Approvals happen in Vault's window.", "Las aprobaciones se hacen en la ventana de Vault.")); return 0; }
     if (get && args.at(-1) !== "--reveal") { io.write(copy("Add --reveal to print a field value after terminal confirmation.", "Agregá --reveal para mostrar el valor de un campo después de confirmar en la terminal.")); return 0; }
     if (get) await confirmValues(io);
     if (syncing && ["setup", "join"].includes(sub)) {
@@ -104,9 +117,9 @@ export async function main(args = process.argv.slice(2), io: CliIO = terminal): 
     // Without a terminal, or when named, the caller is an agent: it may only propose runs for a person to approve.
     const agent = options && (options.agent !== undefined || !io.isTTY()) ? options.agent ?? "agent" : undefined;
     api = await connect({ home, app: agent ? { id: agent, name: AGENTS[agent] ?? agent, kind: "agent" } : { id: "vault-cli", name: "Vault CLI", kind: "cosmic" } });
-    if (["get", "import", "export", "restore"].includes(command) && !(await api.status()).unlocked) await api.unlock(await io.ask(copy("Master password: ", "Contraseña maestra: ")));
+    if (["get", "import", "export", "restore"].includes(command)) await unlocked(api, io, viaApp, `vault ${command}`);
     if (syncing) {
-      if (["setup", "now", "conflicts", "restore", "dismiss"].includes(sub) && !(await api.status()).unlocked) await api.unlock(await io.ask(copy("Master password: ", "Contraseña maestra: ")));
+      if (["setup", "now", "conflicts", "restore", "dismiss"].includes(sub)) await unlocked(api, io, viaApp, "vault sync");
       if (sub === "status") {
         const status = await api.sync.status();
         io.write(copy(status.configured ? "Sync is configured." : "Sync is not configured.", status.configured ? "La sincronización está configurada." : "La sincronización no está configurada."));
@@ -128,13 +141,16 @@ export async function main(args = process.argv.slice(2), io: CliIO = terminal): 
     } else if (command === "recover") {
       const recovery = await io.ask(copy("Recovery key: ", "Clave de recuperación: ")), password = await confirmedPassword(io);
       await kit(third, () => api!.recover(recovery, password)); io.write(copy("Master password replaced. New recovery kit saved.", "Se reemplazó la contraseña maestra y se guardó un kit nuevo."));
-    } else if (command === "unlock") { await api.unlock(await io.ask(copy("Master password: ", "Contraseña maestra: "))); io.write(copy("Vault unlocked.", "Vault desbloqueado.")); }
+    } else if (command === "unlock") { if (viaApp) await unlocked(api, io, true, "vault unlock"); else await api.unlock(await io.ask(copy("Master password: ", "Contraseña maestra: "))); io.write(copy("Vault unlocked.", "Vault desbloqueado.")); }
     else if (command === "lock") { await api.lock(); io.write(copy("Vault locked.", "Vault bloqueado.")); }
     else if (command === "apps") {
       if (sub === "allow") await api.apps.allow(third); else if (sub === "revoke") await api.apps.revoke(third);
       else for (const app of await api.apps.list()) io.write(`${app.id} | ${copy(app.status, ({ granted: "autorizada", pending: "pendiente", revoked: "revocada" })[app.status])} | ${app.kinds.join(",")}${app.permissions.length ? ` | ${app.permissions.join(",")}` : ""}`);
       if (sub) io.write(copy("Saved.", "Se guardó."));
-    } else if (command === "run") return await run(api, io, options!, agent);
+    } else if (command === "settings") {
+      if (sub === "set") { await api.settings.set(withSetting(await api.settings.get(), third, args[3])); io.write(copy("Saved.", "Se guardó.")); }
+      else for (const line of settingLines(await api.settings.get())) io.write(line);
+    } else if (command === "run") return await run(api, io, options!, agent, viaApp);
     else if (command === "approve") return await approve(api, io);
     else if (command === "reject") { await api.runs.reject(sub); io.write(copy("Rejected.", "Rechazado.")); }
     else if (command === "get") {
