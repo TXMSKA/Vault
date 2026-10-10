@@ -1,0 +1,18 @@
+# SignPath pipeline policy for the signing policy "release-signing" of the SignPath project "vault"
+# (.signpath/policies/<project slug>/<signing policy slug>.yml).
+# The runners must be GitHub-hosted, and a build cannot be signed again by re-running it. The branch and tag rulesets of the repository must
+# forbid deleting and rewriting refs, which is what keeps a signed release to a tag on the default branch. The tag itself is limited to the
+# default branch by the "Allowed branch names" setting of the signing policy and by the check at the start of .github/workflows/release.yml.
+github-build-policies:
+  version: '1.0'
+  disallow_reruns: true
+  runners:
+    require_github_hosted: true
+github-scm-policies:
+  version: '1.0'
+  ruleset_constraints:
+    - enforced_from: CURRENT_BUILD
+      allow_bypass_actors: true
+      rules:
+        - type: non_fast_forward
+        - type: deletion

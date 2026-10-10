@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
@@ -13,6 +14,11 @@ using System.Text;
 using System.Threading;
 using Microsoft.Win32;
 using Windows.Security.Credentials.UI;
+
+// The file properties Windows shows. scripts/build-helper.mjs replaces the two versions below with the version in the root package.json.
+[assembly: AssemblyProduct("Vault")]
+[assembly: AssemblyVersion("0.0.0.0")]
+[assembly: AssemblyFileVersion("0.0.0.0")]
 
 // Desktop verification needs the host HWND, rather than a UWP CoreWindow.
 [ComImport, Guid("39E050C3-4E74-441A-8DC0-B81104DF949C"), InterfaceType(ComInterfaceType.InterfaceIsIInspectable)]

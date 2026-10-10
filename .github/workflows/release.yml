@@ -1,0 +1,159 @@
+name: Release
+on:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: read
+jobs:
+  build:
+    if: github.repository == 'TXMSKA/Vault'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      # SignPath reads this run's details with the job's token when a signing request is submitted.
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 26.8.2
+      - name: Check the tag
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -ne "v$version") { throw "The tag $env:GITHUB_REF_NAME is not v$version, the version in package.json." }
+          git merge-base --is-ancestor $env:GITHUB_SHA "origin/$env:DEFAULT_BRANCH"
+          if ($LASTEXITCODE -ne 0) { throw "The tagged commit is not on the default branch, $env:DEFAULT_BRANCH." }
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # Builds the console zip and the installer from the unsigned programs.
+      - run: npm run dist
+
+      # Signing runs only when the repository variable SIGNPATH_ENABLED is 'true'. Without it the unsigned files above go on as they are.
+      - name: Collect the programs to sign
+        if: vars.SIGNPATH_ENABLED == 'true'
+        run: |
+          New-Item -ItemType Directory -Path build/signing/programs | Out-Null
+          Copy-Item build/release/win-unpacked/Vault.exe build/signing/programs/Vault.exe
+          Copy-Item build/release/win-unpacked/lib/helper/bin/vault-helper.exe build/signing/programs/vault-helper.exe
+      - name: Upload the programs to sign
+        if: vars.SIGNPATH_ENABLED == 'true'
+        id: programs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: programs-unsigned
+          path: build/signing/programs
+          if-no-files-found: error
+      - name: Sign the programs
+        if: vars.SIGNPATH_ENABLED == 'true'
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_PROGRAMS_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.programs.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: build/signing/programs-signed
+      # The signed programs replace the unsigned ones in the unpacked app and in the console layout, the zip is packed again, and the installer is built
+      # from the signed unpacked app. electron-builder does not flip the fuses of an app it did not pack, and they were flipped before signing.
+      - name: Replace the programs and build the installer from them
+        if: vars.SIGNPATH_ENABLED == 'true'
+        run: |
+          foreach ($name in 'Vault.exe', 'vault-helper.exe') {
+            if ((Get-AuthenticodeSignature "build/signing/programs-signed/$name").Status -ne 'Valid') { throw "$name does not carry a valid signature." }
+          }
+          Copy-Item build/signing/programs-signed/Vault.exe build/release/win-unpacked/Vault.exe -Force
+          Copy-Item build/signing/programs-signed/vault-helper.exe build/release/win-unpacked/lib/helper/bin/vault-helper.exe -Force
+          Copy-Item build/signing/programs-signed/vault-helper.exe build/stage/lib/helper/bin/vault-helper.exe -Force
+          node scripts/package-console.mjs --keep
+          if ($LASTEXITCODE -ne 0) { throw "The console zip was not packed." }
+          node scripts/package-installer.mjs --prepackaged
+          if ($LASTEXITCODE -ne 0) { throw "The installer was not built." }
+          New-Item -ItemType Directory -Path build/signing/installer | Out-Null
+          Copy-Item build/release/Vault-Setup-x64.exe build/signing/installer/Vault-Setup-x64.exe
+      - name: Upload the installer to sign
+        if: vars.SIGNPATH_ENABLED == 'true'
+        id: installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: installer-unsigned
+          path: build/signing/installer
+          if-no-files-found: error
+      - name: Sign the installer
+        if: vars.SIGNPATH_ENABLED == 'true'
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_INSTALLER_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.installer.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: build/signing/installer-signed
+      # Signing changes the installer, so latest.yml and the blockmap are written again for it, and the sums are taken last.
+      - name: Replace the installer and write the sums
+        if: vars.SIGNPATH_ENABLED == 'true'
+        run: |
+          if ((Get-AuthenticodeSignature "build/signing/installer-signed/Vault-Setup-x64.exe").Status -ne 'Valid') { throw "The installer does not carry a valid signature." }
+          Copy-Item build/signing/installer-signed/Vault-Setup-x64.exe build/release/Vault-Setup-x64.exe -Force
+          node scripts/package-console.mjs --finish
+          if ($LASTEXITCODE -ne 0) { throw "The release files were not completed." }
+
+      - name: Write the release notes
+        env:
+          SIGNING: ${{ vars.SIGNPATH_ENABLED == 'true' && 'signed' || 'unsigned' }}
+        run: node scripts/release-notes.mjs $env:SIGNING build/release-notes.md
+      - name: Upload the release files
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-files
+          path: |
+            build/release/Vault-Setup-x64.exe
+            build/release/Vault-Setup-x64.exe.blockmap
+            build/release/latest.yml
+            build/release/vault-x64.zip
+            build/release/install.ps1
+            build/release/SHA256SUMS.txt
+          if-no-files-found: error
+      - name: Upload the release notes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-notes
+          path: build/release-notes.md
+          if-no-files-found: error
+
+  # The only job that can write to the repository. It makes a draft release, and a person publishes it.
+  publish:
+    needs: build
+    if: github.repository == 'TXMSKA/Vault'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      # Reads the artifacts of this run.
+      actions: read
+    steps:
+      - name: Download what the build made
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh run download $env:GITHUB_RUN_ID --repo $env:GITHUB_REPOSITORY --name release-files --dir release-files
+          if ($LASTEXITCODE -ne 0) { throw "The release files were not downloaded." }
+          gh run download $env:GITHUB_RUN_ID --repo $env:GITHUB_REPOSITORY --name release-notes --dir release-notes
+          if ($LASTEXITCODE -ne 0) { throw "The release notes were not downloaded." }
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $files = @(Get-ChildItem release-files -File | ForEach-Object { $_.FullName })
+          if ($files.Count -ne 6) { throw "Expected 6 release files and found $($files.Count)." }
+          gh release create $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --draft --verify-tag --title "Vault $($env:GITHUB_REF_NAME.Substring(1))" --notes-file release-notes/release-notes.md $files
+          if ($LASTEXITCODE -ne 0) { throw "The draft release was not created." }

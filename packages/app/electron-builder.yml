@@ -1,0 +1,47 @@
+# Vault's installer. Run from packages/app by scripts/package-installer.mjs (npm run dist), which adds the Electron folder when ELECTRON_OVERRIDE_DIST_PATH names one.
+appId: com.txmska.vault
+productName: Vault
+copyright: TXMSKA
+asar: true
+directories:
+  output: ../../build/release
+  # Not "build": git ignores every folder of that name.
+  buildResources: installer
+files:
+  - dist/**
+  - package.json
+icon: ../../assets/icon/vault-icon-1024.png
+# The staged console layout (node.exe, lib, LICENSE, README.md) goes beside Vault.exe, which is the layout `vault install` looks for.
+extraFiles:
+  - from: ../../build/stage
+    to: .
+    filter:
+      - "**/*"
+# Fuses are flipped in this hook, with the values Horizon uses, before anything is signed.
+afterPack: scripts/after-pack.cjs
+win:
+  target:
+    - target: nsis
+      arch: x64
+  # Resource editing (icon, file version) stays on. Signing happens after packaging, by SignPath in the release workflow, and not here.
+  signAndEditExecutable: true
+  signExecutable: false
+nsis:
+  artifactName: Vault-Setup-x64.exe
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  # One Vault per computer: the installer and install.ps1 both use %LOCALAPPDATA%\Programs\Vault.
+  allowToChangeInstallationDirectory: false
+  createDesktopShortcut: false
+  createStartMenuShortcut: true
+  shortcutName: Vault
+  deleteAppDataOnUninstall: false
+  installerLanguages:
+    - en_US
+    - es_ES
+# Written into the app as app-update.yml, which the updater reads, and the reason latest.yml is produced.
+publish:
+  provider: github
+  owner: TXMSKA
+  repo: Vault

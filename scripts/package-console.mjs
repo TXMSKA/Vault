@@ -1,14 +1,23 @@
 // Packs build/stage (see scripts/stage.mjs) for the console install: build/release gets vault-x64.zip, install.ps1 and SHA256SUMS.txt.
 // The zip is written here with Node's own zlib, so it needs no archiver and keeps forward slashes in its entry names.
-// Usage: node scripts/package-console.mjs
-import { createHash } from "node:crypto";
+// Usage: node scripts/package-console.mjs [--keep | --finish]
+//   (no option)  clears build/release, then writes the zip and install.ps1 and sums the files there.
+//   --keep       does the same without clearing, so the installer that is already in build/release stays (the signed release repacks the zip this way).
+//   --finish     for the end of npm run dist: checks that build/release has the five release files (see scripts/release-files.mjs), removes the
+//                debug files electron-builder leaves, writes latest.yml and the blockmap again when the installer changed since it was built (signing
+//                does that), and writes SHA256SUMS.txt for the five files.
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { crc32, deflateRawSync } from "node:zlib";
+import { INSTALLER, RELEASE_FILES, SUMS_FILE, filesIn, latestHash, refreshLatest, releaseProblems, sha512Base64, sizes, sumsText } from "./release-files.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url)), stage = join(root, "build", "stage"), release = join(root, "build", "release");
-if (!existsSync(join(stage, "lib", "package.json"))) { console.error("There is no staged layout. Run node scripts/stage.mjs first."); process.exit(1); }
+const fail = message => { console.error(message); process.exit(1); };
+const mode = process.argv[2];
+if (process.argv.length > 3 || mode !== undefined && mode !== "--keep" && mode !== "--finish") fail("Usage: node scripts/package-console.mjs [--keep | --finish]");
+if (mode !== "--finish" && !existsSync(join(stage, "lib", "package.json"))) fail("There is no staged layout. Run node scripts/stage.mjs first.");
 const files = folder => readdirSync(folder, { withFileTypes: true }).flatMap(item => item.isDirectory() ? files(join(folder, item.name)) : [join(folder, item.name)]).sort();
 
 // ZIP, version 2.0: names in UTF-8, each file deflated or stored when deflating does not help, no ZIP64 (the layout is far below 4 GiB).
@@ -31,10 +40,31 @@ function zip(list) {
   return Buffer.concat([...parts, directory, end]);
 }
 
-rmSync(release, { recursive: true, force: true }); mkdirSync(release, { recursive: true });
-copyFileSync(join(root, "scripts", "install.ps1"), join(release, "install.ps1"));
-writeFileSync(join(release, "vault-x64.zip"), zip(files(stage)));
-// One line per file, as sha256sum prints it. The sums file cannot list itself.
-const sums = readdirSync(release).sort().map(name => `${createHash("sha256").update(readFileSync(join(release, name))).digest("hex")}  ${name}\n`).join("");
-writeFileSync(join(release, "SHA256SUMS.txt"), sums);
-console.log(`Packed ${release}\n${sums}`.trimEnd());
+const report = list => list.map(([name, size]) => `${name}  ${size} bytes`).join("\n");
+if (mode === "--finish") {
+  const { missing, unexpected } = releaseProblems(existsSync(release) ? filesIn(release) : []);
+  if (missing.length) fail(`build/release lacks ${missing.join(", ")}. Run npm run dist.`);
+  for (const name of unexpected) rmSync(join(release, name));
+  // Signing changes the installer after electron-builder wrote its blockmap and latest.yml, and the updater refuses an installer that does not match them.
+  const installer = join(release, INSTALLER), latest = join(release, "latest.yml"), text = readFileSync(latest, "utf8"), hash = sha512Base64(installer);
+  if (latestHash(text) !== hash) {
+    const { buildBlockMap } = createRequire(import.meta.url)("app-builder-lib/out/targets/blockmap/blockmap.js");
+    const info = await buildBlockMap(installer, "gzip", `${installer}.blockmap`);
+    if (info.sha512 !== hash) fail("The installer changed while its blockmap was written.");
+    writeFileSync(latest, refreshLatest(text, info.sha512, info.size));
+    console.log("The installer changed since it was built: latest.yml and the blockmap were written again.");
+  }
+  writeFileSync(join(release, SUMS_FILE), sumsText(release, RELEASE_FILES));
+  const lines = [`Release files in ${release}`, report(sizes(release, [...RELEASE_FILES, SUMS_FILE]))];
+  if (unexpected.length) lines.push(`Removed: ${unexpected.join(", ")}`);
+  console.log([...lines, readFileSync(join(release, SUMS_FILE), "utf8")].join("\n").trimEnd());
+} else {
+  if (mode !== "--keep") rmSync(release, { recursive: true, force: true });
+  mkdirSync(release, { recursive: true });
+  copyFileSync(join(root, "scripts", "install.ps1"), join(release, "install.ps1"));
+  writeFileSync(join(release, "vault-x64.zip"), zip(files(stage)));
+  // One line per file, as sha256sum prints it. The sums file cannot list itself, and a folder beside the files (the unpacked app) is not one of them.
+  const sums = sumsText(release, filesIn(release).filter(name => name !== SUMS_FILE));
+  writeFileSync(join(release, SUMS_FILE), sums);
+  console.log(`Packed ${release}\n${sums}`.trimEnd());
+}

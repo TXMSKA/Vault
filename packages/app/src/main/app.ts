@@ -20,6 +20,8 @@ import { SCHEME } from "./protocol.ts";
 import { quitWhenIdle } from "./quit.ts";
 import { BACKGROUNDS, resolveLanguage, resolveTheme } from "./theme.ts";
 import { createTour } from "./tour.ts";
+import { createUpdates } from "./update.ts";
+import type { UpdaterPort } from "./update.ts";
 import { createWindow, secureSession } from "./window.ts";
 export const PARTITION = "vault-app";
 /** What the app asks of the operating system's dialogs and printers; a test replaces them, since nobody is there to answer. */
@@ -46,8 +48,9 @@ export const systemPlatform: Platform = {
 };
 /**
  * `clipboardMs` is for tests only, so that the 30 seconds a copied value stays on the clipboard need not be waited out; the app itself never sets it.
+ * `noUpdates` is for tests only too: it keeps the update check off (it is off in a development checkout anyway); the app itself never sets it.
  */
-export type StartOptions = { argv?: string[]; env?: NodeJS.ProcessEnv; platform?: Partial<Platform>; clipboardMs?: number };
+export type StartOptions = { argv?: string[]; env?: NodeJS.ProcessEnv; platform?: Partial<Platform>; clipboardMs?: number; noUpdates?: boolean };
 export type Running = { window: BrowserWindow; link: Link; compose(): AppState; stop(): Promise<void> };
 /**
  * Does what Electron needs before it is ready: one instance per vault home, the sandbox for every page, the scheme the page is served on.
@@ -61,13 +64,13 @@ export function prepare(options: StartOptions = {}): (() => Promise<Running>) | 
   if (!app.requestSingleInstanceLock()) { app.quit(); return undefined; }
   app.enableSandbox();
   protocol.registerSchemesAsPrivileged([{ scheme: SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
-  return () => run(args.prompts, home, platform, options.clipboardMs);
+  return () => run(args.prompts, home, platform, options.clipboardMs, options.noUpdates === true);
 }
 /** Prepares, then opens the window once Electron is ready. */
 export async function start(options: StartOptions = {}): Promise<Running | undefined> { return prepare(options)?.(); }
-async function run(promptsOnly: boolean, home: string, platform: Platform, clipboardMs?: number): Promise<Running> {
+async function run(promptsOnly: boolean, home: string, platform: Platform, clipboardMs: number | undefined, noUpdates: boolean): Promise<Running> {
   await app.whenReady();
-  app.setAppUserModelId("com.cosmic.vault"); Menu.setApplicationMenu(null);
+  app.setAppUserModelId("com.txmska.vault"); Menu.setApplicationMenu(null);
   const here = dirname(fileURLToPath(import.meta.url)), root = join(here, "..", "renderer"), icon = join(here, "..", "..", "..", "..", "assets", "icon", "vault-icon-512.png");
   secureSession(session.fromPartition(PARTITION), root);
   const window = createWindow({ preload: join(here, "..", "preload", "preload.cjs"), partition: PARTITION, background: BACKGROUNDS[resolveTheme("system", nativeTheme.shouldUseDarkColors)].surface, ...existsSync(icon) ? { icon } : {} });
@@ -77,7 +80,18 @@ async function run(promptsOnly: boolean, home: string, platform: Platform, clipb
   const copied = createClipboard(platform.clipboard, clipboardMs === undefined ? {} : { ms: clipboardMs });
   const entries = createEntries({ service: () => link.service(), clipboard: copied, openUrl: platform.openUrl });
   const idle = promptsOnly ? quitWhenIdle({ pending: () => link.snapshot().pending, quit: () => app.quit() }) : undefined;
-  const reveal = () => { if (window.isDestroyed()) return; if (window.isMinimized()) window.restore(); window.show(); window.focus(); };
+  // Updates are checked once the window has been shown, so a start only for prompts never asks about an update nobody opened Vault for.
+  const updates = createUpdates({
+    updater: async () => (await import("electron-updater")).default.autoUpdater as unknown as UpdaterPort,
+    packaged: app.isPackaged, disabled: noUpdates,
+    language: () => resolveLanguage(link.snapshot().settings.language, app.getLocale()),
+    ask: async text => {
+      const options = { type: "info" as const, title: "Vault", message: text.message, detail: text.detail, buttons: [text.install, text.later], defaultId: 0, cancelId: 1, noLink: true };
+      const answer = window.isDestroyed() || !window.isVisible() ? await dialog.showMessageBox(options) : await dialog.showMessageBox(window, options);
+      return answer.response === 0 ? "install" : "later";
+    },
+  });
+  const reveal = () => { if (window.isDestroyed()) return; if (window.isMinimized()) window.restore(); window.show(); window.focus(); void updates.start(); };
   let sent = "", background = "", closing = false, force = false, open = false;
   const compose = (): AppState => {
     const snapshot = link.snapshot();
@@ -161,7 +175,7 @@ async function run(promptsOnly: boolean, home: string, platform: Platform, clipb
   };
   const unregister = registerIpc(() => window.isDestroyed() ? undefined : window.webContents, handlers);
   let stopping: Promise<void> | undefined;
-  const stop = () => stopping ??= (async () => { idle?.interact(); unregister(); await copied.flush(); entries.forget(); await link.stop(); })();
+  const stop = () => stopping ??= (async () => { idle?.interact(); updates.stop(); unregister(); await copied.flush(); entries.forget(); await link.stop(); })();
   // Quitting leaves the service first, so Vault locks as its settings say when this was the last app.
   app.on("before-quit", event => { if (stopping) return; event.preventDefault(); void stop().finally(() => app.exit(0)); });
   window.on("closed", () => app.quit()); app.on("window-all-closed", () => app.quit());

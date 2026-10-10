@@ -7,7 +7,7 @@ keeps the data key in memory and encrypts every entry before saving it.
 
 Vault is open source under the Apache License 2.0; see `LICENSE`. Packages
 are consumed through local `file:` dependencies and are never published. Node 24 or 26 is required. There are
-no runtime dependencies outside the workspaces.
+no runtime dependencies outside the workspaces except the app's `electron-updater`.
 
 ## What is here
 
@@ -27,8 +27,8 @@ no runtime dependencies outside the workspaces.
   starts on Windows. It does Windows Hello consent and availability, DPAPI,
   the foreground window, private ACLs and the user Path. Vault starts no
   shell for any of them.
-- `scripts`: the helper build, the staging script and the console packaging
-  with `install.ps1`; see Install.
+- `scripts`: the helper build, the staging script, the console packaging
+  with `install.ps1` and the installer packaging; see Install.
 - `assets/icon`: the app icon, a brass keyhole on a steel field, as SVG and
   512 and 1024 px PNG. Other documents and repositories take it from here.
 
@@ -151,8 +151,62 @@ after a typed `DELETE` (`BORRAR` in Spanish) at a terminal, and refuses without
 one. With `VAULT_HOME` set, neither command touches the Path and both print the
 folder. The program folder itself stays until it is deleted by hand.
 
-The installer with the Vault app comes later; this console way is the one that
-exists now.
+### The installer
+
+`npm run dist` builds the packages, stages the layout, packs the console zip, builds
+the installer with electron-builder (`packages/app/electron-builder.yml`) and writes
+`SHA256SUMS.txt`. Everything lands in `build/release`, and the unpacked app stays in
+`build/release/win-unpacked`. Node 24 or 26 on Windows is all it needs; electron-builder
+downloads Electron 44.5.1 unless `ELECTRON_OVERRIDE_DIST_PATH` names a folder that
+already holds it (the folder is passed as `electronDist`). The packaging dependencies
+are exact: `electron-builder` 26.15.3, `@electron/fuses` 2.1.3 (development) and
+`electron-updater` 6.8.9 (the app's only runtime dependency).
+
+```
+npm ci
+npm run dist
+```
+
+The release is these files, and `SHA256SUMS.txt` has the SHA-256 of each:
+
+- `Vault-Setup-x64.exe`: the installer, for one user and 64-bit Windows. It needs no
+  administrator rights and puts Vault in `%LOCALAPPDATA%\Programs\Vault`, the folder
+  `install.ps1` uses, so there is one Vault per computer. It adds a Start-menu shortcut and no
+  desktop one. `/S` installs silently. Beside `Vault.exe` it copies the console layout
+  (`node.exe`, `lib`, `LICENSE`, `README.md`). Before files are replaced it runs the installed
+  copy's `vault uninstall`, which stops the service and keeps the vault; after they are copied it
+  runs `vault install --app` on `Vault.exe`, and the install fails with a message if that
+  fails. Uninstalling runs `vault uninstall` too and never deletes the vault.
+- `Vault-Setup-x64.exe.blockmap` and `latest.yml`: what the updater reads (below).
+- `vault-x64.zip` and `install.ps1`: the console install, without the app.
+- `SHA256SUMS.txt`: the sums.
+
+Vault.exe is packed with the Electron fuses Horizon uses (no `ELECTRON_RUN_AS_NODE`, no
+`NODE_OPTIONS` or inspector arguments, encrypted cookies, the embedded ASAR integrity check
+and `OnlyLoadAppFromAsar` on, extra `file:` privileges off), flipped in
+`packages/app/scripts/after-pack.cjs` before anything is signed. `vault-helper.exe` and
+`Vault.exe` carry the product name Vault and the version of `package.json` (the helper gets
+it from `scripts/build-helper.mjs`).
+
+**Updates.** A packaged Vault (never a development checkout, never a test) checks the
+releases of TXMSKA/Vault on GitHub 10 seconds after its window is first shown and every 6 hours
+while it runs. It downloads a newer release by itself, skips pre-releases and never goes back
+to an older version, then asks in a native dialog, in the language of the app: install now (Vault
+quits, installs silently and opens again) or later (the question comes back at the next start).
+A start only for prompts (`--prompts`) never asks until its window is shown.
+
+**Releases.** `.github/workflows/check.yml` runs the typecheck, the tests and `npm run dist`
+on every push and pull request. Pushing a tag `vX.Y.Z`, where the version is the one in
+`package.json` and the commit is on the default branch, runs `.github/workflows/release.yml` in
+TXMSKA/Vault only: it builds, tests and, when the repository variable `SIGNPATH_ENABLED` is
+`true`, has SignPath sign `Vault.exe`, `vault-helper.exe` and the installer (the secret
+`SIGNPATH_API_TOKEN`, the variables `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`,
+`SIGNPATH_POLICY_SLUG`, `SIGNPATH_PROGRAMS_CONFIGURATION_SLUG` and
+`SIGNPATH_INSTALLER_CONFIGURATION_SLUG`; the policy file is
+`.signpath/policies/vault/release-signing.yml`). Without the variable the unsigned files go on.
+The last job alone can write to the repository: it makes a draft release for the tag with the
+files above and the notes of `docs/release-notes.md`, and a person publishes it. Every action
+is pinned to a commit, and every job runs on a GitHub-hosted Windows runner with Node 26.8.2.
 
 ## Storage and access
 
@@ -255,8 +309,9 @@ asked in the terminal and `vault approve` lists the waiting requests.
 ## The app
 
 `packages/app` is Vault's own window, drawn from the approved board in
-`docs/flows`. Its only dependency from outside the workspaces is `electron`
-44.5.1 (exact, development). `.npmrc` keeps install scripts off, so installing
+`docs/flows`. Outside the workspaces it depends on `electron-updater` 6.8.9 (the
+update check, see The installer) and, for development, on `electron` 44.5.1,
+`electron-builder` 26.15.3 and `@electron/fuses` 2.1.3, all exact. `.npmrc` keeps install scripts off, so installing
 does not download the Electron binary: point `ELECTRON_OVERRIDE_DIST_PATH` at an
 Electron 44.5.1 folder, or run `node node_modules/electron/install.js` once.
 `npm run app` never downloads anything.
@@ -406,6 +461,24 @@ until you restore or dismiss it. Under `Vault Sync/<datasetId>`,
 checkpoint parts, blobs and wrapped envelopes. Local bookkeeping stays
 under `<home>/sync/`.
 
+## Code signing policy
+
+Free code signing is applied for from the SignPath Foundation. Once it is granted, the
+release says: *Free code signing provided by SignPath.io, certificate by SignPath Foundation*.
+Until it is granted, the builds are unsigned and the release notes say so.
+
+- Authors, reviewers and approvers: TXMSKA.
+- Every signing request is approved by hand.
+- Only releases built by the release workflow from a tag on the default branch, on a
+  GitHub-hosted runner, are submitted; the policy is in
+  `.signpath/policies/vault/release-signing.yml`.
+
+## Privacy
+
+Vault does not transfer any information to other networked systems unless the person asks for it.
+Sync writes encrypted packages only to the folder the person chooses. Update checks read the
+releases of TXMSKA/Vault on GitHub and send nothing but the request for them.
+
 ## Checks and limits
 
 Tests use synthetic values and temporary `VAULT_HOME` folders, remove them
@@ -458,8 +531,7 @@ POSIX permissions are implemented but were not exercised on Linux here.
 
 ## Not here
 
-The small Vault app, host interfaces, the installer that carries the app,
-startup with the computer and Nebula's migration are later tasks. Hosts own clipboard
+Host interfaces, startup with the computer and Nebula's migration are later tasks. Hosts own clipboard
 policy and their UI. There is no backup scheduler. Log retention and alerts
 have not been decided. The final joint security audit with Lyra remains a
 separate audit; the task's relevant safeguards are covered here by tests.

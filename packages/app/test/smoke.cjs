@@ -82,7 +82,7 @@ const { prepare } = require(path.join(root, "packages", "app", "dist", "main", "
 // The clipboard and the browser are in memory here: what was copied, how often it was cleared, and which addresses were asked for.
 const board = { text: "", writes: 0, clears: 0 }, opened = [], CLIPBOARD_MS = 1200;
 // Started the way the service starts it when a prompt waits and nobody is there.
-const launch = prepare({ env: process.env, argv: ["--prompts"], clipboardMs: CLIPBOARD_MS, platform: {
+const launch = prepare({ env: process.env, argv: ["--prompts"], clipboardMs: CLIPBOARD_MS, noUpdates: true, platform: {
   saveFile: async () => saved.kit, openFile: async () => saved.backup,
   print: async () => { saved.printed++; return { ok: true }; },
   clipboard: { readText: async () => board.text, writeText: async text => { board.text = text; board.writes++; }, clear: () => { board.text = ""; board.clears++; } },

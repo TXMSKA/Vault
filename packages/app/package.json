@@ -1,7 +1,8 @@
 {
   "name": "vault-app", "version": "0.1.0", "private": true, "type": "module", "main": "dist/main/main.js",
-  "dependencies": { "vault-client": "file:../client", "vault-core": "file:../core" },
-  "devDependencies": { "electron": "44.5.1" },
+  "description": "Vault, the local password manager of Cosmic apps", "author": "TXMSKA",
+  "dependencies": { "electron-updater": "6.8.9", "vault-client": "file:../client", "vault-core": "file:../core" },
+  "devDependencies": { "@electron/fuses": "2.1.3", "electron": "44.5.1", "electron-builder": "26.15.3" },
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && node scripts/assets.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
