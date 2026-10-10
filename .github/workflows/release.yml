@@ -9,6 +9,10 @@ jobs:
   build:
     if: github.repository == 'TXMSKA/Vault'
     runs-on: windows-latest
+    # The runner's TEMP is an 8.3 short path; Vault refuses a data folder whose real path differs from the one it was given, so tests use the long one.
+    env:
+      TEMP: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
     permissions:
       contents: read
       # SignPath reads this run's details with the job's token when a signing request is submitted.

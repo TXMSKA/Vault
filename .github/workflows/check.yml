@@ -7,6 +7,10 @@ permissions:
 jobs:
   check:
     runs-on: windows-latest
+    # The runner's TEMP is an 8.3 short path; Vault refuses a data folder whose real path differs from the one it was given, so tests use the long one.
+    env:
+      TEMP: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
