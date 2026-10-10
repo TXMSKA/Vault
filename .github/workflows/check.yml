@@ -7,10 +7,6 @@ permissions:
 jobs:
   check:
     runs-on: windows-latest
-    # The runner's TEMP is an 8.3 short path; Vault refuses a data folder whose real path differs from the one it was given, so tests use the long one.
-    env:
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -18,6 +14,11 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 26.8.2
+      # The runner's TEMP is an 8.3 short path; Vault refuses a data folder whose real path differs from the one it was given, so the tests use the long one.
+      - run: |
+          Add-Content -Path $env:GITHUB_ENV -Value "TEMP=$env:RUNNER_TEMP"
+          Add-Content -Path $env:GITHUB_ENV -Value "TMP=$env:RUNNER_TEMP"
+        shell: pwsh
       - run: npm ci
       # The packages build before the typecheck, because the service and the app read the built core and client.
       - run: npm run build
