@@ -30,6 +30,8 @@ jobs:
           git merge-base --is-ancestor $env:GITHUB_SHA "origin/$env:DEFAULT_BRANCH"
           if ($LASTEXITCODE -ne 0) { throw "The tagged commit is not on the default branch, $env:DEFAULT_BRANCH." }
       - run: npm ci
+      # The packages build before the typecheck, because the service and the app read the built core and client.
+      - run: npm run build
       - run: npm run typecheck
       - run: npm test
       # Builds the console zip and the installer from the unsigned programs.
