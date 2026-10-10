@@ -240,6 +240,27 @@ try {
   await observer.lock(); await rejects(() => observer.recover(created.recovery, password), "locked"); now += 1000; await observer.unlock(nextPassword); assert.equal(typeof recovered.recovery, "string");
   await rejects(() => observer.hello.unlock("0"), "invalid"); await rejects(() => observer.hello.unlock("1"), "not_found"); checks += 6;
 
+  stage = "windows hello in the status of the managing apps";
+  // vault-app and vault-cli learn whether Hello can be used and whether it is set up; every other app's status keeps its four keys.
+  const manager = await app("vault-cli"), wrapped = join(home, "secrets", "hello.json");
+  for (const actor of [observer, manager]) {
+    const view = await actor.status();
+    assert.deepEqual(Object.keys(view).sort(), ["created", "hello", "idleMs", "present", "unlocked"]); assert.deepEqual(Object.keys(view.hello).sort(), ["available", "enabled"]);
+    assert.equal(typeof view.hello.available, "boolean"); assert.equal(view.hello.enabled, false); checks += 4;
+  }
+  for (const actor of [nebula, nova]) { assert.deepEqual(Object.keys(await actor.status()).sort(), ["created", "idleMs", "present", "unlocked"]); checks++; }
+  // Enabled means the wrapped key exists, and only that.
+  await writeFile(wrapped, JSON.stringify({ version: 1, blob: "AAAA" }));
+  try {
+    assert.equal((await observer.status()).hello.enabled, true); assert.equal((await manager.status()).hello.enabled, true);
+    assert.equal("hello" in await nebula.status(), false); checks += 3;
+  } finally { await rm(wrapped, { force: true }); }
+  assert.equal((await observer.status()).hello.enabled, false); checks++;
+  // The answer never waits on the helper: the first one says what is known (nothing), and the helper's own answer follows.
+  const expected = process.platform === "win32" ? await helloAvailable(runHelper) : false, until = Date.now() + 20000;
+  while ((await observer.status()).hello.available !== expected && Date.now() < until) await wait(250);
+  assert.equal((await observer.status()).hello.available, expected); checks++;
+
   stage = "all import formats";
   const fixture = (header, row) => `${header}\r\n${row}\r\n${row}\r\n`;
   const files = [

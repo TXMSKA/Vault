@@ -2,13 +2,14 @@ import "../../../test/guard.mjs";
 import "../../service/test/privacy-fixture.mjs";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createEnvelope, encryptJson, newEntry } from "vault-core";
 import { connect } from "../../client/dist/index.js";
 import { startService } from "../../service/dist/service/src/server.js";
 import { createLink, DEFAULTS, IDENTITY } from "../dist/main/link.js";
+import { dataFolder, SERVICE_FOLDERS } from "../dist/main/paths.js";
 import { counts } from "./units.test.mjs";
 
 // The main process's link to the service: against the real service in this process (at the speed it has, since the service limits an app to 240 calls a minute), and against a stand-in client for what the service cannot be made to do
@@ -26,7 +27,7 @@ const as = async (home, id, kind = "cosmic") => { const api = await connect({ ho
 const joined = async (home, manager, id, kind = "app") => { const api = await as(home, id, kind); await manager.apps.allow(id); if (kind !== "agent") await api.present(); return api; };
 const begin = async name => { const home = join(scratch, name); const service = await startService({ home, prompts: { waitMs: 1000 } }); services.push(service); return { home, service }; };
 const open = (home, options = {}) => {
-  const link = createLink({ connect: () => connect({ home, app: IDENTITY, tokens: tokens(), heartbeatMs: 2000 }), hello: async () => false, handle: () => "1", ...options });
+  const link = createLink({ connect: () => connect({ home, app: IDENTITY, tokens: tokens(), heartbeatMs: 2000 }), handle: () => "1", ...options });
   links.push(link); return link;
 };
 const key = /^[A-HJ-NP-Z2-9]{4}( - [A-HJ-NP-Z2-9]{4}){5}$/;
@@ -38,14 +39,21 @@ try {
     link.onArrival(ids => arrived.push(...ids)); link.onChange(snapshot => changes.push(snapshot.phase));
     check.equal(link.snapshot().phase, "starting"); link.start();
     await until(() => link.snapshot().phase === "ready", "ready");
-    check.deepEqual({ ...link.snapshot(), prompt: null }, { phase: "ready", problem: null, created: false, unlocked: false, hello: false, settings: DEFAULTS, prompt: null, pending: 0 });
+    // Whether Windows Hello can be used is what the machine's helper says, so only its type is known here.
+    check.equal(typeof link.snapshot().helloAvailable, "boolean");
+    check.deepEqual({ ...link.snapshot(), helloAvailable: false, prompt: null }, { phase: "ready", problem: null, created: false, unlocked: false, hello: false, helloAvailable: false, settings: DEFAULTS, prompt: null, pending: 0 });
+    // The app's own folder is inside the home and is not one the service made.
+    const names = await readdir(home);
+    check.equal(names.includes("app"), false); check.equal(names.filter(name => !name.includes(".")).every(name => SERVICE_FOLDERS.includes(name)), true); check.equal(SERVICE_FOLDERS.includes("app"), false); check.equal(dataFolder(home), join(home, "app"));
     check.equal(changes.includes("ready"), true);
     // A vault is created with the typed password; the recovery key is held for the sheet until the person is done.
     const made = await link.create(password);
     check.equal(made.ok, true); check.match(made.recovery, key); check.equal(link.recovery(), made.recovery);
     check.equal(link.snapshot().created, true); check.equal(link.snapshot().unlocked, true);
     check.equal((await link.create(password)).ok, false); check.equal(link.recovery(), made.recovery);
-    link.release(); check.equal(link.recovery(), undefined);
+    // The key counts as safe once the sheet was saved or printed; a new key starts unsafe again.
+    check.equal(link.secured(), false); link.secure(); check.equal(link.secured(), true);
+    link.release(); check.equal(link.recovery(), undefined); check.equal(link.secured(), false);
     const manager = await as(home, "vault-cli"), asker = await joined(home, manager, "synthetic-app"), other = await joined(home, manager, "other-app"), agent = await joined(home, manager, "claude-code", "agent");
 
     // An unlock prompt names the app that asks, by its registered name and id; a wrong password does not answer it, the right one does.
@@ -105,12 +113,18 @@ try {
     // Recovery opens the vault with a new password and gives a new key; the old password stops working.
     await link.lock(); await wait(1100);
     const recovered = await link.recover(made.recovery, changed);
-    check.equal(recovered.ok, true); check.match(recovered.recovery, key); check.notEqual(recovered.recovery, made.recovery); check.equal(link.recovery(), recovered.recovery); check.equal(link.snapshot().unlocked, true);
+    check.equal(recovered.ok, true); check.match(recovered.recovery, key); check.notEqual(recovered.recovery, made.recovery); check.equal(link.recovery(), recovered.recovery); check.equal(link.snapshot().unlocked, true); check.equal(link.secured(), false);
     await link.lock(); await wait(1100); check.deepEqual(await link.unlock(password), { ok: false, code: "locked" }); await wait(1100); check.deepEqual(await link.unlock(changed), { ok: true });
     check.deepEqual(await link.recover("AAAA-BBBB", changed), { ok: false, code: "locked" });
     // Settings follow the service; a change made elsewhere is read on the next turn.
     await manager.settings.set({ ...DEFAULTS, theme: "light", language: "es" });
     await link.refresh(true); check.equal(link.snapshot().settings.theme, "light"); check.equal(link.snapshot().settings.language, "es");
+    // A choice made in the window is saved by the service first and then shown; the settings of the service are the ones that count.
+    const chosen = { idleMinutes: 15, lockWithLastApp: false, language: "en", theme: "dark" };
+    check.deepEqual(await link.saveSettings({ ...chosen, extra: "x" }), { ok: true }); check.deepEqual(link.snapshot().settings, chosen); check.deepEqual(await manager.settings.get(), chosen);
+    check.equal(service.vault.memory.idle, 15 * 60000); check.equal(service.lifecycle.lockWithLastApp, false);
+    check.deepEqual(await link.saveSettings({ ...chosen, idleMinutes: 3 }), { ok: false, code: "invalid" }); check.deepEqual(link.snapshot().settings, chosen);
+    check.deepEqual(await manager.settings.set(DEFAULTS), DEFAULTS); await link.refresh(true); check.deepEqual(link.snapshot().settings, DEFAULTS);
     await link.stop(); check.equal((await service.apps.list()).length >= 5, true);
   }
 
@@ -143,11 +157,11 @@ try {
   const fake = (overrides = {}) => {
     const calls = [], record = name => (...args) => { calls.push([name, ...args]); return overrides[name]?.(...args) ?? Promise.resolve({ ok: true }); };
     const client = {
-      close: async () => { calls.push(["close"]); }, status: async () => { calls.push(["status"]); return overrides.status?.() ?? { created: true, unlocked: false, present: 1, idleMs: 0 }; },
-      settings: { get: async () => DEFAULTS }, runs: { list: async () => [], approve: record("approve"), approveWithHello: record("approveWithHello") },
+      close: async () => { calls.push(["close"]); }, settings: { get: async () => DEFAULTS, set: async value => { calls.push(["settings", value]); return value; } }, status: async () => { calls.push(["status"]); return overrides.status?.() ?? { created: true, unlocked: false, present: 1, idleMs: 0 }; },
+      runs: { list: async () => [], approve: record("approve"), approveWithHello: record("approveWithHello") },
       prompts: { list: async () => { calls.push(["list"]); return overrides.list?.() ?? []; }, dismiss: record("dismiss") },
       permissions: { importWithPassword: record("importWithPassword"), importWithHello: record("importWithHello") },
-      create: record("create"), restore: record("restore"), unlock: record("unlock"), hello: { unlock: record("helloUnlock") },
+      create: record("create"), restore: record("restore"), unlock: record("unlock"), hello: { unlock: record("helloUnlock"), enable: record("helloEnable"), disable: record("helloDisable") },
     };
     return { client, calls };
   };
@@ -191,6 +205,23 @@ try {
     // An answered prompt leaves the screen at once, even while the service still lists it; the next one shows.
     check.equal(link.snapshot().prompt?.id, second); await wait(60); check.equal(link.snapshot().prompt?.id, second);
     check.deepEqual(await link.allowImportWithHello(second), { ok: true }); check.deepEqual(calls.find(call => call[0] === "importWithHello"), ["importWithHello", "1", "field-notes"]); check.equal(link.snapshot().prompt, null);
+    await link.stop();
+  }
+  {
+    // Windows Hello comes from the status of the service: enabled when its wrapped key exists, available when the helper says so. A status without it means neither.
+    let hello = { available: true, enabled: true };
+    const { client, calls } = fake({ status: async () => ({ created: true, unlocked: false, present: 1, idleMs: 0, ...hello ? { hello } : {} }) });
+    const link = open("unused", { connect: async () => client, sleep: ms => wait(Math.min(ms, 10)) }); link.start();
+    await until(() => link.snapshot().phase === "ready", "ready with hello");
+    check.equal(link.snapshot().hello, true); check.equal(link.snapshot().helloAvailable, true);
+    hello = { available: false, enabled: true }; await link.refresh(); check.equal(link.snapshot().hello, true); check.equal(link.snapshot().helloAvailable, false);
+    hello = { available: true, enabled: false }; await link.refresh(); check.equal(link.snapshot().hello, false); check.equal(link.snapshot().helloAvailable, true);
+    hello = undefined; await link.refresh(); check.equal(link.snapshot().hello, false); check.equal(link.snapshot().helloAvailable, false);
+    // Turning it on takes the master password and nothing else; turning it off takes nothing.
+    check.deepEqual(await link.enableHello("synthetic"), { ok: true }); check.deepEqual(calls.find(call => call[0] === "helloEnable"), ["helloEnable", "synthetic"]);
+    check.deepEqual(await link.disableHello(), { ok: true }); check.equal(calls.some(call => call[0] === "helloDisable"), true);
+    // The settings go as the four keys, and the service's answer is what shows.
+    check.deepEqual(await link.saveSettings({ ...DEFAULTS, theme: "dark" }), { ok: true }); check.deepEqual(calls.find(call => call[0] === "settings")[1], { ...DEFAULTS, theme: "dark" }); check.equal(link.snapshot().settings.theme, "dark");
     await link.stop();
   }
   {

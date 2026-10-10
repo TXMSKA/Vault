@@ -2,13 +2,12 @@ import { ipcMain } from "electron";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
 import { ORIGIN } from "./protocol.ts";
 import { SHAPES, accepts } from "./validate.ts";
-import type { Call } from "./validate.ts";
+import type { Call, Payload } from "./validate.ts";
 export const CHANNEL = (call: string) => `vault:${call}`;
 /** The one channel the main process pushes state on. */
 export const STATE_CHANNEL = "vault:changed";
 /** What a call answers when it is refused: calls that return a result say so, the others say nothing. */
-const SILENT = new Set<Call>(["state", "interact", "retry", "minimize", "toggleMaximize", "close"]);
-type Payload<C extends Call> = (typeof SHAPES)[C] extends null ? undefined : { [K in keyof NonNullable<(typeof SHAPES)[C]>]: string };
+const SILENT = new Set<Call>(["state", "interact", "retry", "minimize", "toggleMaximize", "close", "cancelClose", "confirmClose"]);
 export type Handlers = { [C in Call]: (payload: Payload<C>) => unknown };
 /**
  * One handler per call the bridge offers, and no other channel. A call is answered only when it comes from this window's own page

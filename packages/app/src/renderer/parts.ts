@@ -25,7 +25,7 @@ export function notice(glyph: IconName, text: string, tone: Tone = "soft"): HTML
   return line;
 }
 export type Field = { root: HTMLElement; input: HTMLInputElement; box: HTMLElement; error(message?: string): void };
-export type FieldOptions = { label?: string; name: string; mono?: boolean; secret?: boolean; reveal?: boolean; placeholder?: string; glyph?: IconName; hint?: string; value?: string; readonly?: boolean; autocomplete?: string; t: Dictionary; grow?: boolean };
+export type FieldOptions = { label?: string; name: string; mono?: boolean; secret?: boolean; reveal?: boolean; placeholder?: string; glyph?: IconName; hint?: string; value?: string; readonly?: boolean; autocomplete?: string; t: Dictionary; grow?: boolean; trail?: HTMLElement[] };
 /**
  * A text field with its label above and a hint or an error below. A secret field hides what is typed; with `reveal` it also has the board's eye button at its
  * right end. `error(message)` turns the border and the line below into the error, and `error()` puts the hint back.
@@ -40,6 +40,7 @@ export function field(options: FieldOptions): Field {
     });
     toggle.setAttribute("aria-pressed", "false"); trail.push(toggle);
   }
+  trail.push(...options.trail ?? []);
   const box = div(`input${options.mono ? " mono" : ""}${trail.length ? " trail" : ""}`, options.glyph && icon(options.glyph, 16), input, ...trail);
   const below = div("below"), root = div("fg", options.label && h("label", { class: "label" }, options.label), box, below);
   if (options.grow) root.classList.add("grow");
@@ -67,7 +68,7 @@ export function choice(group: string, value: string, title: string, line: string
 }
 /** Disables everything in `root` while `work` runs, so a second click or a keystroke cannot repeat it. */
 export async function busy<T>(root: HTMLElement, work: () => Promise<T>): Promise<T> {
-  const controls = [...root.querySelectorAll<HTMLButtonElement | HTMLInputElement>("button, input")], before = controls.map(control => control.disabled);
+  const controls = [...root.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLTextAreaElement>("button, input, textarea")], before = controls.map(control => control.disabled);
   root.setAttribute("aria-busy", "true"); for (const control of controls) control.disabled = true;
   try { return await work(); }
   finally { controls.forEach((control, index) => { control.disabled = before[index]; }); root.removeAttribute("aria-busy"); }

@@ -9,7 +9,9 @@ export type EntryRow = { entry: Entry; version: number };
 export type LoginSummary = { id: string; version: number; title: string; username: string; website: string };
 export type AppIdentity = { id: string; name: string; kind: "cosmic" | "app" | "agent" };
 export type AppView = AppIdentity & { status: "granted" | "pending" | "revoked"; kinds: Kind[]; permissions: "import"[] };
-export type Status = { created: boolean; unlocked: boolean; present: number; idleMs: number };
+/** In the answer to vault-app and vault-cli only: whether Windows Hello can be used here, and whether it is set up for this vault (its wrapped key exists). */
+export type HelloStatus = { available: boolean; enabled: boolean };
+export type Status = { created: boolean; unlocked: boolean; present: number; idleMs: number; hello?: HelloStatus };
 export type Settings = { idleMinutes: 1 | 5 | 15 | 30 | 60 | 240; lockWithLastApp: boolean; language: "system" | "en" | "es"; theme: "system" | "dark" | "light" };
 export type PromptApp = { id: string; name: string };
 type PromptBase = { id: string; app: PromptApp; createdAt: string; expiresAt: string };

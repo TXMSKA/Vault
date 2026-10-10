@@ -21,7 +21,8 @@ no runtime dependencies outside the workspaces.
 - `packages/cli`: the `vault` developer command. Copy follows the system's
   Spanish or English locale. Passwords and recovery keys use hidden prompts.
 - `packages/app`: Vault's own window, an Electron app: first run, unlock, the
-  prompts that wait for a person and, for now, an empty list. See The app.
+  prompts that wait for a person, the entries of every kind, the settings and
+  the first-open tips. See The app.
 - `packages/helper`: `vault-helper.exe`, the one small native program Vault
   starts on Windows. It does Windows Hello consent and availability, DPAPI,
   the foreground window, private ACLs and the user Path. Vault starts no
@@ -158,7 +159,7 @@ exists now.
 The data root is `%LOCALAPPDATA%/Cosmic/apps/Vault` on Windows and
 `$XDG_DATA_HOME/Cosmic/apps/Vault` or `~/.local/share/Cosmic/apps/Vault` on
 Linux. `VAULT_HOME` overrides it for tests. Inside are `install.json`,
-`run/service.json`, `run/service.lock`, `settings.json`, `secrets/`, `store/`, `logs/` and `bin/`.
+`run/service.json`, `run/service.lock`, `settings.json`, `secrets/`, `store/`, `logs/` and `bin/`, and `app/` once the Vault app has run (its own files, not the service's).
 The old core default at `Cosmic/vault` is not migrated automatically.
 
 The service protects directories with private Windows ACLs, set and checked by the
@@ -227,6 +228,12 @@ a summary that holds no secret value (a run's environment is never in it). Unloc
 prompts expire after five minutes, runs after ten. At most 50 prompts wait in all and 5 per app;
 more answer 429. Prompts never extend the idle time.
 
+`GET /v1/status` answers `created`, `unlocked`, `present` and `idleMs` to every app. To `vault-app` and
+`vault-cli` it also answers `hello: { available, enabled }`: `enabled` is true when the wrapped Windows Hello key
+exists, and `available` is what the helper last said about Hello on this computer. The status never waits for the
+helper: it answers what it knows (nothing at first), asks the helper in the background and trusts the answer for a
+minute.
+
 `GET /v1/prompts`, for `vault-app` only, answers the waiting list at once or, when it is empty,
 holds the call for up to 25 seconds and then answers the list, possibly empty. `POST
 /v1/prompts/dismiss` turns one down: the asking app hears `cancelled`, a run is rejected and a
@@ -267,7 +274,33 @@ writes to the same home). Arguments after `--` go to the app; `--prompts` is the
 the service uses: the window stays hidden until a prompt arrives, and the app closes
 after 30 seconds if no prompt waits and nobody touches it. A second launch, with or
 without it, brings the first window forward. The browser's own files live beside the
-home, in `<home>-app`, never inside the protected folder.
+home, in `<home>/app`, a folder of its own beside the service's `run`, `secrets`, `store`, `logs`, `bin` and
+`sync`, so that `vault uninstall --remove-data`, which deletes the whole home, takes it too.
+
+The window opens on the entries of the vault. The list on the left has a search (names, usernames,
+websites and the other fields that are not secret), a kind filter with the count of each kind and of the
+favourites, and the + button, whose menu offers the seven kinds: login, card, document, note, key,
+environment and custom. An open entry shows its fields hidden: a secret field shows dots until the person
+reveals it, a login's one-time code counts down its 30 seconds, and every value can be copied. Edit, Delete (with
+Undo for as long as the toast is up) and the favourite star work on every kind; a login's form has a password
+generator (length, symbols, numbers, uppercase). The title bar's menu has Settings and Show the tips again;
+Apps, Import and Export say they are in the command line for now (`vault apps`, `vault import`,
+`vault export`). The settings are the idle lock (1, 5, 15, 30 minutes, 1 and 4 hours), lock when the last app
+closes, Windows Hello (turned on with the master password, off with one press), language and theme; each is
+saved through `PUT /v1/settings` when it is chosen and applied at once. The first-open tips show once, and their
+dismissal is kept in `<home>/app/tour.json`. Closing the window while the recovery key is on screen and was
+neither saved nor printed asks first.
+
+Values stay in the main process. A list or an open entry reaches the window with the fields that are not
+secret and nothing else (a secret field says only whether it holds a value, and the note and the one-time code
+key are never sent); revealing or copying fetches the entry from the service again, for that one value.
+Copying puts the value on the clipboard and clears it 30 seconds later, only if the clipboard still holds
+that value (and at once on quit). One-time codes (RFC 6238, SHA-1, 30 seconds, 6 digits) are made in the main
+process from the entry's key, a base32 secret or an `otpauth://totp` address, and only the current code
+and its seconds reach the window. Saving sends the version the window saw; an entry that changed meanwhile
+answers a conflict instead of being overwritten, and a secret the form never held is put back by the main
+process, not sent by the window. Documents list their files, but there is no way yet to add one, and deleting
+a document that has files asks first and cannot be undone.
 
 The main process alone talks to the service. The window is a frameless 920 by 640
 page served from `app://vault/` (no other address loads) under a strict
@@ -280,10 +313,15 @@ follow the settings (`system` follows the operating system). The screens are in
 board's, and the fonts (Inter, Space Grotesk and JetBrains Mono, all OFL) are served
 from the app.
 
-`npm test` covers the window's pure parts and its link to a real service. The whole
+`npm test` covers the window's pure parts (what the bridge accepts, the entries without their secrets, the
+one-time codes against the RFC 6238 vectors, the clipboard rule, the generator, the settings, the tips) and its
+link to a real service. The whole
 app, window included, is driven by an Electron check that needs a built app and an
-Electron folder. It uses a temporary home and a stand-in for Windows Hello, and writes
-a screenshot of each screen in the dark and the light theme to `build/screens`:
+Electron folder. It uses a temporary home, a stand-in for Windows Hello and in-memory stand-ins for the
+clipboard and the browser (the main process takes a test-only `clipboardMs` option so that the 30 seconds need
+not be waited out; the app never sets it), adds an entry of every kind through the window and goes through the
+list, the entries, the menu, the settings, the tips and the close warning, and writes a screenshot of each
+screen in the dark and the light theme to `build/screens`:
 
 ```
 $env:ELECTRON_OVERRIDE_DIST_PATH = "<Electron 44.5.1 folder>"

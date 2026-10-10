@@ -18,7 +18,19 @@ export const flow = {
   /** Counts the Windows Hello waits, so that the answer of one the person cancelled is ignored. */
   hello: 0,
 };
-/** Hooks the page sets once it exists: draw again, read the state from the main process, and put the printed sheet beside the app. */
-export const view = { redraw: () => {}, sync: async () => {}, sheet: (_page?: HTMLElement) => {} };
+/**
+ * Hooks the page sets once it exists: draw again, read the state from the main process, put the printed sheet beside the app, show a dialog over the whole window
+ * (none when called without one), run something when the screen is replaced, and answer the state the main process sent last.
+ */
+export const view = {
+  redraw: () => {}, sync: async () => {}, sheet: (_page?: HTMLElement) => {},
+  modal: (_dialog?: HTMLElement) => {},
+  leave: (_cleanup: () => void) => {},
+  /** Calls the listener with each state the main process sends, until the screen is replaced. */
+  watch: (_listener: (state: AppState) => void) => {},
+  /** Shows the first-open tips again on the list. */
+  tips: () => {},
+  state: undefined as unknown as () => AppState,
+};
 /** Moves to another screen of a flow. */
 export function go(change: () => void) { change(); view.redraw(); }

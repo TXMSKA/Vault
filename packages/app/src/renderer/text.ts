@@ -10,3 +10,7 @@ export function keyLines(recovery: string): string[] {
 }
 /** Whole minutes left, rounded up; 0 when the time is up. */
 export const minutesLeft = (expiresAt: string, now: number) => Math.max(0, Math.ceil((Date.parse(expiresAt) - now) / 60000));
+/** The letter on a row's tile: the first character of the name, in capitals. */
+export const initial = (title: string) => (Array.from(title.trim())[0] ?? "?").toLocaleUpperCase();
+/** A one-time code in two halves, as it is easier to read and to type. */
+export const codeGroups = (code: string) => code.length === 6 ? `${code.slice(0, 3)} ${code.slice(3)}` : code;

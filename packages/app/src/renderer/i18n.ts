@@ -1,5 +1,8 @@
+import { enEntries, esEntries } from "./i18n-entries.ts";
+import type { EntriesDictionary } from "./i18n-entries.ts";
 // The words of Vault's window, in English and in Spanish, each written on its own. Spanish is impersonal: no voseo and no tuteo.
-export type Dictionary = {
+// The list, the entries, the settings and the tips have theirs in i18n-entries.ts.
+export type Dictionary = EntriesDictionary & {
   // The title bar
   lock: string; lockNow: string; menu: string; minimize: string; maximize: string; restore: string; close: string;
   // Shared
@@ -28,6 +31,7 @@ export type Dictionary = {
 const count = (n: number, one: string, many: string) => n === 1 ? one : many;
 const wordsEn = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"], wordsEs = ["", "un", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez"];
 export const en: Dictionary = {
+  ...enEntries,
   lock: "Lock", lockNow: "Lock Vault now", menu: "Menu", minimize: "Minimize", maximize: "Maximize", restore: "Restore", close: "Close",
   back: "Back", cancel: "Cancel", reveal: "Reveal", hide: "Hide", masterPassword: "Master password", repeatIt: "Repeat it", passwordRange: "15 to 128 characters.", passwordShort: "Use 15 to 128 characters.", passwordMismatch: "The two passwords are not the same.",
   unavailable: "Vault could not be reached. Try again.", busy: "Vault is busy. Try again in a moment.", limited: "Too many attempts. Wait a moment and try again.",
@@ -57,6 +61,7 @@ export const en: Dictionary = {
   sheetKeep: "Keep this sheet offline, somewhere only you can reach. Anyone with this key and a copy of your vault can open it.", sheetFoot: "Vault does not keep a copy of this key and cannot send it again.",
 };
 export const es: Dictionary = {
+  ...esEntries,
   lock: "Bloquear", lockNow: "Bloquear Vault ahora", menu: "Menú", minimize: "Minimizar", maximize: "Maximizar", restore: "Restaurar", close: "Cerrar",
   back: "Atrás", cancel: "Cancelar", reveal: "Mostrar", hide: "Ocultar", masterPassword: "Contraseña maestra", repeatIt: "Repetirla", passwordRange: "De 15 a 128 caracteres.", passwordShort: "Debe tener de 15 a 128 caracteres.", passwordMismatch: "Las dos contraseñas no coinciden.",
   unavailable: "No se pudo conectar con Vault. Volver a intentar.", busy: "Vault está ocupado. Volver a intentar en un momento.", limited: "Demasiados intentos. Esperar un momento y volver a intentar.",

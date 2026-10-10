@@ -1,7 +1,7 @@
 import "../../../test/guard.mjs";
 const started = performance.now();
 try {
-  const { counts } = await import("./units.test.mjs"); await import("./link.test.mjs");
+  const { counts } = await import("./units.test.mjs"); await import("./entries.test.mjs"); await import("./link.test.mjs");
   console.log(`Vault app: ${counts.checks} checks passed in ${((performance.now() - started) / 1000).toFixed(1)} s.`);
 } catch (error) {
   // Assertions and crypto errors can include input. Only static test locations reach output.
