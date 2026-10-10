@@ -66,7 +66,7 @@ function ended(io: CliIO, progress: RunProgress): number {
     project: ["The project is not in Vault. Nothing ran.", "El proyecto no está en Vault. No se ejecutó nada."],
     conflict: ["More than one entry in Vault has this project's name. Nothing ran.", "Hay más de una entrada en Vault con el nombre de este proyecto. No se ejecutó nada."],
     not_found: ["The command was not found.", "No se encontró el comando."],
-    unsafe_argument: ["A .cmd or .bat file cannot take \" % ! ^ & | < > in its arguments. Run the program itself instead.", "Un archivo .cmd o .bat no puede recibir \" % ! ^ & | < > en sus argumentos. Ejecutá el programa directamente."],
+    unsafe_argument: ["A .cmd or .bat file cannot take \" % ! ^ & | < > in its arguments. Run the program itself instead.", "Un archivo .cmd o .bat no puede recibir \" % ! ^ & | < > en sus argumentos. El programa se puede ejecutar directamente."],
     timeout: ["A command ran for more than 15 minutes and was stopped.", "Un comando pasó los 15 minutos y se detuvo."],
     not_started: ["A command could not start.", "Un comando no pudo arrancar."],
   };

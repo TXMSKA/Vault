@@ -290,7 +290,7 @@ try {
     check.deepEqual(errors, [window]); check.deepEqual(output, ["Vault unlocked."]); check.deepEqual(asked, []); check.equal(found.app.id, "vault-cli"); check.equal(found.summary.reason, "vault unlock"); check.equal(open(service), true);
     reset(); check.equal(await main(["unlock"], io), 0); check.deepEqual(errors, []); check.deepEqual(output, ["Vault unlocked."]);
     await ui.lock(); reset(); process.env.LC_ALL = "es"; app = unlocking(); check.equal(await main(["unlock"], io), 0); await app;
-    check.deepEqual(errors, ["Desbloqueá Vault en su ventana."]); check.deepEqual(output, ["Vault desbloqueado."]); process.env.LC_ALL = "en";
+    check.deepEqual(errors, ["Desbloquear Vault en su ventana."]); check.deepEqual(output, ["Vault desbloqueado."]); process.env.LC_ALL = "en";
     await ui.lock(); reset(); answers.push("yes"); app = unlocking(); check.equal(await main(["get", login.id, "password", "--reveal"], io), 0); found = await app;
     check.equal(output.length, 1); check.equal(output[0] === canary, true); check.deepEqual(errors, [window]); check.equal(asked.length, 1); check.equal(asked[0].includes("Master"), false); check.equal(found.summary.reason, "vault get");
     // --terminal keeps the question in the terminal, before or after the command, and makes no prompt.

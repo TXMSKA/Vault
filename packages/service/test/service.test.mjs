@@ -573,7 +573,7 @@ try {
     const previousHome = process.env.VAULT_HOME, previousLocale = process.env.LC_ALL; process.env.VAULT_HOME = installHome; prompts.length = 0;
     try {
       errors.length = 0; assert.equal(await main(["install"], io), 1); assert.deepEqual(errors, ["Run vault install from an installed copy of Vault."]);
-      process.env.LC_ALL = "es"; errors.length = 0; assert.equal(await main(["install"], io), 1); assert.deepEqual(errors, ["Ejecutá vault install desde una copia instalada de Vault."]); process.env.LC_ALL = "en";
+      process.env.LC_ALL = "es"; errors.length = 0; assert.equal(await main(["install"], io), 1); assert.deepEqual(errors, ["vault install se ejecuta desde una copia instalada de Vault."]); process.env.LC_ALL = "en";
       for (const args of [["install", "x"], ["install", "--app"], ["install", "--app", "a", "b"], ["uninstall", "--keep"], ["uninstall", "--remove-data", "x"]]) assert.equal(await main(args, io), 2);
       await assert.rejects(() => stat(installHome)); checks += 10;
 
@@ -607,7 +607,7 @@ try {
       errors.length = 0; prompts.push("delete"); assert.equal(await main(["uninstall", "--remove-data"], asking), 1); assert.deepEqual(errors, ["Cancelled."]); await stat(installHome);
       assert.equal(asked[0], `This deletes ${installHome}, with your vault and all its data, for good. Type DELETE to continue: `);
       process.env.LC_ALL = "es"; errors.length = 0; prompts.push("DELETE"); assert.equal(await main(["uninstall", "--remove-data"], asking), 1); assert.deepEqual(errors, ["Cancelado."]); await stat(installHome);
-      assert.equal(asked[1], `Esto borra ${installHome}, con tu bóveda y todos sus datos, para siempre. Escribí BORRAR para seguir: `); process.env.LC_ALL = "en";
+      assert.equal(asked[1], `Esto borra ${installHome}, con la bóveda y todos sus datos, para siempre. Para seguir, escribir BORRAR: `); process.env.LC_ALL = "en";
       output.length = 0; prompts.push(" DELETE "); assert.equal(await main(["uninstall", "--remove-data"], asking), 0); assert.deepEqual(output, ["Vault is uninstalled and its data deleted.", `Remove ${bin} from PATH if you added it.`]); await assert.rejects(() => stat(installHome));
       result = installed(["install"]); assert.equal(result.status, 0); await stat(installPath);
       process.env.LC_ALL = "es"; output.length = 0; prompts.push("BORRAR"); assert.equal(await main(["uninstall", "--remove-data"], asking), 0); assert.equal(output[0], "Se desinstaló Vault y se borraron sus datos."); await assert.rejects(() => stat(installHome)); process.env.LC_ALL = "en";

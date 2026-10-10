@@ -12,7 +12,7 @@
     "npm": ">=11.19.0 <12"
   },
   "scripts": {
-    "test": "npm run build && node packages/core/test/run.mjs && node packages/service/test/run.mjs && node packages/app/test/run.mjs",
+    "test": "node test/spanish.mjs && npm run build && node packages/core/test/run.mjs && node packages/service/test/run.mjs && node packages/app/test/run.mjs",
     "typecheck": "tsc -p packages/core --noEmit && tsc -p packages/client --noEmit && tsc -p packages/service --noEmit && tsc -p packages/cli --noEmit && npm run typecheck -w vault-app",
     "build": "node scripts/build-helper.mjs && tsc -p packages/core && tsc -p packages/client && tsc -p packages/service && tsc -p packages/cli && npm run build -w vault-app",
     "app": "node packages/app/scripts/start.mjs"

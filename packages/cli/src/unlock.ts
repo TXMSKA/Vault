@@ -10,7 +10,7 @@ export async function unlocked(api: Client, io: CliIO, viaApp: boolean, reason?:
   if ((await api.status()).unlocked) return;
   if (!viaApp) { await api.unlock(await io.ask(copy("Master password: ", "Contraseña maestra: "))); return; }
   const { id } = await api.prompts.unlock(reason);
-  io.error(copy("Unlock Vault in its window.", "Desbloqueá Vault en su ventana."));
+  io.error(copy("Unlock Vault in its window.", "Desbloquear Vault en su ventana."));
   for (;;) {
     const { state } = await api.prompts.wait(id);
     if (state === "done") return;

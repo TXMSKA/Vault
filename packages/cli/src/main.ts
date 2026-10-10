@@ -19,31 +19,31 @@ const usage = () => copy(
   "vault status\nvault create --kit <file.txt>\nvault unlock [--terminal]\nvault recover --kit <file.txt>\nvault lock\nvault apps [allow|revoke <id>]\nvault settings\nvault settings set <key> <value>\nvault run --project <name> [--agent <id>] -- <command> [args...]\nvault run --project <name> [--agent <id>] --batch <file.json>\nvault run --attach <request> [--agent <id>]\nvault approve [--terminal]\nvault reject <request>\nvault import <file> --from chrome|edge|firefox|bitwarden|1password|keepass\nvault import <file.env> --from dotenv --project <name>\nvault export <file>\nvault restore <file>\nvault sync status\nvault sync setup <folder>\nvault sync join <folder> [--recovery]\nvault sync now\nvault sync conflicts\nvault sync restore <id>\nvault sync dismiss <id>\nvault sync leave\nvault install [--app <path>]\nvault uninstall [--remove-data]\nvault dev-install\nvault serve",
   "vault status: consultar el estado\nvault create --kit <archivo.txt>: crear la bóveda y guardar el kit\nvault unlock [--terminal]: desbloquear\nvault recover --kit <archivo.txt>: recuperar y guardar un kit nuevo\nvault lock: bloquear\nvault apps [allow|revoke <id>]: listar, permitir o revocar apps\nvault settings: ver los ajustes\nvault settings set <clave> <valor>: cambiar un ajuste\nvault run --project <nombre> [--agent <id>] -- <comando> [args...]: pedir que se ejecute con las variables del proyecto\nvault run --project <nombre> [--agent <id>] --batch <archivo.json>: pedir varios comandos juntos\nvault run --attach <pedido> [--agent <id>]: volver a seguir un pedido\nvault approve [--terminal]: ver los pedidos que esperan y aprobarlos o rechazarlos\nvault reject <pedido>: rechazar un pedido o detenerlo\nvault import <archivo> --from chrome|edge|firefox|bitwarden|1password|keepass: importar\nvault import <archivo.env> --from dotenv --project <nombre>: guardar las variables de un proyecto\nvault export <archivo>: guardar una copia cifrada\nvault restore <archivo>: restaurar una copia cifrada\nvault sync status: consultar la sincronización\nvault sync setup <carpeta>: configurar la carpeta compartida\nvault sync join <carpeta> [--recovery]: unir esta computadora\nvault sync now: sincronizar ahora\nvault sync conflicts: ver los conflictos\nvault sync restore <id>: restaurar una versión guardada\nvault sync dismiss <id>: descartar una versión guardada\nvault sync leave: dejar de sincronizar\nvault install [--app <ruta>]: instalar Vault desde esta copia\nvault uninstall [--remove-data]: desinstalar Vault y conservar los datos, o borrarlos también\nvault dev-install: guardar la instalación de desarrollo\nvault serve: ejecutar el servicio");
 const messages: Record<string, [string, string]> = {
-  sync_existing: ["This computer already has a vault. Export and restore it instead.", "Esta computadora ya tiene una bóveda. Exportala y restaurala."],
-  sync_unconfigured: ["Set up sync first.", "Primero configurá la sincronización."],
-  locked: ["Vault is locked. Run vault unlock.", "Vault está bloqueado. Ejecutá vault unlock."],
-  unlock_expired: ["Nobody unlocked Vault in time. Try again.", "Nadie desbloqueó Vault a tiempo. Volvé a intentar."],
-  not_installed: ["Run vault dev-install first.", "Primero ejecutá vault dev-install."],
+  sync_existing: ["This computer already has a vault. Export and restore it instead.", "Esta computadora ya tiene una bóveda. En su lugar, exportarla y restaurarla."],
+  sync_unconfigured: ["Set up sync first.", "Primero hay que configurar la sincronización."],
+  locked: ["Vault is locked. Run vault unlock.", "Vault está bloqueado. Para desbloquearlo: vault unlock."],
+  unlock_expired: ["Nobody unlocked Vault in time. Try again.", "Nadie desbloqueó Vault a tiempo. Se puede volver a intentar."],
+  not_installed: ["Run vault dev-install first.", "Primero hay que ejecutar vault dev-install."],
   pending: ["This app is awaiting approval.", "Esta app espera autorización."],
   revoked: ["This app's access was revoked.", "Se revocó el acceso de esta app."],
   forbidden: ["This app does not have permission.", "Esta app no tiene permiso."],
   terminal_required: ["A terminal is required for input and value access.", "Se necesita una terminal para ingresar datos y acceder a valores."],
   cancelled: ["Cancelled.", "Cancelado."],
   not_found: ["Entry or field not found.", "No se encontró la entrada o el campo."],
-  invalid: ["Invalid input. Run vault help.", "Revisá los datos. Ejecutá vault help."],
+  invalid: ["Invalid input. Run vault help.", "Hay datos que no son válidos. La ayuda está en vault help."],
   unsafe_location: ["The data location cannot be made private.", "No se pudo proteger la carpeta de datos."],
   path_failed: ["The vault command could not be added to PATH.", "No se pudo agregar el comando vault al PATH."],
   path_remove_failed: ["The vault command could not be removed from PATH.", "No se pudo quitar el comando vault del PATH."],
-  not_packaged: ["Run vault install from an installed copy of Vault.", "Ejecutá vault install desde una copia instalada de Vault."],
-  limited: ["The limit was reached. Try again later.", "Se alcanzó el límite. Volvé a intentar más tarde."],
-  rate_limited: ["Too many requests. Try again later.", "Demasiadas solicitudes. Volvé a intentar más tarde."],
+  not_packaged: ["Run vault install from an installed copy of Vault.", "vault install se ejecuta desde una copia instalada de Vault."],
+  limited: ["The limit was reached. Try again later.", "Se alcanzó el límite. Se puede volver a intentar más tarde."],
+  rate_limited: ["Too many requests. Try again later.", "Demasiadas solicitudes. Se puede volver a intentar más tarde."],
   conflict: ["The data changed or already exists.", "Los datos cambiaron o ya existen."],
-  not_verified: ["Vault could not confirm it is you. Nothing ran.", "Vault no pudo confirmar que sos vos. No se ejecutó nada."],
-  hello_unavailable: ["Windows Hello is not available for Vault here. Type the master password instead.", "Windows Hello no está disponible para Vault acá. Escribí la contraseña maestra."],
+  not_verified: ["Vault could not confirm it is you. Nothing ran.", "Vault no pudo confirmar la identidad. No se ejecutó nada."],
+  hello_unavailable: ["Windows Hello is not available for Vault here. Type the master password instead.", "Windows Hello no está disponible para Vault en esta computadora. Se puede usar la contraseña maestra."],
   expired: ["The request expired. Nothing ran.", "El pedido venció. No se ejecutó nada."],
   not_pending: ["That request was already answered.", "Ese pedido ya tuvo respuesta."],
   run_not_found: ["Vault has no request with that id. It ended more than 10 minutes ago, or the service restarted.", "Vault no tiene un pedido con ese id. Terminó hace más de 10 minutos o el servicio se reinició."],
-  busy: ["Vault is busy. Try again in a moment.", "Vault está ocupado. Volvé a intentar en un momento."],
+  busy: ["Vault is busy. Try again in a moment.", "Vault está ocupado. Se puede volver a intentar en un momento."],
   too_large: ["The data is too large.", "Los datos son demasiado grandes."],
 };
 /** `write` and `error` print a line; `out` and `err` pass a command's output through as it came. */
@@ -56,7 +56,7 @@ async function confirmValues(io: CliIO) {
 }
 async function confirmedPassword(io: CliIO) {
   const password = await io.ask(copy("New master password (15 to 128 characters): ", "Contraseña maestra nueva (15 a 128 caracteres): "));
-  if (password.length < 15 || password.length > 128 || password !== await io.ask(copy("Confirm password: ", "Confirmá la contraseña: "))) throw new VaultClientError("invalid"); return password;
+  if (password.length < 15 || password.length > 128 || password !== await io.ask(copy("Confirm password: ", "Repetir la contraseña: "))) throw new VaultClientError("invalid"); return password;
 }
 async function kit(filename: string, operation: () => Promise<{ recovery: string }>) {
   if (!filename.toLowerCase().endsWith(".txt")) throw new VaultClientError("invalid");
@@ -80,20 +80,20 @@ export async function main(args = process.argv.slice(2), io: CliIO = terminal): 
     if (command === "dev-install" && args.length === 1) {
       prepareHome(home); await atomicJson(join(home, "install.json"), { version: 1, command: process.execPath, args: [fileURLToPath(new URL(`../../service/src/main${extname(import.meta.url)}`, import.meta.url))], ...process.platform === "win32" ? { helper: fileURLToPath(new URL("../../helper/bin/vault-helper.exe", import.meta.url)) } : {} });
       const manual = await installLauncher(home, fileURLToPath(import.meta.url));
-      io.write(manual ? copy(`Development installation saved. Add ${manual} to PATH to use vault.`, `Se guardó la instalación de desarrollo. Agregá ${manual} al PATH para usar vault.`) : copy("Development installation saved. Open a new terminal to use vault.", "Se guardó la instalación de desarrollo. Abrí una terminal nueva para usar vault.")); return 0;
+      io.write(manual ? copy(`Development installation saved. Add ${manual} to PATH to use vault.`, `Se guardó la instalación de desarrollo. Para usar vault, agregar ${manual} al PATH.`) : copy("Development installation saved. Open a new terminal to use vault.", "Se guardó la instalación de desarrollo. vault ya se puede usar en una terminal nueva.")); return 0;
     }
     if (command === "install" && (args.length === 1 || args.length === 3 && sub === "--app")) {
       const place = layout(); if (!place) throw new VaultClientError("not_packaged");
       const manual = await install(home, place, args.length === 3 ? appFile(third) : undefined);
-      io.write(manual ? copy(`Vault is installed. Add ${manual} to PATH to use vault.`, `Vault quedó instalado. Agregá ${manual} al PATH para usar vault.`) : copy("Vault is installed. Open a new terminal to use vault.", "Vault quedó instalado. Abrí una terminal nueva para usar vault.")); return 0;
+      io.write(manual ? copy(`Vault is installed. Add ${manual} to PATH to use vault.`, `Vault quedó instalado. Para usar vault, agregar ${manual} al PATH.`) : copy("Vault is installed. Open a new terminal to use vault.", "Vault quedó instalado. vault ya se puede usar en una terminal nueva.")); return 0;
     }
     if (command === "uninstall" && (args.length === 1 || args.length === 2 && sub === "--remove-data")) {
       const wipe = args.length === 2, word = copy("DELETE", "BORRAR");
       if (wipe && !io.isTTY()) throw new VaultClientError("terminal_required");
-      if (wipe && (await io.ask(copy(`This deletes ${visible(home)}, with your vault and all its data, for good. Type ${word} to continue: `, `Esto borra ${visible(home)}, con tu bóveda y todos sus datos, para siempre. Escribí ${word} para seguir: `))).trim() !== word) throw new VaultClientError("cancelled");
+      if (wipe && (await io.ask(copy(`This deletes ${visible(home)}, with your vault and all its data, for good. Type ${word} to continue: `, `Esto borra ${visible(home)}, con la bóveda y todos sus datos, para siempre. Para seguir, escribir ${word}: `))).trim() !== word) throw new VaultClientError("cancelled");
       const manual = await uninstall(home, wipe);
-      io.write(wipe ? copy("Vault is uninstalled and its data deleted.", "Se desinstaló Vault y se borraron sus datos.") : copy("Vault is uninstalled. Your data was kept.", "Se desinstaló Vault. Se conservaron tus datos."));
-      if (manual) io.write(copy(`Remove ${manual} from PATH if you added it.`, `Quitá ${manual} del PATH si lo agregaste.`)); return 0;
+      io.write(wipe ? copy("Vault is uninstalled and its data deleted.", "Se desinstaló Vault y se borraron sus datos.") : copy("Vault is uninstalled. Your data was kept.", "Se desinstaló Vault. Se conservaron los datos."));
+      if (manual) io.write(copy(`Remove ${manual} from PATH if you added it.`, `Si ${manual} está en el PATH, quitarlo de ahí.`)); return 0;
     }
     if (command === "status" && args.length === 1 && !await findService(home)) { io.write(copy("Vault is stopped.", "Vault está detenido.")); return 0; }
     const options = command === "run" ? runOptions(args, appIdPattern) : undefined, dotenv = command === "import" && args.length === 6 && third === "--from" && args[3] === "dotenv" && args[4] === "--project";
@@ -106,12 +106,12 @@ export async function main(args = process.argv.slice(2), io: CliIO = terminal): 
     if (flagged && !asks) throw new VaultClientError("invalid");
     const viaApp = asks && !flagged && installedApp(home) !== undefined;
     if (command === "approve" && viaApp) { io.write(copy("Approvals happen in Vault's window.", "Las aprobaciones se hacen en la ventana de Vault.")); return 0; }
-    if (get && args.at(-1) !== "--reveal") { io.write(copy("Add --reveal to print a field value after terminal confirmation.", "Agregá --reveal para mostrar el valor de un campo después de confirmar en la terminal.")); return 0; }
+    if (get && args.at(-1) !== "--reveal") { io.write(copy("Add --reveal to print a field value after terminal confirmation.", "Con --reveal se muestra el valor de un campo después de confirmar en la terminal.")); return 0; }
     if (get) await confirmValues(io);
     if (syncing && ["setup", "join"].includes(sub)) {
       if (!io.isTTY()) throw new VaultClientError("terminal_required");
-      io.write(copy("Encrypted copies of every entry and attachment leave this computer for whoever syncs your chosen folder, including OneDrive. The provider cannot read them. The folder holds the vault protected by your master password, so its strength matters. Keep the folder, the master password and the recovery kit yourself.", "Se envían copias cifradas de cada entrada y adjunto a quienes sincronicen la carpeta que elijas, incluido OneDrive. El proveedor no puede leerlas. La carpeta tiene la bóveda protegida por tu contraseña maestra: su fortaleza importa. Guardá vos la carpeta, la contraseña maestra y el kit de recuperación."));
-      if (!yes(await io.ask(copy("Continue? (y/n): ", "¿Seguís? (s/n): ")))) throw new VaultClientError("cancelled");
+      io.write(copy("Encrypted copies of every entry and attachment leave this computer for whoever syncs your chosen folder, including OneDrive. The provider cannot read them. The folder holds the vault protected by your master password, so its strength matters. Keep the folder, the master password and the recovery kit yourself.", "Se envían copias cifradas de cada entrada y adjunto a quienes sincronicen la carpeta elegida, incluido OneDrive. El proveedor no puede leerlas. La carpeta tiene la bóveda protegida por la contraseña maestra: su fortaleza importa. Guardar la carpeta, la contraseña maestra y el kit de recuperación queda a cargo de cada persona."));
+      if (!yes(await io.ask(copy("Continue? (y/n): ", "¿Continuar? (s/n): ")))) throw new VaultClientError("cancelled");
     }
     if (command === "approve" && !io.isTTY()) throw new VaultClientError("terminal_required");
     // Without a terminal, or when named, the caller is an agent: it may only propose runs for a person to approve.
@@ -133,7 +133,7 @@ export async function main(args = process.argv.slice(2), io: CliIO = terminal): 
       else if (sub === "conflicts") { const conflicts = await api.sync.conflicts(); if (!conflicts.length) io.write(copy("No conflicts.", "No hay conflictos.")); for (const row of conflicts) io.write(`${row.id} | ${row.kind ?? copy("envelope", "bóveda")} | ${visible(row.title)} | ${row.deviceId} | ${row.time}${row.deleted ? copy(" | deleted", " | eliminada") : ""}`); }
       else if (sub === "restore") { await api.sync.restore(third); io.write(copy("Restored as a new change.", "Se restauró como un cambio nuevo.")); }
       else if (sub === "dismiss") { await api.sync.dismiss(third); io.write(copy("Dismissed.", "Se descartó.")); }
-      else { if (!io.isTTY()) throw new VaultClientError("terminal_required"); const remove = yes(await io.ask(copy("Remove only this computer's writer folder too? (y/n): ", "¿Borrás también la carpeta de esta computadora? (s/n): "))); await api.sync.leave(remove); io.write(copy("Sync disconnected on this computer.", "Se desconectó la sincronización en esta computadora.")); }
+      else { if (!io.isTTY()) throw new VaultClientError("terminal_required"); const remove = yes(await io.ask(copy("Remove only this computer's writer folder too? (y/n): ", "¿Borrar también la carpeta de esta computadora? (s/n): "))); await api.sync.leave(remove); io.write(copy("Sync disconnected on this computer.", "Se desconectó la sincronización en esta computadora.")); }
     }
     else if (command === "status") { const status = await api.status(); io.write(copy(`Vault is ${status.created ? status.unlocked ? "unlocked" : "locked" : "not created"}.`, `Vault está ${status.created ? status.unlocked ? "desbloqueado" : "bloqueado" : "sin crear"}.`)); }
     else if (command === "create") {
