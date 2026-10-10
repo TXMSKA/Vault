@@ -152,9 +152,11 @@ static class VaultHelper {
 
   static List<string> Allowed(SecurityIdentifier user) { return new List<string>(new string[] { user.Value, SystemSid, AdministratorsSid }); }
 
-  // The owner is the current user and every rule, inherited ones too, allows only the user, SYSTEM or Administrators.
+  // The owner is the current user (or Administrators, below) and every rule, inherited ones too, allows only the user, SYSTEM or Administrators.
   static void Audit(CommonObjectSecurity security, SecurityIdentifier user, List<string> allowed) {
-    if (!user.Equals(security.GetOwner(typeof(SecurityIdentifier)))) throw new InvalidOperationException();
+    // An elevated process gives the files it creates to the Administrators group, which the access list already allows in full; any other owner fails.
+    IdentityReference owner = security.GetOwner(typeof(SecurityIdentifier));
+    if (owner == null || !user.Equals(owner) && owner.Value != AdministratorsSid) throw new InvalidOperationException();
     foreach (AuthorizationRule rule in security.GetAccessRules(true, true, typeof(SecurityIdentifier))) {
       AccessRule access = (AccessRule)rule;
       if (access.AccessControlType != AccessControlType.Allow || !allowed.Contains(access.IdentityReference.Value)) throw new InvalidOperationException();
