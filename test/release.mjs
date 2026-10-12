@@ -10,6 +10,9 @@ import { INSTALLER, RELEASE_FILES, SIGNING, SUMS_FILE, filesIn, latestHash, refr
 
 // A checkout on Windows can turn line ends into CRLF; the files are compared as text with LF.
 const root = fileURLToPath(new URL("../", import.meta.url)), lf = text => text.replace(/\r\n/g, "\n"), read = (...path) => lf(readFileSync(join(root, ...path), "utf8"));
+// The release workflow is asserted from the job blocks themselves. There is no YAML parser in the tools this file is allowed to import.
+const jobsOf = text => { const body = text.slice(text.indexOf("\njobs:\n") + "\njobs:\n".length), marks = [...body.matchAll(/^  ([A-Za-z0-9-]+):\n/gm)]; return Object.fromEntries(marks.map((mark, index) => [mark[1], body.slice(mark.index, marks[index + 1]?.index ?? body.length)])); };
+const stepOf = (body, name) => { const marker = `      - name: ${name}\n`, start = body.indexOf(marker); if (start < 0) throw new Error(`missing step ${name}`); const rest = body.slice(start + marker.length), next = rest.search(/\n {6}- /); return next < 0 ? rest : rest.slice(0, next); };
 let checks = 0;
 const check = Object.fromEntries(["equal", "deepEqual", "match", "doesNotMatch", "ok", "throws"].map(name => [name, (...args) => { checks++; return assert[name](...args); }]));
 const scratch = mkdtempSync(join(resolve(tmpdir()), "release-"));
@@ -72,15 +75,63 @@ try {
     const text = read(".github", "workflows", name), uses = [...text.matchAll(/^\s*(?:- )?uses: (\S+)(.*)$/gm)];
     check.ok(uses.length > 0, name);
     for (const [, action, rest] of uses) { const [repo, commit] = action.split("@"); check.equal(commit, pinned[repo], `${name} ${action}`); check.match(rest, /^ # v\d+(?:\.\d+\.\d+)?$/, `${name} ${action}`); }
-    check.deepEqual([...text.matchAll(/^\s*runs-on: (.+)$/gm)].map(match => match[1]), name === "release.yml" ? ["windows-latest", "windows-latest"] : ["windows-latest"]);
+    check.deepEqual([...text.matchAll(/^\s*runs-on: (.+)$/gm)].map(match => match[1]), name === "release.yml" ? Array(6).fill("windows-latest") : ["windows-latest"]);
     check.doesNotMatch(text, /self-hosted|ubuntu|macos/i); check.match(text, /^permissions:\n  contents: read$/m);
-    check.equal((text.match(/node-version: 26\.8\.2/g) ?? []).length, 1);
-    check.doesNotMatch(text, /persist-credentials: true/); check.equal((text.match(/persist-credentials: false/g) ?? []).length, 1);
+    check.equal((text.match(/node-version: 26\.8\.2/g) ?? []).length, name === "release.yml" ? 3 : 1);
+    check.doesNotMatch(text, /persist-credentials: true/); check.equal((text.match(/persist-credentials: false/g) ?? []).length, name === "release.yml" ? 3 : 1);
+    check.equal((text.match(/fetch-depth: 0/g) ?? []).length, name === "release.yml" ? 3 : 1);
   }
   const release = read(".github", "workflows", "release.yml");
-  check.match(release, /on:\n  push:\n    tags:\n      - 'v\*'/); check.equal((release.match(/if: github\.repository == 'TXMSKA\/Vault'/g) ?? []).length, 2);
-  check.equal((release.match(/contents: write/g) ?? []).length, 1); check.ok(release.indexOf("contents: write") > release.indexOf("  publish:"));
-  check.equal((release.match(/if: vars\.SIGNPATH_ENABLED == 'true'/g) ?? []).length, 7);
+  const jobs = jobsOf(release), names = ["build", "sign-programs", "repack", "sign-installer", "finalize", "publish"];
+  check.deepEqual(Object.keys(jobs), names);
+  check.match(release, /on:\n  push:\n    tags:\n      - 'v\*'/);
+  check.equal((release.match(/github\.repository == 'TXMSKA\/Vault'/g) ?? []).length, 6);
+  check.equal((release.match(/contents: write/g) ?? []).length, 1); check.ok(jobs.publish.includes("contents: write") && release.indexOf("contents: write") > release.indexOf("\n  publish:"));
+  check.doesNotMatch(release, /write-all|id-token:|packages: write|pull-requests: write/);
+  for (const name of names) if (name !== "publish") { check.match(jobs[name], /contents: read/); check.doesNotMatch(jobs[name], /contents: write/); }
+  check.match(jobs.publish, /permissions:\n      contents: write\n(?:      #.*\n)?      actions: read\n/); check.match(jobs.publish, /needs: finalize\n/); check.doesNotMatch(jobs.publish, /always\(\)|SIGNPATH_API_TOKEN|environment:/);
+  check.match(jobs.publish, /if: "!cancelled\(\) && github\.repository == 'TXMSKA\/Vault' && needs\.finalize\.result == 'success'"\n/);
+  const signIf = "github.repository == 'TXMSKA/Vault' && vars.SIGNPATH_ENABLED == 'true'";
+  const continueIf = disabled => `always() && !cancelled() && github.repository == 'TXMSKA/Vault' && needs.${disabled}.result == 'success' && ((vars.SIGNPATH_ENABLED == 'true' && needs.${disabled === "build" ? "sign-programs" : "sign-installer"}.result == 'success') || (vars.SIGNPATH_ENABLED != 'true' && needs.${disabled === "build" ? "sign-programs" : "sign-installer"}.result == 'skipped'))`;
+  check.ok(jobs.repack.includes(continueIf("build"))); check.ok(jobs.finalize.includes(continueIf("repack")));
+  check.equal((release.match(/environment: release/g) ?? []).length, 2);
+  for (const name of ["sign-programs", "sign-installer"]) {
+    const body = jobs[name];
+    check.match(body, new RegExp(`if: ${signIf.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n`)); check.match(body, /environment: release\n/);
+    check.match(body, /permissions:\n      contents: read\n      actions: read\n/);
+    check.doesNotMatch(body, /actions\/checkout|actions\/setup-node|npm |node |package-console|package-installer|scripts\/|always\(\)/);
+    check.match(body, /GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/); check.match(body, /gh run download \$env:GITHUB_RUN_ID --repo \$env:GITHUB_REPOSITORY /);
+    check.match(body, /signpath\/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2/);
+    check.match(body, /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7\.0\.1/);
+  }
+  check.match(jobs["sign-programs"], /needs: build\n/); check.match(jobs["sign-programs"], /programs-unsigned/); check.match(jobs["sign-programs"], /SIGNPATH_PROGRAMS_CONFIGURATION_SLUG/);
+  check.match(jobs["sign-programs"], /github-artifact-id: \$\{\{ needs\.build\.outputs\.programs-artifact-id \}\}/);
+  check.doesNotMatch(jobs["sign-programs"], /SIGNPATH_INSTALLER_CONFIGURATION_SLUG/);
+  check.match(jobs["sign-installer"], /needs: repack\n/); check.match(jobs["sign-installer"], /installer-unsigned/); check.match(jobs["sign-installer"], /Vault-Setup-x64\.exe/);
+  check.match(jobs["sign-installer"], /SIGNPATH_INSTALLER_CONFIGURATION_SLUG/);
+  check.match(jobs["sign-installer"], /github-artifact-id: \$\{\{ needs\.repack\.outputs\.installer-artifact-id \}\}/);
+  check.doesNotMatch(jobs["sign-installer"], /SIGNPATH_PROGRAMS_CONFIGURATION_SLUG/);
+  const tokenLines = release.split("\n").filter(line => line.includes("SIGNPATH_API_TOKEN"));
+  check.equal(tokenLines.length, 2);
+  for (const line of tokenLines) check.match(line, /^\s*api-token: \$\{\{ secrets\.SIGNPATH_API_TOKEN \}\}$/);
+  check.equal(jobs["sign-programs"].includes("SIGNPATH_API_TOKEN") && jobs["sign-installer"].includes("SIGNPATH_API_TOKEN"), true);
+  for (const name of ["build", "repack", "finalize", "publish"]) check.equal(jobs[name].includes("SIGNPATH_API_TOKEN"), false);
+  check.ok([...release.matchAll(/secrets\.([A-Z0-9_]+)/g)].every(match => match[1] === "GITHUB_TOKEN" || match[1] === "SIGNPATH_API_TOKEN"));
+  for (const name of ["build", "repack", "finalize"]) check.equal(jobs[name].includes("environment:"), false);
+  check.match(jobs.build, /merge-base --is-ancestor/); check.match(jobs.build, /is not v\$version/);
+  check.match(jobs.build, /programs-unsigned/); check.match(jobs.build, /release-layout/); check.match(jobs.build, /release-unsigned/); check.match(jobs.build, /release-notes-unsigned/);
+  check.match(jobs.build, /release-notes\.mjs unsigned /); check.ok(jobs.build.indexOf("npm run scan:secrets") < jobs.build.indexOf("npm ci"));
+  for (const name of ["repack", "finalize"]) { check.ok(jobs[name].indexOf("npm run scan:secrets") < jobs[name].indexOf("npm ci")); check.doesNotMatch(jobs[name], /npm install\b/); check.match(jobs[name], /persist-credentials: false/); }
+  const signed = stepOf(jobs.repack, "Repack from the signed programs"), kept = stepOf(jobs.repack, "Keep the unsigned release");
+  check.match(signed, /if: vars\.SIGNPATH_ENABLED == 'true'/); check.match(signed, /Get-AuthenticodeSignature/); check.match(signed, /Vault\.exe/); check.match(signed, /vault-helper\.exe/);
+  check.match(signed, /package-console\.mjs --keep/); check.match(signed, /package-installer\.mjs --prepackaged/);
+  check.match(kept, /if: vars\.SIGNPATH_ENABLED != 'true'/); check.match(kept, /release-unsigned/); check.doesNotMatch(kept, /package-console|package-installer|node /);
+  check.match(jobs.repack, /needs: \[build, sign-programs\]/); check.match(jobs.finalize, /needs: \[repack, sign-installer\]/);
+  const replace = stepOf(jobs.finalize, "Replace the signed installer"), sumsStep = stepOf(jobs.finalize, "Write the sums"), notes = stepOf(jobs.finalize, "Write the release notes");
+  check.match(replace, /if: vars\.SIGNPATH_ENABLED == 'true'/); check.match(replace, /Get-AuthenticodeSignature/); check.match(replace, /Vault-Setup-x64\.exe/);
+  check.doesNotMatch(sumsStep, /SIGNPATH_ENABLED/); check.match(sumsStep, /package-console\.mjs --finish/);
+  check.match(notes, /vars\.SIGNPATH_ENABLED == 'true' && 'signed' \|\| 'unsigned'/); check.match(notes, /release-notes\.mjs /);
+  check.match(jobs.finalize, /name: release-files/); check.match(jobs.finalize, /name: release-notes\n/);
   check.match(release, /gh release create \$env:GITHUB_REF_NAME .* --draft /);
   check.doesNotMatch(release, /--publish always|--prerelease|draft false/);
   // ---- the installer's additions: the commands that run, hidden and with every path quoted, and where they run --------------------------------------
@@ -98,6 +149,13 @@ try {
   const policy = read(".signpath", "policies", "vault", "release-signing.yml");
   check.match(policy, /^github-build-policies:$/m); check.match(policy, /require_github_hosted: true/); check.match(policy, /disallow_reruns: true/);
   const check_ = read(".github", "workflows", "check.yml");
+  for (const body of [jobs.build, jobsOf(check_).check]) {
+    check.match(body, /- run: npm audit --audit-level=high\n/);
+    check.ok(body.indexOf("npm ci") < body.indexOf("npm audit --audit-level=high"));
+    check.ok(body.indexOf("npm audit --audit-level=high") < body.indexOf("npm run build"));
+    check.doesNotMatch(body, /npm audit[^\n]*(?:--omit|--production)/);
+  }
+  check.match(check_, /fetch-depth: 0\n          persist-credentials: false/); check.ok(check_.indexOf("npm run scan:secrets") < check_.indexOf("npm ci"));
   check.match(check_, /npm run typecheck\n      - run: npm test\n/); check.match(check_, /- run: npm run dist$/m); check.doesNotMatch(check_, /gh release|SIGNPATH|contents: write/);
   console.log(`Release: ${checks} checks passed.`);
 } catch (error) {

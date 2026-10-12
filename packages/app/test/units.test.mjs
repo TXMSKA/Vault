@@ -114,7 +114,7 @@ try {
 
   // ---- the recovery kit: the same text as vault create --kit, saved once and never over a file ---------------------------------------------------
   const key = "ABCD - EFGH - JKLM - NPQR - STUV - WXYZ";
-  const expected = `VAULT\nRecovery kit / Kit de recuperación\n\nRecovery key / Clave de recuperación:\n${key}\n\nKeep this kit offline in a safe place. It can replace your master password.\nGuardá este kit fuera de línea en un lugar seguro. Permite reemplazar la contraseña maestra.\n\nMaster password / Contraseña maestra: ______________________________\n`;
+  const expected = `VAULT\nRecovery kit / Kit de recuperación\n\nRecovery key / Clave de recuperación:\n${key}\n\nKeep this kit offline in a safe place. It can replace your master password.\nGuardar este kit fuera de línea en un lugar seguro. Permite reemplazar la contraseña maestra.\n\nMaster password / Contraseña maestra: ______________________________\n`;
   check.equal(recoveryKit(key), expected);
   const kit = join(scratch, "kit.txt");
   check.equal(await writeKit(kit, key), "saved"); check.equal(await readFile(kit, "utf8"), expected);
