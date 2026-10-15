@@ -156,6 +156,32 @@ const choose = async title => {
   await poll(`${title} open`, async () => (await entryNow()) === title);
 };
 const addKind = async kind => { await click("Add an entry"); await pick(kind); };
+// The list's top row as the page lays it out, in CSS pixels: the search field's gutter from the sidebar's left edge, the Add button's gutter from the divider on
+// its right, the gap between them and whatever spills out of the sidebar.
+const rowBounds = () => evaluate(`(() => {
+  const round = value => Math.round(value * 100) / 100, box = node => node.getBoundingClientRect();
+  const list = document.querySelector(".list"), side = box(list), divider = side.right - parseFloat(getComputedStyle(list).borderRightWidth);
+  const search = box(document.querySelector(".search")), input = box(document.querySelector(".search input")), add = document.querySelector(".add"), button = box(add), clear = document.querySelector(".search .clear");
+  const style = getComputedStyle(add), keyboard = document.activeElement === add && add.matches(":focus-visible");
+  return {
+    left: round(search.left - side.left), gap: round(button.left - search.right), right: round(divider - button.right), add: [round(button.width), round(button.height)],
+    search: [round(search.width), round(search.height)], input: round(input.width), aligned: round(button.top - search.top), spill: round(list.scrollWidth - list.clientWidth),
+    clear: clear.hidden ? null : { inside: round(search.right - box(clear).right), apart: round(box(clear).left - input.right) },
+    ring: keyboard && style.outlineStyle !== "none" ? round(parseFloat(style.outlineWidth) + parseFloat(style.outlineOffset)) : 0,
+    focus: document.activeElement === add ? "add" : document.activeElement?.classList.contains("clear") ? "clear" : document.activeElement?.name === "search" ? "search" : "other",
+    hover: add.matches(":hover"), shade: style.backgroundColor, open: add.getAttribute("aria-expanded"),
+    reach: add.contains(document.elementFromPoint((button.left + button.right) / 2, (button.top + button.bottom) / 2)),
+  };
+})()`);
+// The same row must keep the board's gutters, 14 px on both sides with 8 px between the field and the 36 px button, however it is used.
+const expectRow = async (state, extra = {}) => {
+  const now = await rowBounds();
+  plain(`${state}: the row`, { left: now.left, gap: now.gap, right: now.right, add: now.add, height: now.search[1], aligned: now.aligned, spill: now.spill, reach: now.reach }, { left: 14, gap: 8, right: 14, add: [36, 36], height: 36, aligned: 0, spill: 0, reach: true });
+  check.ok(now.input >= 120, `${state}: the field keeps ${now.input} px to type in`);
+  if (now.clear) check.ok(now.clear.inside >= 0 && now.clear.apart >= 0, `${state}: Clear sits inside the field (${JSON.stringify(now.clear)})`);
+  for (const [name, value] of Object.entries(extra)) plain(`${state}: ${name}`, now[name], value);
+  return now;
+};
 
 async function main() {
   const { connect } = await import(pathToFileURL(path.join(root, "packages", "client", "dist", "index.js")).href);
@@ -533,6 +559,60 @@ async function main() {
   await set('input[name="search"]', "ALEX.rivera"); check.equal(await count(".erow"), 1); await set('input[name="search"]', "northwind.example"); check.equal(await count(".erow"), 1);
   await set('input[name="search"]', "a. riv"); check.equal(await count(".erow"), 1); await set('input[name="search"]', "zzz"); check.equal(await count(".erow"), 0); await showing("No entries match.");
   await click("Clear the search"); check.equal(await evaluate("document.querySelector('input[name=search]').value"), ""); check.equal(await count(".erow"), 8); check.equal(await read(".filter span"), "All entries");
+
+  say("the search and Add row keeps its gutters, at the smallest and a larger window, in both languages, with Clear, focus, hover and the Add menu");
+  {
+    const win = running.window, wc = page(), field = 'input[name="search"]';
+    // The window is never given the keyboard or the mouse here, so the page is told to act as if it had the focus: a ring and a hover shade only show on a page that does.
+    const inspector = wc.debugger, move = async (x, y) => { await inspector.sendCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x, y }); await frame(); };
+    const tab = async () => { for (const type of ["keyDown", "keyUp"]) wc.sendInputEvent({ type, keyCode: "Tab" }); await frame(); };
+    const middle = selector => evaluate(`(() => { const box = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return [Math.round(box.left + box.width / 2), Math.round(box.top + box.height / 2)]; })()`);
+    const sized = (width, height) => { win.setContentSize(width, height); return poll(`the window at ${width} by ${height}`, async () => (await evaluate("innerWidth + 'x' + innerHeight")) === `${width}x${height}`); };
+    // A list drawn again for a language reads its entries once more and closes any menu while it paints, so a menu is opened only after that. The call below is answered after the one the list made.
+    const settled = async () => { await evaluate("window.vault.entries().then(() => true)"); await frame(); };
+    // The window opens at its smallest size, and asking for less leaves it there.
+    win.setContentSize(600, 400); await wait(300); plain("the smallest size", win.getContentSize(), [920, 640]);
+    inspector.attach("1.3");
+    try {
+      await inspector.sendCommand("Emulation.setFocusEmulationEnabled", { enabled: true });
+      for (const language of ["en", "es"]) {
+        if (language === "es") { await setting({ language: "es" }); await settled(); }
+        for (const [width, height] of [[920, 640], [1280, 800]]) {
+          const tag = `${language} ${width} by ${height}`, name = `searchrow-${language}-${width}`, smallest = width === 920;
+          await sized(width, height); await set(field, "");
+          await expectRow(`${tag}, empty search`, { open: "false" }); await capture(`${name}-empty`);
+          await set(field, "north"); await expectRow(`${tag}, typed text with Clear`); await capture(`${name}-typed`);
+          if (smallest) { await set(field, "northwind ".repeat(9)); await expectRow(`${tag}, long text with Clear`); await capture(`${name}-long`); }
+          // Keyboard: the field, then Clear, then Add with its ring, which has to fit inside the right gutter.
+          await evaluate(`document.querySelector(${JSON.stringify(field)}).focus()`); await expectRow(`${tag}, field focus`, { focus: "search" });
+          await tab(); await expectRow(`${tag}, Clear focus`, { focus: "clear" });
+          await tab(); { const now = await expectRow(`${tag}, Add focus`, { focus: "add" }); check.ok(now.ring > 0 && now.ring < now.right, `${tag}: the focus ring (${now.ring} px) fits the ${now.right} px gutter`); }
+          if (smallest) await capture(`${name}-focus`);
+          await set(field, ""); await evaluate(`document.querySelector(${JSON.stringify(field)}).focus()`); await tab();
+          { const now = await expectRow(`${tag}, Add focus without Clear`, { focus: "add" }); check.ok(now.ring > 0 && now.ring < now.right, `${tag}: the focus ring fits the gutter`); }
+          await evaluate("document.activeElement.blur()");
+          // Mouse: the button takes its hover shade and keeps its place.
+          const resting = (await rowBounds()).shade; await set(field, "north");
+          await move(...await middle(".add")); await poll("the hover", () => evaluate("document.querySelector('.add').matches(':hover')")); { const now = await expectRow(`${tag}, hover`, { hover: true }); check.notEqual(now.shade, resting); }
+          if (smallest) await capture(`${name}-hover`);
+          await move(width - 20, height - 20); await poll("the hover to end", async () => !(await evaluate("document.querySelector('.add').matches(':hover')")));
+          // The Add menu opens under the button, the seven kinds inside the window, with and without Clear, and Escape gives the focus back.
+          for (const typed of ["north", ""]) {
+            await set(field, typed); await evaluate("document.querySelector('.add').click()"); await poll("the Add menu", () => exists(".popover .menu-item"));
+            await expectRow(`${tag}, Add menu open${typed ? " with Clear" : ""}`, { open: "true" });
+            plain(`${tag}: the Add menu`, await evaluate(`(() => { const box = document.querySelector(".popover").getBoundingClientRect(), add = document.querySelector(".add").getBoundingClientRect(); return { left: Math.round((box.left - add.left) * 100) / 100, below: Math.round((box.top - add.bottom) * 100) / 100, width: box.width, inside: box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight, items: document.querySelectorAll(".popover .menu-item").length }; })()`),
+              { left: 0, below: 6, width: 300, inside: true, items: 7 });
+            if (typed || !smallest) await capture(`${name}-menu${typed ? "" : "-empty"}`);
+            await evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))"); await poll("the Add menu to close", async () => !(await exists(".popover")));
+            await expectRow(`${tag}, Add menu closed`, { open: "false", focus: "add" });
+          }
+          await evaluate("document.activeElement.blur()");
+        }
+        await set(field, "");
+      }
+    } finally { inspector.detach(); }
+    await sized(920, 640); await setting({ language: "en" }); await showing("All entries"); await settled();
+  }
 
   say("the kind filter shows its counts, favourites first");
   await click("Show: All entries"); await poll("the filter menu", () => exists(".popover .menu-item"));
