@@ -74,7 +74,7 @@ function kinds(app: AppIdentity): Kind[] { return blocked(app) || isAgent(app) ?
 // Held by policy, never by request, so no app can ask to keep Vault unlocked.
 export const holds = (app: string) => app === "horizon";
 export function identity(value: unknown): AppIdentity {
-  const v = object(value, "id,kind,name"), id = text(v.id, 40), name = text(v.name, 120), kind = v.kind;
-  if (!appIdPattern.test(id) || !name.trim() || /[\r\n\x00-\x1f]/.test(name) || !["cosmic", "app", "agent"].includes(String(kind)) || (kind === "cosmic") !== trusted.has(id)) throw new ServiceError("invalid");
+  const v = object(value, "id,kind,name"), id = text(v.id, 40), name = text(v.name, 120), kind = text(v.kind, 6);
+  if (!appIdPattern.test(id) || !name.trim() || /[\r\n\x00-\x1f]/.test(name) || !["cosmic", "app", "agent"].includes(kind) || (kind === "cosmic") !== trusted.has(id)) throw new ServiceError("invalid");
   return { id, name, kind: kind as AppIdentity["kind"] };
 }

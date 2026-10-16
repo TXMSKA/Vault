@@ -1,11 +1,13 @@
 // Every Spanish text a person reads in Vault is neutral and impersonal: no voseo and no tuteo (Tom, 2026-10-09).
-// This check reads the Spanish side of every copy pair in the command line, the client and the service, the Spanish strings of the installer
-// (packages/app/installer/installer.nsh), the Spanish half of the release notes (docs/release-notes.md) and the Spanish signing lines of the release
-// (scripts/release-files.mjs), and fails on second-person pronouns, voseo and tuteo verb forms and Rioplatense words. The app's dictionary and its
-// update question have their own check in packages/app/test/units.test.mjs. A new word that only looks like a second-person form goes into `allowed`.
+// This check reads the Spanish side of every copy pair in the command line, the client and the service, the Spanish instruction of the recovery kit
+// (packages/client/src/kit.ts), the Spanish strings of the installer (packages/app/installer/installer.nsh), the Spanish half of the release notes
+// (docs/release-notes.md) and the Spanish signing lines of the release (scripts/release-files.mjs), and fails on second-person pronouns, voseo and
+// tuteo verb forms and Rioplatense words. The app's dictionary and its update question have their own check in packages/app/test/units.test.mjs.
+// A new word that only looks like a second-person form goes into `allowed`.
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { recoveryKit } from "../packages/client/src/kit.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const walk = folder => readdirSync(folder).flatMap(name => { const path = join(folder, name); return statSync(path).isDirectory() ? name === "dist" ? [] : walk(path) : /\.(ts|cts|mts)$/.test(name) ? [path] : []; });
@@ -25,6 +27,20 @@ for (const folder of ["cli", "client", "service"]) for (const file of walk(join(
   while ((match = pair.exec(text))) judge(match[2].slice(1, -1).replace(/\$\{[^}]*\}/g, " ").replace(/\\n/g, " "), `${relative(root, file)}:${text.slice(0, match.index).split("\n").length}`);
 }
 if (!checked) problems.push("no Spanish copy found: the pattern no longer matches the copy calls");
+
+// The recovery kit is one bilingual template, not a copy() pair. Judge the Spanish line the function returns immediately after the English paragraph.
+const recoveryKey = "synthetic-recovery-key", englishKit = "Keep this kit offline in a safe place. It can replace your master password.", kitFile = "packages/client/src/kit.ts";
+let kitInstruction = "";
+try {
+  const rendered = recoveryKit(recoveryKey), marker = `${englishKit}\n`, at = typeof rendered === "string" ? rendered.indexOf(marker) : -1;
+  if (at >= 0 && rendered.indexOf(marker, at + 1) < 0) {
+    const after = rendered.slice(at + marker.length), end = after.indexOf("\n");
+    if (end > 0 && after.slice(0, end).trim() && after.charAt(end + 1) === "\n") kitInstruction = after.slice(0, end);
+  }
+} catch { kitInstruction = ""; }
+const kitLine = readFileSync(join(root, kitFile), "utf8").split(/\r?\n/).findIndex(line => line.includes(englishKit));
+if (!kitInstruction || kitInstruction === englishKit || kitInstruction.includes(recoveryKey)) problems.push(`${kitFile}: the Spanish recovery instruction was not found`);
+else judge(kitInstruction, kitLine >= 0 ? `${kitFile}:${kitLine + 1}` : kitFile);
 
 // The installer: the strings it defines for Spanish.
 const installer = "packages/app/installer/installer.nsh", nsis = readFileSync(join(root, installer), "utf8").replace(/^﻿/, "").split(/\r?\n/);

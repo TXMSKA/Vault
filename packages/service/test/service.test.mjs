@@ -15,6 +15,7 @@ import { Lifecycle, DISCONNECTED_MS } from "../src/lifecycle.ts";
 import { Redactor, MASK } from "../src/redact.ts";
 import { dotenv } from "../src/dotenv.ts";
 import { Apps } from "../src/secrets.ts";
+import { ServiceError } from "../src/errors.ts";
 import { defaultRoots } from "../../../test/guard.mjs";
 import { resolveHome } from "../../client/src/paths.ts";
 import { runHelper, runHelperSync } from "../../client/src/helper.ts";
@@ -187,12 +188,18 @@ try {
   const horizon = await app("horizon"), nova = await app("nova"), nebula = await app("nebula");
   const unknown = await app("synthetic-app", "app"), agent = await app("synthetic-agent", "agent"), lyra = await app("lyra", "app");
   await rejects(() => unknown.status(), "pending"); await cli.apps.allow("synthetic-app"); await unknown.present(); assert.equal((await unknown.status()).created, false);
-  await cli.apps.allow("synthetic-agent"); await rejects(() => agent.status(), "forbidden"); await rejects(() => agent.entries.list(), "forbidden"); await rejects(() => cli.apps.allow("lyra"), "forbidden");
-  await cli.apps.revoke("synthetic-app"); await rejects(() => unknown.status(), "revoked"); checks += 5;
+  await cli.apps.allow("synthetic-agent"); const allowedAgent = (await cli.apps.list()).find(row => row.id === "synthetic-agent"); assert.equal(allowedAgent.kind, "agent"); assert.deepEqual(allowedAgent.kinds, []); await rejects(() => agent.status(), "forbidden"); await rejects(() => agent.entries.list(), "forbidden"); await rejects(() => cli.apps.allow("lyra"), "forbidden");
+  await cli.apps.revoke("synthetic-app"); await rejects(() => unknown.status(), "revoked"); checks += 7;
   const hashFile = await readFile(join(home, "secrets", "apps.json"), "utf8"); assert.equal(hashFile.includes(cliTokens.token()), false); checks++;
   const badToken = await probe(service, "/v1/status", { auth: `Bearer ${randomBytes(32).toString("base64url")}` }); assert.equal(badToken.status, 401); checks++;
   const bootstrap = await readFile(join(home, "secrets", "bootstrap.key"), "utf8");
   assert.equal((await probe(service, "/v1/apps/register", { method: "POST", auth: `Bootstrap ${bootstrap}`, body: { id: "pretender", name: "Synthetic", kind: "cosmic" } })).status, 400);
+  const knownApps = (await cli.apps.list()).map(row => row.id), storedApps = await readFile(join(home, "secrets", "apps.json"), "utf8");
+  for (const [id, kind] of [["synthetic-kind-agent", ["agent"]], ["synthetic-kind-app", ["app"]], ["synthetic-kind-cosmic", ["cosmic"]], ["synthetic-kind-null", null], ["synthetic-kind-number", 7], ["synthetic-kind-object", { marker: "synthetic" }], ["synthetic-kind-boolean", true]]) {
+    const result = await probe(service, "/v1/apps/register", { method: "POST", auth: `Bootstrap ${bootstrap}`, body: { id, name: "Synthetic", kind } });
+    assert.equal(result.status, 400); assert.equal(result.value.error.code, "invalid"); assert.equal(result.value.error.message, "Vault could not complete the request."); assert.deepEqual(result.value.error.fields, {}); checks++;
+  }
+  assert.equal(await readFile(join(home, "secrets", "apps.json"), "utf8"), storedApps); assert.deepEqual((await cli.apps.list()).map(row => row.id), knownApps); checks += 2;
   await rejects(() => horizon.apps.list(), "forbidden");
   const limitedTokens = tokenStore(), limited = await connect({ home, app: { id: "limited-app", name: "Synthetic", kind: "app" }, tokens: limitedTokens }); clients.push(limited); await cli.apps.allow("limited-app"); await limited.present();
   for (const route of routes.filter(route => route.access === "manage")) { assert.equal((await probe(service, route.path.replace("{id}", "limited-app"), { method: route.method, auth: `Bearer ${limitedTokens.token()}`, ...(route.method === "GET" ? {} : { body: {} }) })).status, 403); checks++; }
@@ -289,7 +296,7 @@ try {
   const loadFrom = async (name, rows) => { const target = join(scratch, name); await mkdir(join(target, "secrets"), { recursive: true }); await writeFile(join(target, "secrets", "apps.json"), JSON.stringify(rows)); const apps = new Apps(target); await apps.load(); return apps; };
   const { permissions: dropped, ...legacyApp } = horizonRow.app; assert.deepEqual(dropped, ["import"]);
   assert.deepEqual((await loadFrom("legacy-home", [{ ...horizonRow, app: legacyApp }])).list()[0].permissions, []);
-  for (const [name, row] of [["duplicate", { ...horizonRow, app: { ...horizonRow.app, permissions: ["import", "import"] } }], ["unknown", { ...horizonRow, app: { ...horizonRow.app, permissions: ["export"] } }], ["not-array", { ...horizonRow, app: { ...horizonRow.app, permissions: "import" } }], ["agent", { ...agentRow, app: { ...agentRow.app, permissions: ["import"] } }]]) { await assert.rejects(() => loadFrom(`bad-${name}-home`, [row])); checks++; }
+  for (const [name, row] of [["duplicate", { ...horizonRow, app: { ...horizonRow.app, permissions: ["import", "import"] } }], ["unknown", { ...horizonRow, app: { ...horizonRow.app, permissions: ["export"] } }], ["not-array", { ...horizonRow, app: { ...horizonRow.app, permissions: "import" } }], ["agent", { ...agentRow, app: { ...agentRow.app, permissions: ["import"] } }], ["kind", { ...agentRow, app: { ...agentRow.app, kind: ["agent"] } }]]) { await assert.rejects(() => loadFrom(`bad-${name}-home`, [row]), error => name === "kind" ? error instanceof ServiceError && error.code === "invalid" && error.message === "invalid" : true); checks++; }
   await observer.apps.revoke("horizon"); assert.deepEqual((await observer.apps.list()).find(row => row.id === "horizon").permissions, []); await rejects(() => importer.apps.self(), "revoked");
   await observer.apps.allow("horizon"); await importer.present(); assert.deepEqual((await importer.apps.self()).permissions, []); await rejects(() => importer.import("chrome", loginFile.replace("horizon-import", "horizon-again")), "permission_required");
   assert.deepEqual((await importer.permissions.importWithPassword(nextPassword)).permissions, ["import"]); checks += 9;

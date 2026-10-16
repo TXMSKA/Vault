@@ -11,8 +11,9 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: read
-      # SignPath reads this run's details with the job's token when a signing request is submitted.
       actions: read
+    outputs:
+      programs-artifact-id: ${{ steps.programs.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -21,6 +22,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 26.8.2
+      # Full history is fetched above so the scan can see every local ref before dependencies are installed.
+      - run: npm run scan:secrets
       - name: Check the tag
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -35,14 +38,13 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "TMP=$env:RUNNER_TEMP"
         shell: pwsh
       - run: npm ci
+      - run: npm audit --audit-level=high
       # The packages build before the typecheck, because the service and the app read the built core and client.
       - run: npm run build
       - run: npm run typecheck
       - run: npm test
       # Builds the console zip and the installer from the unsigned programs.
       - run: npm run dist
-
-      # Signing runs only when the repository variable SIGNPATH_ENABLED is 'true'. Without it the unsigned files above go on as they are.
       - name: Collect the programs to sign
         if: vars.SIGNPATH_ENABLED == 'true'
         run: |
@@ -57,8 +59,59 @@ jobs:
           name: programs-unsigned
           path: build/signing/programs
           if-no-files-found: error
+      # One directory, so the download is win-unpacked and stage side by side.
+      - name: Collect the layout to repack
+        run: |
+          New-Item -ItemType Directory -Path build/signing/layout | Out-Null
+          Copy-Item build/release/win-unpacked build/signing/layout/win-unpacked -Recurse
+          Copy-Item build/stage build/signing/layout/stage -Recurse
+      - name: Upload the layout to repack
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-layout
+          path: build/signing/layout
+          if-no-files-found: error
+      - name: Upload the unsigned release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-unsigned
+          path: |
+            build/release/Vault-Setup-x64.exe
+            build/release/Vault-Setup-x64.exe.blockmap
+            build/release/latest.yml
+            build/release/vault-x64.zip
+            build/release/install.ps1
+            build/release/SHA256SUMS.txt
+          if-no-files-found: error
+      - name: Write the unsigned release notes
+        run: node scripts/release-notes.mjs unsigned build/release-notes.md
+      - name: Upload the unsigned release notes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-notes-unsigned
+          path: build/release-notes.md
+          if-no-files-found: error
+
+  # Signing is the only step that can see the token. It does not check out the repository or run a build.
+  sign-programs:
+    needs: build
+    if: github.repository == 'TXMSKA/Vault' && vars.SIGNPATH_ENABLED == 'true'
+    environment: release
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Download the unsigned programs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh run download $env:GITHUB_RUN_ID --repo $env:GITHUB_REPOSITORY --name programs-unsigned --dir programs-unsigned
+          if ($LASTEXITCODE -ne 0) { throw "The unsigned programs were not downloaded." }
+          foreach ($name in 'Vault.exe', 'vault-helper.exe') {
+            if (-not (Test-Path "programs-unsigned/$name")) { throw "The unsigned programs are missing $name." }
+          }
       - name: Sign the programs
-        if: vars.SIGNPATH_ENABLED == 'true'
         uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -66,26 +119,81 @@ jobs:
           project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
           signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
           artifact-configuration-slug: ${{ vars.SIGNPATH_PROGRAMS_CONFIGURATION_SLUG }}
-          github-artifact-id: ${{ steps.programs.outputs.artifact-id }}
+          github-artifact-id: ${{ needs.build.outputs.programs-artifact-id }}
           wait-for-completion: true
-          output-artifact-directory: build/signing/programs-signed
-      # The signed programs replace the unsigned ones in the unpacked app and in the console layout, the zip is packed again, and the installer is built
-      # from the signed unpacked app. electron-builder does not flip the fuses of an app it did not pack, and they were flipped before signing.
-      - name: Replace the programs and build the installer from them
-        if: vars.SIGNPATH_ENABLED == 'true'
+          output-artifact-directory: programs-signed
+      - name: Upload the signed programs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: programs-signed
+          path: programs-signed
+          if-no-files-found: error
+
+  repack:
+    # A skipped signer means signing is off, so the unsigned files continue. A failed signer stops the release.
+    # always() lets this condition see a skip; without it GitHub would skip this job whenever the signer did not succeed.
+    needs: [build, sign-programs]
+    if: "always() && !cancelled() && github.repository == 'TXMSKA/Vault' && needs.build.result == 'success' && ((vars.SIGNPATH_ENABLED == 'true' && needs.sign-programs.result == 'success') || (vars.SIGNPATH_ENABLED != 'true' && needs.sign-programs.result == 'skipped'))"
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      installer-artifact-id: ${{ steps.installer.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 26.8.2
+      - run: npm run scan:secrets
+      - run: |
+          Add-Content -Path $env:GITHUB_ENV -Value "TEMP=$env:RUNNER_TEMP"
+          Add-Content -Path $env:GITHUB_ENV -Value "TMP=$env:RUNNER_TEMP"
+        shell: pwsh
+      - run: npm ci
+      - name: Download the unsigned layout
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          gh run download $env:GITHUB_RUN_ID --repo $env:GITHUB_REPOSITORY --name release-layout --dir layout
+          if ($LASTEXITCODE -ne 0) { throw "The unpacked layout was not downloaded." }
+          if (-not (Test-Path layout/win-unpacked/Vault.exe)) { throw "The unpacked app was not downloaded." }
+          if (-not (Test-Path layout/stage/lib/package.json)) { throw "The staged layout was not downloaded." }
+      - name: Repack from the signed programs
+        if: vars.SIGNPATH_ENABLED == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh run download $env:GITHUB_RUN_ID --repo $env:GITHUB_REPOSITORY --name programs-signed --dir programs-signed
+          if ($LASTEXITCODE -ne 0) { throw "The signed programs were not downloaded." }
           foreach ($name in 'Vault.exe', 'vault-helper.exe') {
-            if ((Get-AuthenticodeSignature "build/signing/programs-signed/$name").Status -ne 'Valid') { throw "$name does not carry a valid signature." }
+            if ((Get-AuthenticodeSignature "programs-signed/$name").Status -ne 'Valid') { throw "$name does not carry a valid signature." }
           }
-          Copy-Item build/signing/programs-signed/Vault.exe build/release/win-unpacked/Vault.exe -Force
-          Copy-Item build/signing/programs-signed/vault-helper.exe build/release/win-unpacked/lib/helper/bin/vault-helper.exe -Force
-          Copy-Item build/signing/programs-signed/vault-helper.exe build/stage/lib/helper/bin/vault-helper.exe -Force
+          New-Item -ItemType Directory -Path build/release | Out-Null
+          Copy-Item layout/win-unpacked build/release/win-unpacked -Recurse
+          Copy-Item layout/stage build/stage -Recurse
+          Copy-Item programs-signed/Vault.exe build/release/win-unpacked/Vault.exe -Force
+          Copy-Item programs-signed/vault-helper.exe build/release/win-unpacked/lib/helper/bin/vault-helper.exe -Force
+          Copy-Item programs-signed/vault-helper.exe build/stage/lib/helper/bin/vault-helper.exe -Force
           node scripts/package-console.mjs --keep
           if ($LASTEXITCODE -ne 0) { throw "The console zip was not packed." }
           node scripts/package-installer.mjs --prepackaged
           if ($LASTEXITCODE -ne 0) { throw "The installer was not built." }
           New-Item -ItemType Directory -Path build/signing/installer | Out-Null
           Copy-Item build/release/Vault-Setup-x64.exe build/signing/installer/Vault-Setup-x64.exe
+      - name: Keep the unsigned release
+        if: vars.SIGNPATH_ENABLED != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh run download $env:GITHUB_RUN_ID --repo $env:GITHUB_REPOSITORY --name release-unsigned --dir build/release
+          if ($LASTEXITCODE -ne 0) { throw "The unsigned release was not downloaded." }
+          foreach ($name in 'Vault-Setup-x64.exe', 'Vault-Setup-x64.exe.blockmap', 'latest.yml', 'vault-x64.zip', 'install.ps1', 'SHA256SUMS.txt') {
+            if (-not (Test-Path "build/release/$name")) { throw "The unsigned release is missing $name." }
+          }
       - name: Upload the installer to sign
         if: vars.SIGNPATH_ENABLED == 'true'
         id: installer
@@ -94,8 +202,36 @@ jobs:
           name: installer-unsigned
           path: build/signing/installer
           if-no-files-found: error
+      - name: Upload the repacked release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-repacked
+          path: |
+            build/release/Vault-Setup-x64.exe
+            build/release/Vault-Setup-x64.exe.blockmap
+            build/release/latest.yml
+            build/release/vault-x64.zip
+            build/release/install.ps1
+            build/release/SHA256SUMS.txt
+          if-no-files-found: error
+
+  sign-installer:
+    needs: repack
+    if: github.repository == 'TXMSKA/Vault' && vars.SIGNPATH_ENABLED == 'true'
+    environment: release
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Download the unsigned installer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh run download $env:GITHUB_RUN_ID --repo $env:GITHUB_REPOSITORY --name installer-unsigned --dir installer-unsigned
+          if ($LASTEXITCODE -ne 0) { throw "The unsigned installer was not downloaded." }
+          if (-not (Test-Path installer-unsigned/Vault-Setup-x64.exe)) { throw "The unsigned installer is missing Vault-Setup-x64.exe." }
       - name: Sign the installer
-        if: vars.SIGNPATH_ENABLED == 'true'
         uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -103,18 +239,53 @@ jobs:
           project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
           signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
           artifact-configuration-slug: ${{ vars.SIGNPATH_INSTALLER_CONFIGURATION_SLUG }}
-          github-artifact-id: ${{ steps.installer.outputs.artifact-id }}
+          github-artifact-id: ${{ needs.repack.outputs.installer-artifact-id }}
           wait-for-completion: true
-          output-artifact-directory: build/signing/installer-signed
-      # Signing changes the installer, so latest.yml and the blockmap are written again for it, and the sums are taken last.
-      - name: Replace the installer and write the sums
-        if: vars.SIGNPATH_ENABLED == 'true'
+          output-artifact-directory: installer-signed
+      - name: Upload the signed installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: installer-signed
+          path: installer-signed
+          if-no-files-found: error
+
+  finalize:
+    # An enabled signer that failed must not reach publication. A skipped signer leaves the unsigned release in place.
+    needs: [repack, sign-installer]
+    if: "always() && !cancelled() && github.repository == 'TXMSKA/Vault' && needs.repack.result == 'success' && ((vars.SIGNPATH_ENABLED == 'true' && needs.sign-installer.result == 'success') || (vars.SIGNPATH_ENABLED != 'true' && needs.sign-installer.result == 'skipped'))"
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 26.8.2
+      - run: npm run scan:secrets
+      - run: npm ci
+      - name: Download the repacked release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if ((Get-AuthenticodeSignature "build/signing/installer-signed/Vault-Setup-x64.exe").Status -ne 'Valid') { throw "The installer does not carry a valid signature." }
-          Copy-Item build/signing/installer-signed/Vault-Setup-x64.exe build/release/Vault-Setup-x64.exe -Force
+          gh run download $env:GITHUB_RUN_ID --repo $env:GITHUB_REPOSITORY --name release-repacked --dir build/release
+          if ($LASTEXITCODE -ne 0) { throw "The repacked release was not downloaded." }
+      - name: Replace the signed installer
+        if: vars.SIGNPATH_ENABLED == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh run download $env:GITHUB_RUN_ID --repo $env:GITHUB_REPOSITORY --name installer-signed --dir installer-signed
+          if ($LASTEXITCODE -ne 0) { throw "The signed installer was not downloaded." }
+          if ((Get-AuthenticodeSignature "installer-signed/Vault-Setup-x64.exe").Status -ne 'Valid') { throw "The installer does not carry a valid signature." }
+          Copy-Item installer-signed/Vault-Setup-x64.exe build/release/Vault-Setup-x64.exe -Force
+      - name: Write the sums
+        run: |
           node scripts/package-console.mjs --finish
           if ($LASTEXITCODE -ne 0) { throw "The release files were not completed." }
-
       - name: Write the release notes
         env:
           SIGNING: ${{ vars.SIGNPATH_ENABLED == 'true' && 'signed' || 'unsigned' }}
@@ -140,8 +311,8 @@ jobs:
 
   # The only job that can write to the repository. It makes a draft release, and a person publishes it.
   publish:
-    needs: build
-    if: github.repository == 'TXMSKA/Vault'
+    needs: finalize
+    if: "!cancelled() && github.repository == 'TXMSKA/Vault' && needs.finalize.result == 'success'"
     runs-on: windows-latest
     permissions:
       contents: write
