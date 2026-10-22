@@ -17,7 +17,7 @@ const childProcess = require("node:child_process");
 const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const path = require("node:path");
-const { randomBytes } = require("node:crypto");
+const { createHash, randomBytes } = require("node:crypto");
 const { tmpdir } = require("node:os");
 const { PassThrough, Writable } = require("node:stream");
 const { pathToFileURL } = require("node:url");
@@ -77,13 +77,14 @@ BrowserWindow.prototype.close = function close() {
   this.emit("close", event); controls.push(event.defaultPrevented ? "close-asked" : "close");
 };
 
-const saved = { kit: path.join(scratch, "kit.txt"), backup: path.join(scratch, "backup.vault"), printed: 0 };
+const saved = { kit: path.join(scratch, "kit.txt"), backup: path.join(scratch, "backup.vault"), attachment: path.join(scratch, "synthetic.keystore"), download: path.join(scratch, "download.keystore"), printed: 0 };
 const { prepare } = require(path.join(root, "packages", "app", "dist", "main", "app.js"));
 // The clipboard and the browser are in memory here: what was copied, how often it was cleared, and which addresses were asked for.
 const board = { text: "", writes: 0, clears: 0 }, opened = [], CLIPBOARD_MS = 1200;
 // Started the way the service starts it when a prompt waits and nobody is there.
 const launch = prepare({ env: process.env, argv: ["--prompts"], clipboardMs: CLIPBOARD_MS, noUpdates: true, platform: {
   saveFile: async () => saved.kit, openFile: async () => saved.backup,
+  chooseAttachment: async () => saved.attachment, saveAttachment: async () => saved.download,
   print: async () => { saved.printed++; return { ok: true }; },
   clipboard: { readText: async () => board.text, writeText: async text => { board.text = text; board.writes++; }, clear: () => { board.text = ""; board.clears++; } },
   openUrl: async url => { opened.push(url); },
@@ -227,7 +228,7 @@ async function main() {
   plain("the content size", win.getContentSize(), [920, 640]); plain("the minimum size", win.getMinimumSize(), [920, 640]); plain("the menu bar", win.isMenuBarVisible(), false);
   check.equal(wc.getURL(), "app://vault/"); check.equal(win.getTitle(), "Vault");
   check.deepEqual(await evaluate("[typeof require, typeof process, typeof module, typeof Buffer, typeof ipcRenderer, typeof window.electron]"), ["undefined", "undefined", "undefined", "undefined", "undefined", "undefined"]);
-  check.deepEqual(await evaluate("Object.keys(window.vault).sort()"), ["allowImport", "allowImportWithHello", "approveRun", "approveRunWithHello", "cancelClose", "chooseBackup", "close", "confirmClose", "create", "disableHello", "dismissPrompt", "dismissTour", "enableHello", "entries", "entryCode", "entryCopy", "entryCopyCode", "entryFavorite", "entryOpen", "entryOpenSite", "entryRemove", "entryReveal", "entrySave", "entryUndo", "finishSetup", "interact", "lock", "minimize", "onState", "printRecoverySheet", "recover", "restoreBackup", "retry", "saveRecoverySheet", "saveSettings", "state", "toggleMaximize", "unlock", "unlockWithHello"]);
+  check.deepEqual(await evaluate("Object.keys(window.vault).sort()"), ["allowImport", "allowImportWithHello", "approveRun", "approveRunWithHello", "cancelClose", "chooseBackup", "close", "confirmClose", "create", "disableHello", "dismissPrompt", "dismissTour", "enableHello", "entries", "entryAttach", "entryAttachDropped", "entryCode", "entryCopy", "entryCopyCode", "entryDiscard", "entryDownload", "entryFavorite", "entryOpen", "entryOpenSite", "entryRemove", "entryReveal", "entrySave", "entryUndo", "finishSetup", "interact", "lock", "minimize", "onState", "printRecoverySheet", "recover", "restoreBackup", "retry", "saveRecoverySheet", "saveSettings", "state", "toggleMaximize", "unlock", "unlockWithHello"]);
   check.equal(await evaluate("Object.isFrozen(window.vault)"), true);
   check.equal(await evaluate("(() => { try { window.vault.create = () => 0; } catch {} return typeof window.vault.create; })()"), "function");
   check.equal(await evaluate("typeof window.vault.invoke"), "undefined");
@@ -516,7 +517,16 @@ async function main() {
   plain("the card's fields", (await rowOf("Atlas Card")).entry.fields.map(field => [field.id, field.secret, field.value]), [["holder", false, "A. Rivera"], ["number", true, cardNumber], ["expiry", false, "09/29"], ["securityCode", true, cardCode]]);
 
   await addKind("Document"); await showing("New document", "Note"); await set('input[name="title"]', "Lease contract"); await set('textarea[name="note"]', leaseNote);
+  await showing("Drop a file here or choose one", "Kept encrypted inside Vault");
+  plain("the file zone", await evaluate("(() => { const zone = document.querySelector('.dropzone'); return [zone.tagName, getComputedStyle(zone).height, getComputedStyle(zone).cursor]; })()"), ["BUTTON", "120px", "pointer"]);
+  const attachmentBytes = randomBytes(4097); fs.writeFileSync(saved.attachment, attachmentBytes);
+  await evaluate("document.querySelector('.dropzone').click()"); await showing("synthetic.keystore", "4 KB");
   await shoot("add-document", true); await click("Save"); await poll("the document", async () => (await entryNow()) === "Lease contract");
+  check.equal((await rowOf("Lease contract")).entry.files.length, 1); await showing("synthetic.keystore", "4 KB");
+  await click("Lock Vault now"); await showing("Vault is locked"); await type("password", changed); await click("Unlock"); await listShown(); await choose("Lease contract");
+  await click("Save synthetic.keystore"); await poll("the downloaded file", () => fs.existsSync(saved.download)); await showing("File saved");
+  const downloadedFile = fs.readFileSync(saved.download); check.equal(createHash("sha256").update(downloadedFile).digest("hex") === createHash("sha256").update(attachmentBytes).digest("hex"), true); attachmentBytes.fill(0); downloadedFile.fill(0);
+  await click("Edit"); await click("Remove synthetic.keystore"); check.equal(await count(".filelist .frow"), 0); await click("Save"); await poll("the document without files", async () => (await entryNow()) === "Lease contract" && (await rowOf("Lease contract")).entry.files.length === 0);
   plain("the document", [(await rowOf("Lease contract")).entry.kind, (await rowOf("Lease contract")).entry.note, (await rowOf("Lease contract")).entry.fields, (await rowOf("Lease contract")).entry.files], ["doc", leaseNote, [], []]);
 
   await addKind("Note"); await showing("New note", "Text"); await set('input[name="title"]', "Home Wi-Fi"); await set('textarea[name="note"]', wifiText);

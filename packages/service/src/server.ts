@@ -94,7 +94,7 @@ export async function startService(options: ServiceOptions = {}) {
         }
       };
       authenticate(); take(app?.id ?? route.access, route.access === "bootstrap" ? 30 : 240);
-      const cap = ["/v1/import", "/v1/import/env", "/v1/restore"].includes(route.path) ? 12 * 1024 * 1024 : 256 * 1024;
+      const cap = ["/v1/import", "/v1/import/env", "/v1/restore"].includes(route.path) ? 12 * 1024 * 1024 : route.path === "/v1/chunks" ? 4 * 1024 * 1024 : 256 * 1024;
       const body = await readBody(request, cap); validateInput(route, body, url.searchParams);
       const execute = async () => {
         authenticate(); lifecycle.check();

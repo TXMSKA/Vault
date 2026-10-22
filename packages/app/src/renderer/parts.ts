@@ -76,6 +76,7 @@ export async function busy<T>(root: HTMLElement, work: () => Promise<T>): Promis
 /** The reasons the service or the window gives, in words; anything unknown is the general one. */
 export function reason(t: Dictionary, code: string, specific: Record<string, string> = {}): string {
   if (Object.hasOwn(specific, code)) return specific[code];
+  if (code === "too_large") return t.fileTooLarge;
   if (code === "limited" || code === "rate_limited") return t.limited;
   if (code === "busy") return t.busy;
   return t.unavailable;

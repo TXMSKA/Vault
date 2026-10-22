@@ -233,6 +233,34 @@ try {
   const publicEnv = structuredClone(environment); publicEnv.fields[0].secret = false; await rejects(() => nova.entries.save(publicEnv, 1), "invalid"); checks += 15;
   await horizon.entries.save(one, 1); await horizon.entries.remove(other.id, 1); assert.equal((await nebula.entries.list()).length, 6); checks += 2;
 
+  stage = "document chunks";
+  {
+    const bytes = randomBytes(32768), tail = randomBytes(13), data = [...Array(63).fill(bytes.toString("base64")), tail.toString("base64")];
+    try {
+      const { ids } = await cli.chunks.put(data); assert.equal(ids.length, 64); assert.equal(new Set(ids).size, 64); checks += 2;
+      const document = entry("doc"), another = entry("doc");
+      document.files = [{ id: randomUUID(), name: "synthetic.keystore", type: "application/octet-stream", size: 63 * bytes.length + tail.length, chunks: ids.map(id => id.toUpperCase()) }];
+      await cli.entries.save(document, 0); await cli.entries.save(another, 0);
+      assert.equal(JSON.stringify((await cli.chunks.get(document.id, ids)).data) === JSON.stringify(data), true);
+      assert.equal((await cli.chunks.get(document.id.toUpperCase(), [ids[63].toUpperCase(), ids[0]])).data.join() === [data[63], data[0]].join(), true); checks += 2;
+      const hidden = await probe(service, "/v1/chunks/get", { auth, method: "POST", body: { entry: another.id, ids: [ids[0]] } }); assert.equal(hidden.status, 404); assert.equal(hidden.value.error.code, "not_found"); checks += 2;
+      await rejects(() => cli.chunks.get(randomUUID(), [ids[0]]), "not_found");
+      for (const actor of [horizon, nova]) {
+        await rejects(() => actor.chunks.put([data[0]]), "not_found"); await rejects(() => actor.chunks.get(document.id, [ids[0]]), "not_found"); await rejects(() => actor.chunks.remove([ids[0]]), "not_found"); checks += 3;
+      }
+      for (const bad of [[], Array(65).fill("YQ=="), [""], ["YQ"], ["YR=="], ["!bad!"], [Buffer.alloc(32769).toString("base64")], [1]]) { await rejects(() => cli.chunks.put(bad), "invalid"); checks++; }
+      for (const bad of [[], Array(65).fill(ids[0]), ["not-a-uuid"]]) { await rejects(() => cli.chunks.get(document.id, bad), "invalid"); await rejects(() => cli.chunks.remove(bad), "invalid"); checks += 2; }
+      const spare = await cli.chunks.put([data[63]]); await cli.chunks.remove(spare.ids); await cli.chunks.remove(spare.ids);
+      await assert.rejects(() => service.vault.store.getChunk(spare.ids[0]), error => error.code === "not_found");
+      await rejects(() => cli.chunks.remove([ids[0]]), "conflict"); checks += 2;
+      await cli.lock(); await rejects(() => cli.chunks.get(document.id, ids), "locked"); await rejects(() => cli.chunks.put([data[63]]), "locked"); await rejects(() => cli.chunks.remove(spare.ids), "locked");
+      await cli.unlock(password); assert.equal(JSON.stringify((await cli.chunks.get(document.id, ids)).data) === JSON.stringify(data), true); checks += 4;
+      await cli.entries.save({ ...document, files: [] }, 1); await rejects(() => cli.chunks.get(document.id, [ids[0]]), "not_found");
+      await assert.rejects(() => service.vault.store.getChunk(ids[0]), error => error.code === "not_found"); checks += 2;
+      await cli.entries.remove(document.id, 2); await cli.entries.remove(another.id, 1);
+    } finally { bytes.fill(0); tail.fill(0); }
+  }
+
   stage = "idle and departure locking";
   now += 5000; service.lifecycle.check(); assert.equal((await cli.status()).unlocked, false); await rejects(() => nebula.entries.list(), "locked");
   await nebula.unlock(password); now += 60000; service.lifecycle.check(); assert.equal((await cli.status()).unlocked, false); assert.equal(service.lifecycle.presences.size, 0);

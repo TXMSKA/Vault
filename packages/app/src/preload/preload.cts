@@ -1,7 +1,7 @@
 // The only thing the page can reach: a frozen object with one function per operation Vault's window may ask for. Each one sends its
 // own fixed channel; the page names no channel, and the main process checks every argument before anything runs. A sandboxed
 // preload cannot load other files, so this one stands alone and the channels are written out here and in main/validate.ts (a test keeps them equal).
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { AppState, VaultBridge } from "../shared/api.js" with { "resolution-mode": "import" };
 
 const call = (name: string, payload?: unknown): Promise<any> => ipcRenderer.invoke(`vault:${name}`, payload);
@@ -39,6 +39,10 @@ const bridge = {
   entrySave: input => call("entrySave", input),
   entryRemove: input => call("entryRemove", input),
   entryUndo: input => call("entryUndo", input),
+  entryAttach: () => call("entryAttach"),
+  entryAttachDropped: file => { let path = ""; try { path = webUtils.getPathForFile(file); } catch {} return path ? call("entryAttachDropped", { path }) : Promise.resolve({ ok: false as const, code: "invalid" }); },
+  entryDownload: input => call("entryDownload", input),
+  entryDiscard: () => call("entryDiscard"),
   saveSettings: input => call("saveSettings", input),
   enableHello: input => call("enableHello", input),
   disableHello: () => call("disableHello"),

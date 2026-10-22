@@ -12,6 +12,7 @@ export type EntriesDictionary = {
   conflict: string; reload: string; entryGone: string; projectTaken(name: string): string; needName: string; badName(name: string): string; sameName(name: string): string; kb(size: number): string;
   // Forms
   save: string; deleteEntry: string; fieldPlaceholder(key: string): string; projectHint: string; unchangedHint: string;
+  dropFile: string; keptEncrypted: string; downloadFile(name: string): string; removeFile(name: string): string; fileSaved: string; fileTooLarge: string;
   generate: string; makeAnother: string; lengthLabel: string; symbolsLabel: string; numbersLabel: string; uppercaseLabel: string; useGenerated: string;
   valuesLabel: string; addValue: string; removeValue: string; fieldsLabel: string; addField: string; fieldNameHolder: string; valueHolder: string; hiddenOn: string; hiddenOff: string; formName: string;
   // Questions
@@ -43,6 +44,7 @@ const enHolder = {
   passphrase: "Optional", project: "sprout", customName: "Gate code", totp: "Optional",
 };
 export const enEntries: EntriesDictionary = {
+  dropFile: "Drop a file here or choose one", keptEncrypted: "Kept encrypted inside Vault", downloadFile: name => `Save ${name}`, removeFile: name => `Remove ${name}`, fileSaved: "File saved", fileTooLarge: "The file is larger than 20 MB",
   menuApps: "Apps", menuImport: "Import", menuExport: "Export", menuSettings: "Settings", menuTips: "Show the tips again", menuSettingsLine: "Locking, Windows Hello, language, theme", menuTipsLine: "The first-open tour",
   inCommandLine: command => `In the command line for now: ${command}`,
   clearSearch: "Clear the search", noMatches: "No entries match.", chooseEntry: "Choose an entry to see it.", entriesLabel: "Entries", showLabel: filter => `Show: ${filter}`, filterName: filter => pick(enFilter, filter),
@@ -56,7 +58,7 @@ export const enEntries: EntriesDictionary = {
     return pick(enKind, kind);
   },
   edit: "Edit", addFavourite: "Add to favourites", removeFavourite: "Remove from favourites", copyField: label => `Copy ${low(label)}`, openWebsite: "Open website", oneTimeCode: "One-time code",
-  secondsLeft: seconds => `${seconds} s`, secondsAria: "Seconds left", clipboardNote: "Copied values clear from the clipboard after 30 seconds.", filesLabel: "Files", noteLabel: "Note",
+  secondsLeft: seconds => `${seconds} s`, secondsAria: "Seconds left", clipboardNote: "Copied values clear from the clipboard after 30 seconds.", filesLabel: "File", noteLabel: "Note",
   codeInvalid: "The one-time code key is not valid.", copied: label => `${label} copied. It clears in 30 seconds.`, fieldLabel: id => pick(enField, id), deleted: title => `${title} deleted.`, undo: "Undo",
   conflict: "This entry was changed somewhere else. Reload it to see the latest version.", reload: "Reload", entryGone: "This entry no longer exists.", projectTaken: name => `There is already an environment named ${name}.`,
   needName: "A name is needed.", badName: name => `${name} is not a valid name.`, sameName: name => `${name} appears twice.`, kb: size => size < 1024 ? `${size} B` : size < 1048576 ? `${Math.round(size / 1024)} KB` : `${(size / 1048576).toFixed(1)} MB`,
@@ -92,6 +94,7 @@ const esHolder = {
   passphrase: "Opcional", project: "sprout", customName: "Código del portón", totp: "Opcional",
 };
 export const esEntries: EntriesDictionary = {
+  dropFile: "Soltar un archivo aquí o elegir uno", keptEncrypted: "Se guarda cifrado dentro de Vault", downloadFile: name => `Guardar ${name}`, removeFile: name => `Quitar ${name}`, fileSaved: "Archivo guardado", fileTooLarge: "El archivo supera los 20 MB",
   menuApps: "Apps", menuImport: "Importar", menuExport: "Exportar", menuSettings: "Ajustes", menuTips: "Mostrar los consejos otra vez", menuSettingsLine: "Bloqueo, Windows Hello, idioma y tema", menuTipsLine: "El recorrido de la primera vez",
   inCommandLine: command => `Por ahora, en la línea de comandos: ${command}`,
   clearSearch: "Borrar la búsqueda", noMatches: "Ninguna entrada coincide.", chooseEntry: "Elegir una entrada para verla.", entriesLabel: "Entradas", showLabel: filter => `Mostrar: ${filter}`, filterName: filter => pick(esFilter, filter),
@@ -105,7 +108,7 @@ export const esEntries: EntriesDictionary = {
     return pick(esKind, kind);
   },
   edit: "Editar", addFavourite: "Agregar a favoritas", removeFavourite: "Quitar de favoritas", copyField: label => `Copiar ${low(label)}`, openWebsite: "Abrir el sitio web", oneTimeCode: "Código de un solo uso",
-  secondsLeft: seconds => `${seconds} s`, secondsAria: "Segundos restantes", clipboardNote: "Los valores copiados se borran del portapapeles a los 30 segundos.", filesLabel: "Archivos", noteLabel: "Nota",
+  secondsLeft: seconds => `${seconds} s`, secondsAria: "Segundos restantes", clipboardNote: "Los valores copiados se borran del portapapeles a los 30 segundos.", filesLabel: "Archivo", noteLabel: "Nota",
   codeInvalid: "La clave del código de un solo uso no es válida.", copied: label => `Copiado: ${low(label)}. Se borra en 30 segundos.`, fieldLabel: id => pick(esField, id), deleted: title => `Se eliminó ${title}.`, undo: "Deshacer",
   conflict: "Esta entrada se cambió en otro lugar. Volver a cargarla para ver la última versión.", reload: "Volver a cargar", entryGone: "Esta entrada ya no existe.", projectTaken: name => `Ya hay un entorno llamado ${name}.`,
   needName: "Falta el nombre.", badName: name => `${name} no es un nombre válido.`, sameName: name => `${name} está repetido.`, kb: size => size < 1024 ? `${size} B` : size < 1048576 ? `${Math.round(size / 1024)} KB` : `${(size / 1048576).toFixed(1)} MB`,

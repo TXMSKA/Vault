@@ -43,6 +43,7 @@ export type RunChunk = { seq: number; command: number; stream: "stdout" | "stder
 export type RunCommandState = { status: "waiting" | "running" | "done" | "failed" | "skipped" | "stopped"; exit: number | null; reason?: string; truncated: boolean };
 export type RunProgress = { id: string; project: string; status: RunStatus; reason?: string; expiresAt: string; commands: RunCommandState[]; chunks: RunChunk[]; next: number; more: boolean };
 export interface Client {
+  chunks: { put(data: string[]): Promise<{ ids: string[] }>; get(entry: string, ids: string[]): Promise<{ data: string[] }>; remove(ids: string[]): Promise<{ ok: true }> };
   sync: { status(): Promise<SyncStatus>; setup(folder: string): Promise<SyncStatus>; join(folder: string, credentials: { password: string } | { recovery: string }): Promise<SyncStatus>; now(): Promise<SyncStatus>; conflicts(): Promise<SyncConflict[]>; restore(id: string): Promise<{ ok: true }>; dismiss(id: string): Promise<{ ok: true }>; leave(remove: boolean): Promise<{ ok: true }> };
   status(): Promise<Status>;
   create(password: string): Promise<{ recovery: string }>;

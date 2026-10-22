@@ -1,10 +1,10 @@
 import "../../../test/guard.mjs";
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { mkdtemp, mkdir, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { newEntry } from "vault-core";
+import { CHUNK_BYTES, MAX_FILE_BYTES, newEntry } from "vault-core";
 import { createClipboard, CLIPBOARD_MS } from "../dist/main/clipboard.js";
 import { createEntries, detailOf, merge, summarize, viewOf, UNDO_MS } from "../dist/main/entries.js";
 import { dataFolder, SERVICE_FOLDERS } from "../dist/main/paths.js";
@@ -33,6 +33,56 @@ const login = (title = "Northwind Mail", stamp = "2026-10-09T12:00:00.000Z") => 
 const secrets = [canary, note, secret32, recoveryCode];
 const clean = (value, label) => { const text = JSON.stringify(value); for (const hidden of secrets) check.equal(text.includes(hidden), false, label); };
 try {
+  // Files are batched, claimed in order, wiped after a save and written through a private temporary file.
+  {
+    const rows = new Map(), chunks = new Map(), puts = [], removed = [], gets = [], bytes = randomBytes(64 * CHUNK_BYTES + 13), source = join(scratch, "synthetic.keystore"), target = join(scratch, "download.keystore");
+    let failSave = false, failPut = 0, failGet = false;
+    const client = { entries: {
+      get: async id => { const row = rows.get(id); if (!row) throw { code: "not_found" }; return structuredClone(row); },
+      save: async (entry, expected) => { if (failSave) throw { code: "conflict" }; rows.set(entry.id, { entry: structuredClone(entry), version: expected + 1 }); return { version: expected + 1 }; },
+    }, chunks: {
+      put: async data => { puts.push(data.length); if (failPut && puts.length === failPut) throw { code: "unavailable" }; const ids = data.map(value => { const id = randomUUID(); chunks.set(id, value); return id; }); return { ids }; },
+      get: async (entry, ids) => { gets.push(ids.length); if (failGet) throw { code: "unavailable" }; return { data: ids.map(id => chunks.get(id)) }; },
+      remove: async ids => { removed.push(...ids); for (const id of ids) chunks.delete(id); return { ok: true }; },
+    } };
+    const entries = createEntries({ service: () => client, clipboard: { copy: async () => {} }, openUrl: async () => {} });
+    const document = newEntry("doc"), input = { id: document.id, kind: "doc", title: "Synthetic document", favorite: false, fields: [] };
+    await writeFile(source, bytes);
+    const attached = await entries.attach(source); check.equal(attached.ok, true); check.deepEqual([attached.file.name, attached.file.size, attached.file.type], ["synthetic.keystore", bytes.length, "application/octet-stream"]);
+    check.deepEqual(Object.keys(attached.file).sort(), ["id", "name", "size", "type"]);
+    check.deepEqual(await entries.save({ ...input, files: [attached.file.id] }, 0), { ok: true, version: 1 }); check.deepEqual(puts, [64, 1]);
+    const stored = rows.get(input.id).entry.files[0]; check.equal(stored.chunks.length, 65);
+    check.deepEqual(await entries.save({ ...input, files: [attached.file.id] }, 1), { ok: true, version: 2 }); check.deepEqual(puts, [64, 1]);
+    check.deepEqual(await entries.save(input, 2), { ok: true, version: 3 }); check.equal(rows.get(input.id).entry.files[0].id, attached.file.id);
+    await writeFile(target, "replace this"); check.deepEqual(await entries.download(input.id, attached.file.id, target), { ok: true }); check.deepEqual(gets, [64, 1]);
+    const downloaded = await readFile(target); try { check.equal(createHash("sha256").update(downloaded).digest("hex") === createHash("sha256").update(bytes).digest("hex"), true); } finally { downloaded.fill(0); }
+    check.deepEqual(await entries.download(input.id, randomUUID(), target), { ok: false, code: "not_found" });
+    failGet = true; check.deepEqual(await entries.download(input.id, attached.file.id, target), { ok: false, code: "unavailable" }); failGet = false;
+    check.equal((await readdir(scratch)).some(name => name.endsWith(".tmp")), false); check.equal((await readFile(target)).equals(bytes), true);
+    const second = await entries.attach(source); check.equal(second.ok, true);
+    check.deepEqual(await entries.save({ ...input, files: [second.file.id, attached.file.id] }, 3), { ok: true, version: 4 }); check.deepEqual(rows.get(input.id).entry.files.map(file => file.id), [second.file.id, attached.file.id]);
+    check.deepEqual(await entries.save({ ...input, files: [second.file.id] }, 4), { ok: true, version: 5 }); check.deepEqual(rows.get(input.id).entry.files.map(file => file.id), [second.file.id]);
+    check.deepEqual(await entries.save({ ...input, files: [] }, 5), { ok: true, version: 6 }); check.deepEqual(rows.get(input.id).entry.files, []);
+    const failed = await entries.attach(source); failSave = true;
+    check.deepEqual(await entries.save({ ...input, files: [failed.file.id] }, 6), { ok: false, code: "conflict" }); failSave = false;
+    check.equal(removed.length, 65); check.equal(removed.every(id => !chunks.has(id)), true);
+    check.deepEqual(await entries.save({ ...input, files: [failed.file.id] }, 6), { ok: false, code: "not_found" });
+    const partial = await entries.attach(source); failPut = puts.length + 2;
+    check.deepEqual(await entries.save({ ...input, files: [partial.file.id] }, 6), { ok: false, code: "unavailable" }); failPut = 0; check.equal(removed.length, 129);
+    const pending = await entries.attach(source); check.deepEqual(await entries.save({ ...input, kind: "note", files: [pending.file.id] }, 0), { ok: false, code: "invalid" });
+    check.deepEqual(await entries.save({ ...input, files: [pending.file.id] }, 6), { ok: false, code: "not_found" });
+    const allocate = Buffer.alloc; let heldBytes;
+    Buffer.alloc = (...args) => { const value = allocate(...args); if (args[0] === bytes.length + 1) heldBytes = value; return value; };
+    let discarded; try { discarded = await entries.attach(source); } finally { Buffer.alloc = allocate; }
+    check.equal(heldBytes.subarray(0, bytes.length).equals(bytes), true); entries.discard(); check.equal(heldBytes.every(byte => byte === 0), true);
+    check.deepEqual(await entries.save({ ...input, files: [discarded.file.id] }, 6), { ok: false, code: "not_found" });
+    const forgotten = await entries.attach(source); entries.forget(); check.deepEqual(await entries.save({ ...input, files: [forgotten.file.id] }, 6), { ok: false, code: "not_found" });
+    const empty = join(scratch, "empty.txt"); await writeFile(empty, ""); check.deepEqual(await entries.attach(empty), { ok: false, code: "too_large" }); check.deepEqual(await entries.attach(scratch), { ok: false, code: "invalid" });
+    const large = join(scratch, "large.txt"), handle = await open(large, "w"); try { await handle.truncate(MAX_FILE_BYTES + 1); } finally { await handle.close(); } check.deepEqual(await entries.attach(large), { ok: false, code: "too_large" });
+    await writeFile(source, "x"); for (let i = 0; i < 50; i++) check.equal((await entries.attach(source)).ok, true);
+    check.deepEqual(await entries.attach(source), { ok: false, code: "limited" }); entries.discard(); check.equal((await entries.attach(source)).ok, true); entries.forget(); bytes.fill(0);
+    check.deepEqual([en.dropFile, es.dropFile, en.downloadFile("x"), es.removeFile("x"), en.fileTooLarge, es.fileTooLarge], ["Drop a file here or choose one", "Soltar un archivo aquí o elegir uno", "Save x", "Quitar x", "The file is larger than 20 MB", "El archivo supera los 20 MB"]);
+  }
   // ---- what the window may see: no secret value in a row or an open entry ---------------------------------------------------------------------
   {
     const entry = login(), view = viewOf(entry, 3), row = summarize(entry, 3);
@@ -240,7 +290,7 @@ try {
     check.equal(accepts("saveSettings", settings), true); check.equal(accepts("saveSettings", { ...settings, extra: 1 }), false); check.equal(accepts("saveSettings", { ...settings, idleMinutes: 3 }), false); check.equal(accepts("saveSettings", { ...settings, theme: "blue" }), false); check.equal(accepts("saveSettings", { ...settings, lockWithLastApp: "yes" }), false); check.equal(accepts("saveSettings", { idleMinutes: 15 }), false); check.equal(accepts("saveSettings", undefined), false); check.equal(accepts("saveSettings", [settings]), false);
     check.equal(accepts("enableHello", { password: "x" }), true); check.equal(accepts("enableHello", { password: "" }), false); check.equal(accepts("enableHello", { password: "x".repeat(129) }), false); check.equal(accepts("enableHello", {}), false);
     for (const call of ["disableHello", "dismissTour", "cancelClose", "confirmClose"]) { check.equal(accepts(call, undefined), true); check.equal(accepts(call, {}), false); check.equal(accepts(call, { password: "x" }), false); }
-    check.equal(Object.keys(SHAPES).length, 38);
+    check.equal(Object.keys(SHAPES).length, 42);
   }
 
   // ---- the settings the window offers are the ones the service takes ------------------------------------------------------------------------------------

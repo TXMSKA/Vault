@@ -222,6 +222,12 @@ form.card { margin: 0; }
 .value.block { max-height: 180px; overflow: auto; font-size: 13px; line-height: 18px; white-space: pre-wrap; }
 .seconds { min-width: 28px; font: 400 12px/17px var(--sans); color: var(--soft); text-align: right; }
 .frow.file .icon { flex: none; color: var(--soft); }
+.dropzone { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; width: 100%; height: 120px; border: 1px dashed var(--field-line); border-radius: 10px; color: var(--text); cursor: pointer; }
+.dropzone:hover:not(:disabled), .dropzone.over { background: var(--hover); }
+.dropzone > .icon { color: var(--soft); }
+.filelist:empty { display: none; }
+.filelist .value { overflow-wrap: anywhere; }
+.frow.file .ib { cursor: pointer; }
 .dim { font: 400 12px/17px var(--sans); color: var(--dim); }
 .clip { display: flex; align-items: center; gap: 8px; font: 400 12px/17px var(--sans); color: var(--soft); }
 .clip .icon { flex: none; }
