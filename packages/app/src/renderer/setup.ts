@@ -1,18 +1,20 @@
 import { div, h } from "./dom.ts";
 import { appIcon, mark } from "./icons.ts";
 import { busy, button, centred, checkbox, choice, field, heading, lead, notice, reason } from "./parts.ts";
+import { startJoin } from "./sync.ts";
 import { keyLines } from "./text.ts";
 import { bridge, flow, go, view } from "./ui.ts";
 import type { Context } from "./ui.ts";
 
 /** The first open on a computer with no vault: create one, or restore an encrypted backup. */
 export function welcome({ t }: Context): HTMLElement {
-  const options = (["create", "restore"] as const).map(value => choice("start", value, value === "create" ? t.createChoice : t.restoreChoice, value === "create" ? t.createChoiceLine : t.restoreChoiceLine, flow.chosen === value, () => {
+  const titles = { create: [t.createChoice, t.createChoiceLine], join: [t.joinTitle, t.joinChoiceLine], restore: [t.restoreChoice, t.restoreChoiceLine] } as const;
+  const options = (["create", "join", "restore"] as const).map(value => choice("start", value, titles[value][0], titles[value][1], flow.chosen === value, () => {
     flow.chosen = value; for (const other of options) other.root.classList.toggle("on", other.input.checked);
   }));
   const next = button(t.continue, { primary: true, type: "submit" });
   const root = centred(460, div("intro", appIcon(56), div("heads", heading(t.welcomeTitle, 24), lead(t.welcomeBody))), div("choices", ...options.map(option => option.root)), div("actions", div("fill"), next));
-  root.querySelector("form")!.addEventListener("submit", () => go(() => { flow.first = flow.chosen; }));
+  root.querySelector("form")!.addEventListener("submit", () => go(() => { if (flow.chosen === "join") startJoin(); flow.first = flow.chosen; }));
   queueMicrotask(() => (options.find(option => option.input.checked) ?? options[0]).input.focus());
   return root;
 }

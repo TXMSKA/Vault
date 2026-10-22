@@ -48,10 +48,16 @@ async function permit(c: Context, proof: () => Promise<unknown>) {
 }
 const onlyApp = (c: Context) => { if (c.app!.id !== "vault-app") throw new ServiceError("forbidden", 403); };
 const reason = (value: unknown) => { if (value !== undefined && !isReason(value)) throw new ServiceError("invalid"); return value as string | undefined; };
+const syncOrigin = (c: Context) => { if (Object.hasOwn(c.body, "quantum")) { if (c.body.quantum !== true) throw new ServiceError("invalid"); return true as const; } return text(c.body.folder, 4096); };
 export const routes: Route[] = [
   { method: "GET", path: "/v1/sync", access: "manage", keys: "", handle: c => c.sync.status() },
-  { method: "POST", path: "/v1/sync/setup", access: "manage", keys: "folder", handle: c => { active(c); return c.sync.setup(text(c.body.folder, 4096)); } },
-  { method: "POST", path: "/v1/sync/join", access: "manage", keys: "folder,password|folder,recovery", handle: c => { active(c); return c.sync.join(text(c.body.folder, 4096), text(c.body.password ?? c.body.recovery, 128), Object.hasOwn(c.body, "recovery")); } },
+  { method: "POST", path: "/v1/sync/quantum/signin", access: "manage", keys: "api,site", handle: c => { active(c); return c.sync.signIn(text(c.body.api, 2048), text(c.body.site, 2048)); } },
+  { method: "POST", path: "/v1/sync/quantum/wait", access: "manage", keys: "id", handle: c => { active(c); return c.sync.quantum.poll(id(c.body.id)); } },
+  { method: "POST", path: "/v1/sync/quantum/account", access: "manage", keys: "", handle: c => { active(c); return c.sync.quantumAccount(); } },
+  { method: "POST", path: "/v1/sync/quantum/signout", access: "manage", keys: "", handle: c => { active(c); return c.sync.signOut(); } },
+  { method: "POST", path: "/v1/sync/setup", access: "manage", keys: "folder|quantum", handle: c => { active(c); return c.sync.setup(syncOrigin(c)); } },
+  { method: "POST", path: "/v1/sync/join", access: "manage", keys: "folder,password|folder,recovery|password,quantum|quantum,recovery", handle: c => { active(c); return c.sync.join(syncOrigin(c), text(c.body.password ?? c.body.recovery, 128), Object.hasOwn(c.body, "recovery")); } },
+  { method: "POST", path: "/v1/sync/switch", access: "manage", keys: "", handle: c => { active(c); return c.sync.switchToQuantum(); } },
   { method: "POST", path: "/v1/sync/now", access: "manage", keys: "", handle: c => { active(c); return c.sync.pulse(); } },
   { method: "GET", path: "/v1/sync/conflicts", access: "manage", keys: "", handle: c => c.sync.conflicts() },
   { method: "POST", path: "/v1/sync/conflicts/restore", access: "manage", keys: "id", handle: c => { active(c); return c.sync.resolveConflict(id(c.body.id), true); } },

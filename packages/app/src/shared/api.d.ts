@@ -30,6 +30,11 @@ export type EntryView = {
  */
 export type FieldInput = { id: string; name: string; secret: boolean; value?: string };
 export type EntryInput = { id: string; kind: Kind; title: string; favorite: boolean; fields: FieldInput[]; note?: string; totp?: string; files?: string[] };
+/** Sync as the window sees it: where it goes, how many other computers share the vault, and the last failure's code. */
+export type SyncView = {
+  configured: boolean; origin: "folder" | "quantum" | null; account: string | null; folder: string | null; storage: { used: number; pool: number | null } | null;
+  lastSynced: string | null; others: number; pending: number; conflicts: number; problem: string | null;
+};
 export type AppState = {
   phase: "starting" | "ready" | "unavailable";
   /** Why Vault is out of reach, while `phase` is "unavailable". */
@@ -94,6 +99,20 @@ export interface VaultBridge {
   entryAttachDropped(file: File): Promise<Result<{ file: FileView }>>;
   entryDownload(input: { id: string; file: string }): Promise<Result>;
   entryDiscard(): Promise<Result>;
+  syncStatus(): Promise<Result<{ status: SyncView }>>;
+  /** Opens the Cosmic sign-in page in the browser. */
+  syncSignIn(): Promise<Result>;
+  /** Waits for the browser sign-in: who signed in, and how many vaults that account already holds. */
+  syncWait(): Promise<Result<{ account: string; datasets: number }>>;
+  syncCancel(): Promise<Result>;
+  syncChooseFolder(): Promise<Result<{ name: string }>>;
+  syncSetup(input: { via: "quantum" | "folder" }): Promise<Result<{ status: SyncView }>>;
+  syncJoin(input: { via: "quantum" | "folder"; password: string } | { via: "quantum" | "folder"; recovery: string }): Promise<Result<{ status: SyncView }>>;
+  /** Moves a folder-synced vault to the Cosmic account; the folder's files stay. */
+  syncMove(): Promise<Result<{ status: SyncView }>>;
+  syncNow(): Promise<Result<{ status: SyncView }>>;
+  syncLeave(input: { remove: boolean; signOut: boolean }): Promise<Result<{ status: SyncView }>>;
+  syncSignOut(): Promise<Result>;
   saveSettings(input: SettingsView): Promise<Result>;
   enableHello(input: { password: string }): Promise<Result>;
   disableHello(): Promise<Result>;

@@ -290,7 +290,7 @@ try {
     check.equal(accepts("saveSettings", settings), true); check.equal(accepts("saveSettings", { ...settings, extra: 1 }), false); check.equal(accepts("saveSettings", { ...settings, idleMinutes: 3 }), false); check.equal(accepts("saveSettings", { ...settings, theme: "blue" }), false); check.equal(accepts("saveSettings", { ...settings, lockWithLastApp: "yes" }), false); check.equal(accepts("saveSettings", { idleMinutes: 15 }), false); check.equal(accepts("saveSettings", undefined), false); check.equal(accepts("saveSettings", [settings]), false);
     check.equal(accepts("enableHello", { password: "x" }), true); check.equal(accepts("enableHello", { password: "" }), false); check.equal(accepts("enableHello", { password: "x".repeat(129) }), false); check.equal(accepts("enableHello", {}), false);
     for (const call of ["disableHello", "dismissTour", "cancelClose", "confirmClose"]) { check.equal(accepts(call, undefined), true); check.equal(accepts(call, {}), false); check.equal(accepts(call, { password: "x" }), false); }
-    check.equal(Object.keys(SHAPES).length, 42);
+    check.equal(Object.keys(SHAPES).length, 53);
   }
 
   // ---- the settings the window offers are the ones the service takes ------------------------------------------------------------------------------------

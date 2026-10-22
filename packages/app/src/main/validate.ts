@@ -26,6 +26,12 @@ const entry = (value: unknown): value is EntryInput => {
   if (value.files !== undefined && (!Array.isArray(value.files) || value.files.length > 50 || !value.files.every(promptId))) return false;
   return (value.note === undefined || text(0, 32000)(value.note)) && (value.totp === undefined || text(0, 8192)(value.totp));
 };
+/** Where sync goes: the Cosmic account or the folder the person picked in the main process. */
+const via: Check<"quantum" | "folder"> = (value): value is "quantum" | "folder" => value === "quantum" || value === "folder";
+type JoinInput = { via: "quantum" | "folder"; password: string } | { via: "quantum" | "folder"; recovery: string };
+/** A join names where, and either the master password or the recovery key, never both. */
+const joinInput: Check<JoinInput> = (value): value is JoinInput =>
+  plain(value) && via(value.via) && (only(value, ["via", "password"], []) && text(1, 128)(value.password) || only(value, ["via", "recovery"], []) && text(1, 128)(value.recovery));
 const settings: Check<Settings> = (value): value is Settings => isSettings(value);
 /** What each call may carry, key by key: exactly these keys and no others, each one passing its check. `null` is a call with nothing. */
 export const SHAPES = {
@@ -59,6 +65,17 @@ export const SHAPES = {
   entryAttachDropped: { path: text(1, 4096) },
   entryDownload: { id: promptId, file: promptId },
   entryDiscard: null,
+  syncStatus: null,
+  syncSignIn: null,
+  syncWait: null,
+  syncCancel: null,
+  syncChooseFolder: null,
+  syncSetup: { via },
+  syncJoin: joinInput,
+  syncMove: null,
+  syncNow: null,
+  syncLeave: { remove: yes, signOut: yes },
+  syncSignOut: null,
   saveSettings: settings,
   enableHello: { password: text(1, 128) },
   disableHello: null,

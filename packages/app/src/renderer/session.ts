@@ -5,7 +5,7 @@ import type { Filter } from "./filter.ts";
  * the vault stays open; a rebuilt screen (a change of language, say) picks up where it was. No value that is secret is ever in it.
  */
 export const session = {
-  page: "list" as "list" | "settings",
+  page: "list" as "list" | "settings" | "sync",
   entries: [] as EntrySummary[],
   loaded: false,
   search: "",
