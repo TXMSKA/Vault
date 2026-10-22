@@ -53,6 +53,7 @@ export const routes: Route[] = [
   { method: "GET", path: "/v1/sync", access: "manage", keys: "", handle: c => c.sync.status() },
   { method: "POST", path: "/v1/sync/quantum/signin", access: "manage", keys: "api,site", handle: c => { active(c); return c.sync.signIn(text(c.body.api, 2048), text(c.body.site, 2048)); } },
   { method: "POST", path: "/v1/sync/quantum/wait", access: "manage", keys: "id", handle: c => { active(c); return c.sync.quantum.poll(id(c.body.id)); } },
+  { method: "POST", path: "/v1/sync/quantum/account", access: "manage", keys: "", handle: c => { active(c); return c.sync.quantumAccount(); } },
   { method: "POST", path: "/v1/sync/quantum/signout", access: "manage", keys: "", handle: c => { active(c); return c.sync.signOut(); } },
   { method: "POST", path: "/v1/sync/setup", access: "manage", keys: "folder|quantum", handle: c => { active(c); return c.sync.setup(syncOrigin(c)); } },
   { method: "POST", path: "/v1/sync/join", access: "manage", keys: "folder,password|folder,recovery|password,quantum|quantum,recovery", handle: c => { active(c); return c.sync.join(syncOrigin(c), text(c.body.password ?? c.body.recovery, 128), Object.hasOwn(c.body, "recovery")); } },

@@ -240,6 +240,8 @@ export class Sync {
     if (!deviceId) { const paths = [join(this.root, "quantum-setup.json")]; if (fs.existsSync(join(this.root, "outbox"))) for (const name of fs.readdirSync(join(this.root, "outbox")).filter(name => syncPatterns.writer.test(name))) paths.push(join(this.root, "outbox", name, "state.json")); for (const path of paths) { let pending: State; try { pending = state(localRead(path, 16384)); } catch (error) { if (missing(error)) continue; throw error; } if (pending.origin === "quantum" && pending.binding === binding(this.home) && pending.quantum!.api === quantumUrl(api) && pending.quantum!.site === quantumUrl(site)) { deviceId = pending.deviceId; break; } } }
     this.storage = null; return this.quantum.start(api, site, deviceId);
   }
+  /** The signed-in account and how many vaults it already holds, so a window can say before setup whether this vault would go in or another one is there. */
+  async quantumAccount() { const q = this.quantum.identity(); return { account: q.account, datasets: (await this.quantum.datasets()).length }; }
   async signOut() { if (this.config?.origin === "quantum") throw new ServiceError("sync_configured", 409); this.storage = null; return this.quantum.signOut(); }
   private discardOtherAccounts() {
     const q = this.quantum.identity(), outbox = join(this.root, "outbox"), intent = join(this.root, "quantum-setup.json"), paths = [{ path: intent, file: intent, directory: false }];

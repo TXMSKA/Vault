@@ -7,6 +7,7 @@ import { quitWhenIdle } from "../dist/main/quit.js";
 import { SHAPES, accepts } from "../dist/main/validate.js";
 import { CSP, ORIGIN, resolveRequest, serve } from "../dist/main/protocol.js";
 import { route, toView } from "../dist/main/prompts.js";
+import { quantumConfig } from "../dist/main/sync.js";
 import { readBackup, writeKit, kitName } from "../dist/main/files.js";
 import { resolveLanguage, resolveTheme } from "../dist/main/theme.js";
 import { parseArgs } from "../dist/main/args.js";
@@ -23,7 +24,7 @@ const uuid = "0f8fad5b-d9cb-469f-a165-70867728950e", other = "7c9e6679-7425-40de
 const password = "synthetic-long-password-1", short = "too short";
 try {
   // ---- the bridge's arguments: exactly the keys of the call, each one within its cap -------------------------------------------------------
-  const bridge = ["state", "onState", "create", "chooseBackup", "restoreBackup", "unlock", "unlockWithHello", "recover", "lock", "saveRecoverySheet", "printRecoverySheet", "finishSetup", "approveRun", "approveRunWithHello", "allowImport", "allowImportWithHello", "dismissPrompt", "entries", "entryOpen", "entryReveal", "entryCopy", "entryCode", "entryCopyCode", "entryOpenSite", "entryFavorite", "entrySave", "entryRemove", "entryUndo", "saveSettings", "enableHello", "disableHello", "dismissTour", "cancelClose", "confirmClose", "interact", "retry", "minimize", "toggleMaximize", "close"];
+  const bridge = ["state", "onState", "create", "chooseBackup", "restoreBackup", "unlock", "unlockWithHello", "recover", "lock", "saveRecoverySheet", "printRecoverySheet", "finishSetup", "approveRun", "approveRunWithHello", "allowImport", "allowImportWithHello", "dismissPrompt", "entries", "entryOpen", "entryReveal", "entryCopy", "entryCode", "entryCopyCode", "entryOpenSite", "entryFavorite", "entrySave", "entryRemove", "entryUndo", "saveSettings", "enableHello", "disableHello", "dismissTour", "cancelClose", "confirmClose", "interact", "retry", "minimize", "toggleMaximize", "close", "syncStatus", "syncSignIn", "syncWait", "syncCancel", "syncChooseFolder", "syncSetup", "syncJoin", "syncMove", "syncNow", "syncLeave", "syncSignOut"];
   const preload = await readFile(new URL("../dist/preload/preload.cjs", import.meta.url), "utf8");
   // The preload stands alone, so its channels are written out there and the main process knows them from SHAPES: they must be the same set.
   const named = [...preload.matchAll(/call\("([A-Za-z]+)"/g)].map(match => match[1]).sort();
@@ -31,6 +32,11 @@ try {
   for (const name of bridge) check.ok(preload.includes(`${name}:`) || preload.includes(`${name}(`), name);
   check.equal([...preload.matchAll(/ipcRenderer\.(invoke|on|removeListener|send|sendSync)\(/g)].map(match => match[1]).sort().join(), "invoke,on,removeListener");
   check.match(preload, /Object\.freeze\(bridge\)/); check.doesNotMatch(preload, /require\((?!"electron")/);
+  check.deepEqual(quantumConfig({}), { api: "https://quantum.txmska.com", site: "https://cosmic.txmska.com" }); check.deepEqual(quantumConfig({ VAULT_QUANTUM_API: "http://127.0.0.1:1", VAULT_QUANTUM_SITE: "http://127.0.0.1:2" }), { api: "http://127.0.0.1:1", site: "http://127.0.0.1:2" });
+  check.equal(accepts("syncSetup", { via: "quantum" }), true); check.equal(accepts("syncSetup", { via: "cloud" }), false); check.equal(accepts("syncSetup", { via: "folder", folder: "C:/x" }), false);
+  check.equal(accepts("syncJoin", { via: "quantum", password: "x" }), true); check.equal(accepts("syncJoin", { via: "folder", recovery: "ABCD" }), true); check.equal(accepts("syncJoin", { via: "quantum", password: "x", recovery: "y" }), false); check.equal(accepts("syncJoin", { via: "quantum", password: "" }), false); check.equal(accepts("syncJoin", { via: "quantum" }), false);
+  check.equal(accepts("syncLeave", { remove: false, signOut: true }), true); check.equal(accepts("syncLeave", { remove: "no", signOut: true }), false); check.equal(accepts("syncLeave", { remove: false }), false);
+  for (const call of ["syncStatus", "syncSignIn", "syncWait", "syncCancel", "syncChooseFolder", "syncMove", "syncNow", "syncSignOut"]) { check.equal(accepts(call, undefined), true); check.equal(accepts(call, {}), false); }
   for (const call of ["interact", "retry", "minimize", "toggleMaximize", "close", "state", "chooseBackup", "unlockWithHello", "lock", "saveRecoverySheet", "printRecoverySheet", "finishSetup", "entries", "disableHello", "dismissTour", "cancelClose", "confirmClose"]) { check.equal(accepts(call, undefined), true); check.equal(accepts(call, {}), false); check.equal(accepts(call, null), false); check.equal(accepts(call, { password }), false); }
   check.equal(accepts("create", { password }), true); check.equal(accepts("create", { password: short }), false); check.equal(accepts("create", { password: "x".repeat(129) }), false); check.equal(accepts("create", { password: "x".repeat(128) }), true);
   check.equal(accepts("unlock", { password: "x" }), true); check.equal(accepts("unlock", { password: "" }), false); check.equal(accepts("unlock", { password: "x".repeat(129) }), false); check.equal(accepts("unlock", { password: `a${"\0"}b` }), false);

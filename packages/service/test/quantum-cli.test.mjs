@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { main } from "../../cli/src/main.ts";
+import { quantumUrls, QUANTUM_DEFAULTS } from "../../cli/src/quantum.ts";
 const parent = resolve(tmpdir()), scratch = await mkdtemp(join(parent, "service-quantum-cli-")), calls = [], launches = [], lines = [], answers = [], previous = Object.fromEntries(["VAULT_HOME", "VAULT_QUANTUM_API", "VAULT_QUANTUM_SITE", "LC_ALL"].map(name => [name, process.env[name]])), originalSpawn = childProcess.spawn;
 const account = "synthetic@example.invalid", url = "https://cosmic.example.invalid/authorize?appId=vault", status = { configured: true, origin: "quantum", account, storage: { used: 120, pool: 1000 }, folder: null, lastSynced: null, computers: [], pending: 0, conflicts: 0, failure: null };
 const io = { isTTY: () => true, async ask() { return answers.shift() ?? "no"; }, write(value) { lines.push(value); }, error(value) { lines.push(value); }, out(value) { lines.push(value); }, err(value) { lines.push(value); } };
@@ -28,7 +29,7 @@ const server = createServer(async (request, response) => {
 const command = async (args, input = []) => { lines.length = 0; answers.length = 0; answers.push(...input); return main(["sync", ...args], io); };
 try {
   process.env.VAULT_HOME = scratch; process.env.LC_ALL = "en"; delete process.env.VAULT_QUANTUM_API; delete process.env.VAULT_QUANTUM_SITE;
-  assert.equal(await command(["signin"]), 1); assert.equal(lines.some(line => line.includes("VAULT_QUANTUM_API")), true); checks += 2;
+  assert.deepEqual(quantumUrls([]), { api: "https://quantum.txmska.com", site: "https://cosmic.txmska.com" }); assert.deepEqual(QUANTUM_DEFAULTS, quantumUrls([])); assert.deepEqual(quantumUrls(["--api", "http://127.0.0.1:1", "--site", "http://127.0.0.1:2"]), { api: "http://127.0.0.1:1", site: "http://127.0.0.1:2" }); checks += 3;
   for (const args of [["signin", "--api"], ["signin", "--api", "https://api.example.invalid", "--api", "https://other.example.invalid"], ["signin", "--unknown", "value"], ["signin", "--api", "--site"], ["signout", "extra"], ["switch"], ["switch", "folder"], ["switch", "--quantum", "extra"], ["setup", "--quantum", "extra"], ["join", "--quantum", "--wrong"]]) { assert.equal(await command(args), 2); checks++; }
   assert.equal(calls.length, 0); checks++;
   await new Promise(done => server.listen(0, "127.0.0.1", done)); await mkdir(join(scratch, "run")); await mkdir(join(scratch, "secrets", "clients"), { recursive: true });

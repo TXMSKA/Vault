@@ -110,6 +110,7 @@ export async function connect(options: ConnectOptions): Promise<Client> {
       quantum: {
         signIn: (api, site) => call<{ url: string; id: string }>("POST", "/v1/sync/quantum/signin", { api, site }, held),
         async wait(id) { for (;;) { const result = await call<{ pending: true } | { account: string }>("POST", "/v1/sync/quantum/wait", { id }, held); if ("account" in result) return result; } },
+        account: () => call<{ account: string; datasets: number }>("POST", "/v1/sync/quantum/account", {}, held),
         signOut: () => call("POST", "/v1/sync/quantum/signout", {}, held),
       },
       setupQuantum: () => call<SyncStatus>("POST", "/v1/sync/setup", { quantum: true }, 130000), joinQuantum: credentials => call<SyncStatus>("POST", "/v1/sync/join", { quantum: true, ...credentials }, 130000), switchToQuantum: () => call<SyncStatus>("POST", "/v1/sync/switch", {}, 130000),

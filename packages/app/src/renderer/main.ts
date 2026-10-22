@@ -9,6 +9,7 @@ import { dialogBox } from "./overlays.ts";
 import { button } from "./parts.ts";
 import { session, resetSession } from "./session.ts";
 import { settingsScreen } from "./settings.ts";
+import { joinScreen, syncScreen } from "./sync.ts";
 import { outOfReach, starting, titleBar } from "./shell.ts";
 import { create, recoveryKey, restore, welcome } from "./setup.ts";
 import { helloWaiting, locked, recoveryUnlock } from "./unlock.ts";
@@ -24,7 +25,7 @@ function pick(context: Context): { id: string; build: () => HTMLElement } {
   if (state.phase === "starting") return { id: "starting", build: starting };
   if (state.phase === "unavailable") return { id: `out|${state.problem}`, build: () => outOfReach(context, () => { void bridge.retry(); }) };
   if (flow.setup) return { id: "key", build: () => recoveryKey(context) };
-  if (!state.created) return { id: flow.first, build: () => (flow.first === "welcome" ? welcome : flow.first === "create" ? create : restore)(context) };
+  if (!state.created) return { id: flow.first, build: () => (flow.first === "welcome" ? welcome : flow.first === "create" ? create : flow.first === "join" ? joinScreen : restore)(context) };
   if (!state.unlocked) {
     if (flow.unlock === "hello") return { id: "hello", build: () => helloWaiting(context) };
     if (flow.unlock === "recovery") return { id: "recovery", build: () => recoveryUnlock(context) };
@@ -32,6 +33,7 @@ function pick(context: Context): { id: string; build: () => HTMLElement } {
     return { id: `locked|${asking}|${state.hello && !flow.helloOff}|${flow.note ?? ""}`, build: () => locked(context) };
   }
   if (session.page === "settings") return { id: "settings", build: () => settingsScreen(context) };
+  if (session.page === "sync") return { id: "sync", build: () => syncScreen(context) };
   return { id: "list", build: () => listScreen(context) };
 }
 

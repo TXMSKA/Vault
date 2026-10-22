@@ -330,3 +330,26 @@ form.card { margin: 0; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 8px; background: var(--line-strong); background-clip: content-box; }
 ::-webkit-scrollbar-thumb:hover { background: var(--field-line); background-clip: content-box; }
+/* Sync: the page behind Settings and the join screens from the welcome screen. */
+.synccontrol { display: flex; align-items: center; gap: 12px; flex: none; }
+.view.page.syncpage { display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; height: 100%; }
+.syncbody { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: auto; }
+.syncstep { display: flex; flex-direction: column; gap: 20px; flex: 1; padding: 24px; }
+.syncstep > *, .syncbody > * { flex-shrink: 0; }
+.syncstep > .fill { flex: 1 1 0; }
+.syncwait h2, .syncwait p { margin: 0; }
+.syncrows { display: flex; flex-direction: column; }
+.account { display: flex; align-items: center; gap: 12px; padding: 14px; border-radius: 10px; background: var(--surface-2); }
+.account > .icon { flex: none; color: var(--primary); }
+.acopy { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.acopy .line { font: 400 13px/18px var(--sans); color: var(--soft); overflow-wrap: anywhere; }
+.alert { display: flex; align-items: flex-start; gap: 12px; padding: 14px; border-radius: 10px; background: var(--error-wash); font: 400 14px/20px var(--sans); color: var(--title); }
+.alert > .icon { flex: none; color: var(--error); }
+.alert .grow { flex: 1; }
+.computers { display: flex; flex-direction: column; }
+.computers .label { padding-bottom: 4px; }
+.computer { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.computer > .icon { flex: none; color: var(--soft); }
+.syncwait { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; flex: 1; padding: 24px 24px 80px; text-align: center; }
+.syncwait .lead { max-width: 420px; }
+.waiticon { display: flex; align-items: center; justify-content: center; width: 48px; height: 48px; border-radius: 8px; background: var(--surface-3); color: var(--text); }

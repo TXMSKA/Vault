@@ -19,7 +19,7 @@ export type EntriesDictionary = {
   closeKeyTitle: string; closeKeyBody: string; goBack: string; closeAnyway: string;
   // Settings
   settingsTitle: string; backToList: string; idleTitle: string; idleLine: string; lastAppTitle: string; lastAppLine: string; helloLine: string; helloUnset: string; languageTitle: string; languageLine: string;
-  themeTitle: string; themeLine: string; syncTitle: string; syncLine: string; comingLater: string; idleChoice(minutes: number): string; languageChoice(code: string): string; themeChoice(code: string): string;
+  themeTitle: string; themeLine: string; syncTitle: string; syncLine: string; idleChoice(minutes: number): string; languageChoice(code: string): string; themeChoice(code: string): string;
   helloOnTitle: string; helloOnBody: string; turnOn: string;
   // The tips
   tipsWelcome: string; tipsMore: string; tipsOf(page: number): string; tipAddTitle: string; tipAddLine: string; tipCopyTitle: string; tipCopyLine: string; tipUnlockTitle: string; tipUnlockLine: string;
@@ -67,7 +67,7 @@ export const enEntries: EntriesDictionary = {
   closeKeyTitle: "Close without saving the recovery key?", closeKeyBody: "The recovery key is shown only once. Without it, a forgotten master password cannot be recovered.", goBack: "Go back", closeAnyway: "Close anyway",
   settingsTitle: "Settings", backToList: "Back to the list", idleTitle: "Lock after idle", idleLine: "Vault locks itself when no app has used it for this long.", lastAppTitle: "Lock when the last app closes",
   lastAppLine: "Closing the last Cosmic app that uses Vault locks it.", helloLine: "Unlock with your face, fingerprint or PIN instead of the master password.", helloUnset: "Windows Hello is not set up on this computer.",
-  languageTitle: "Language", languageLine: "The language of Vault's own window.", themeTitle: "Theme", themeLine: "Follow Windows, or always dark or light.", syncTitle: "Sync", syncLine: "Encrypted sync through a cloud folder you choose.", comingLater: "Coming later",
+  languageTitle: "Language", languageLine: "The language of Vault's own window.", themeTitle: "Theme", themeLine: "Follow Windows, or always dark or light.", syncTitle: "Sync", syncLine: "Keep this vault the same on every computer, encrypted before it leaves.",
   idleChoice: minutes => minutes === 60 ? "1 hour" : minutes === 240 ? "4 hours" : `${minutes} ${plural(minutes, "minute", "minutes")}`,
   languageChoice: code => pick({ system: "System", en: "English", es: "Español" }, code), themeChoice: code => pick({ system: "System", dark: "Dark", light: "Light" }, code),
   helloOnTitle: "Turn on Windows Hello", helloOnBody: "Type the master password once. After that, Windows Hello can unlock Vault.", turnOn: "Turn on",
@@ -116,7 +116,7 @@ export const esEntries: EntriesDictionary = {
   closeKeyTitle: "¿Cerrar sin guardar la clave de recuperación?", closeKeyBody: "La clave se muestra una sola vez. Sin ella, una contraseña maestra olvidada no se puede recuperar.", goBack: "Volver", closeAnyway: "Cerrar de todos modos",
   settingsTitle: "Ajustes", backToList: "Volver a la lista", idleTitle: "Bloquear por inactividad", idleLine: "Vault se bloquea solo cuando ninguna app lo usó durante este tiempo.", lastAppTitle: "Bloquear al cerrar la última app",
   lastAppLine: "Cerrar la última app de Cosmic que usa Vault lo bloquea.", helloLine: "Desbloquear con el rostro, la huella o el PIN en lugar de la contraseña maestra.", helloUnset: "Windows Hello no está configurado en esta computadora.",
-  languageTitle: "Idioma", languageLine: "El idioma de la ventana de Vault.", themeTitle: "Tema", themeLine: "Seguir a Windows, o usar siempre el oscuro o el claro.", syncTitle: "Sincronización", syncLine: "Sincronización cifrada mediante una carpeta en la nube a elección.", comingLater: "Próximamente",
+  languageTitle: "Idioma", languageLine: "El idioma de la ventana de Vault.", themeTitle: "Tema", themeLine: "Seguir a Windows, o usar siempre el oscuro o el claro.", syncTitle: "Sincronización", syncLine: "Mantener esta bóveda igual en cada computadora, cifrada antes de salir.",
   idleChoice: minutes => minutes === 60 ? "1 hora" : minutes === 240 ? "4 horas" : `${minutes} ${plural(minutes, "minuto", "minutos")}`,
   languageChoice: code => pick({ system: "Sistema", en: "English", es: "Español" }, code), themeChoice: code => pick({ system: "Sistema", dark: "Oscuro", light: "Claro" }, code),
   helloOnTitle: "Activar Windows Hello", helloOnBody: "Escribir la contraseña maestra una vez. Después, Windows Hello puede desbloquear Vault.", turnOn: "Activar",

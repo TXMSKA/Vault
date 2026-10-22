@@ -45,7 +45,7 @@ export type RunProgress = { id: string; project: string; status: RunStatus; reas
 export interface Client {
   sync: {
     status(): Promise<SyncStatus>; setup(folder: string): Promise<SyncStatus>; join(folder: string, credentials: { password: string } | { recovery: string }): Promise<SyncStatus>;
-    quantum: { signIn(api: string, site: string): Promise<{ url: string; id: string }>; wait(id: string): Promise<{ account: string }>; signOut(): Promise<{ ok: true }> };
+    quantum: { signIn(api: string, site: string): Promise<{ url: string; id: string }>; wait(id: string): Promise<{ account: string }>; account(): Promise<{ account: string; datasets: number }>; signOut(): Promise<{ ok: true }> };
     setupQuantum(): Promise<SyncStatus>; joinQuantum(credentials: { password: string } | { recovery: string }): Promise<SyncStatus>; switchToQuantum(): Promise<SyncStatus>;
     now(): Promise<SyncStatus>; conflicts(): Promise<SyncConflict[]>; restore(id: string): Promise<{ ok: true }>; dismiss(id: string): Promise<{ ok: true }>; leave(remove: boolean): Promise<{ ok: true }>;
   };

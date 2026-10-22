@@ -10,6 +10,7 @@ import { parseArgs } from "./args.ts";
 import { createClipboard } from "./clipboard.ts";
 import type { ClipboardPort } from "./clipboard.ts";
 import { createEntries } from "./entries.ts";
+import { createSync, quantumConfig } from "./sync.ts";
 import { kitName, readBackup, writeKit } from "./files.ts";
 import { registerIpc, STATE_CHANNEL } from "./ipc.ts";
 import type { Handlers } from "./ipc.ts";
@@ -28,6 +29,7 @@ export const PARTITION = "vault-app";
 export type Platform = {
   saveFile(window: BrowserWindow): Promise<string | undefined>;
   openFile(window: BrowserWindow): Promise<string | undefined>;
+  chooseFolder(window: BrowserWindow): Promise<string | undefined>;
   print(contents: WebContents): Promise<Result>;
   clipboard: ClipboardPort;
   /** Opens a website in the person's browser. */
@@ -40,6 +42,10 @@ export const systemPlatform: Platform = {
   },
   async openFile(window) {
     const answer = await dialog.showOpenDialog(window, { filters: [{ name: "Vault backup", extensions: ["vault", "json"] }, { name: "All files", extensions: ["*"] }], properties: ["openFile"] });
+    return answer.canceled ? undefined : answer.filePaths[0];
+  },
+  async chooseFolder(window) {
+    const answer = await dialog.showOpenDialog(window, { properties: ["openDirectory", "createDirectory"] });
     return answer.canceled ? undefined : answer.filePaths[0];
   },
   clipboard: { readText: () => clipboard.readText(), writeText: text => clipboard.writeText(text), clear: () => clipboard.clear() },
@@ -64,11 +70,11 @@ export function prepare(options: StartOptions = {}): (() => Promise<Running>) | 
   if (!app.requestSingleInstanceLock()) { app.quit(); return undefined; }
   app.enableSandbox();
   protocol.registerSchemesAsPrivileged([{ scheme: SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
-  return () => run(args.prompts, home, platform, options.clipboardMs, options.noUpdates === true);
+  return () => run(args.prompts, home, platform, options.clipboardMs, options.noUpdates === true, options.env ?? process.env);
 }
 /** Prepares, then opens the window once Electron is ready. */
 export async function start(options: StartOptions = {}): Promise<Running | undefined> { return prepare(options)?.(); }
-async function run(promptsOnly: boolean, home: string, platform: Platform, clipboardMs: number | undefined, noUpdates: boolean): Promise<Running> {
+async function run(promptsOnly: boolean, home: string, platform: Platform, clipboardMs: number | undefined, noUpdates: boolean, env: NodeJS.ProcessEnv): Promise<Running> {
   await app.whenReady();
   app.setAppUserModelId("com.txmska.vault"); Menu.setApplicationMenu(null);
   const here = dirname(fileURLToPath(import.meta.url)), root = join(here, "..", "renderer"), icon = join(here, "..", "..", "..", "..", "assets", "icon", "vault-icon-512.png");
@@ -79,6 +85,7 @@ async function run(promptsOnly: boolean, home: string, platform: Platform, clipb
   const tour = createTour(app.getPath("userData")); await tour.load();
   const copied = createClipboard(platform.clipboard, clipboardMs === undefined ? {} : { ms: clipboardMs });
   const entries = createEntries({ service: () => link.service(), clipboard: copied, openUrl: platform.openUrl });
+  const sync = createSync({ service: () => link.service(), quantum: () => quantumConfig(env), openUrl: platform.openUrl, chooseFolder: () => platform.chooseFolder(window), refresh: () => link.refresh() });
   const idle = promptsOnly ? quitWhenIdle({ pending: () => link.snapshot().pending, quit: () => app.quit() }) : undefined;
   // Updates are checked once the window has been shown, so a start only for prompts never asks about an update nobody opened Vault for.
   const updates = createUpdates({
@@ -161,6 +168,17 @@ async function run(promptsOnly: boolean, home: string, platform: Platform, clipb
     entrySave: ({ entry, expected }) => read(entries.save(entry, expected)),
     entryRemove: ({ id, expected }) => read(entries.remove(id, expected)),
     entryUndo: ({ id }) => read(entries.undo(id)),
+    syncStatus: () => read(sync.status()),
+    syncSignIn: () => read(sync.signIn()),
+    syncWait: () => read(sync.wait()),
+    syncCancel: () => sync.cancel(),
+    syncChooseFolder: () => sync.chooseFolder(),
+    syncSetup: ({ via }) => read(sync.setup(via)),
+    syncJoin: input => read(sync.join(input.via, "password" in input ? { password: input.password } : { recovery: input.recovery })),
+    syncMove: () => read(sync.move()),
+    syncNow: () => read(sync.now()),
+    syncLeave: ({ remove, signOut }) => read(sync.leave(remove, signOut)),
+    syncSignOut: () => read(sync.signOut()),
     saveSettings: next => link.saveSettings(next),
     enableHello: ({ password }) => link.enableHello(password),
     disableHello: () => link.disableHello(),

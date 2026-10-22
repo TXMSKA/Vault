@@ -6,6 +6,7 @@ import { closePopovers, openMenu, opened } from "./menu.ts";
 import { dialogBox } from "./overlays.ts";
 import { busy, button, field, iconButton, notice, reason } from "./parts.ts";
 import { session } from "./session.ts";
+import { syncSetting } from "./sync.ts";
 import { bridge, view } from "./ui.ts";
 import type { Context } from "./ui.ts";
 /** Windows Hello needs the master password once, in the board's dialog; it is typed here and goes to the service, nowhere else. */
@@ -76,6 +77,6 @@ export function settingsScreen(context: Context): HTMLElement {
       setting(t.hello, t.helloLine, hello, unset),
       setting(t.languageTitle, t.languageLine, select("language", t.languageTitle, LANGUAGE_CHOICES, t.languageChoice)),
       setting(t.themeTitle, t.themeLine, select("theme", t.themeTitle, THEME_CHOICES, t.themeChoice)),
-      setting(t.syncTitle, t.syncLine, h("span", { class: "dim sync" }, t.comingLater)),
+      syncSetting(t),
       status));
 }

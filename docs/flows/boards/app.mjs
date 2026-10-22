@@ -201,13 +201,13 @@ function generator() {
 
 // ---- first run --------------------------------------------------------------
 
-function welcome() {
+function welcome({ join = false } = {}) {
   return appWindow(
     { locked: true },
     centred(
       460,
       col({ gap: 16 }, appIcon(d, 56), col({ gap: 6 }, heading("Welcome to Vault", { size: 24 }), t.body("Vault keeps your passwords encrypted on this computer and shares them only with the Cosmic apps you allow.", { color: "text" }))),
-      col({ gap: 10 }, choice(true, "Create a new vault", "Start empty and import later from a browser or another manager.", "create"), choice(false, "Restore a backup", "Open an encrypted Vault backup with its password.", "restore")),
+      col({ gap: 10 }, choice(!join, "Create a new vault", "Start empty and import later from a browser or another manager.", "create"), choice(join, "Join a synced vault", "Use the vault another computer already syncs, through the Cosmic account or a cloud folder.", "join-synced"), choice(false, "Restore a backup", "Open an encrypted Vault backup with its password.", "restore")),
       row({}, fill(), button("Continue", { primary: true, ref: "continue" })),
     ),
   );
@@ -603,7 +603,16 @@ function appsView() {
 
 // ---- settings ---------------------------------------------------------------
 
-function settingsView({ open } = {}) {
+// The sync row: off offers Set up; on says where it goes and opens the sync page.
+const syncSetting = (on) =>
+  setting(
+    "Sync",
+    "Keep this vault the same on every computer, encrypted before it leaves.",
+    on ? row({ gap: 12, align: "center" }, t.ui(on, { color: "soft" }), button("Manage", { ref: "sync-manage" })) : button("Set up", { ref: "sync-setup" }),
+    "sync",
+  );
+
+function settingsView({ open, sync = false } = {}) {
   return view(
     {},
     sectionHead("Settings"),
@@ -615,11 +624,122 @@ function settingsView({ open } = {}) {
         setting("Windows Hello", "Unlock with your face, fingerprint or PIN instead of the master password.", toggle(true, { ref: "hello", title: "Windows Hello" })),
         setting("Language", "The language of Vault's own window.", select("English", { w: 180, ref: "language", open: open === "language" })),
         setting("Theme", "Follow Windows, or always dark or light.", select("System", { w: 180, ref: "theme", open: open === "theme" })),
-        setting("Sync", "Encrypted sync through a cloud folder you choose.", t.ui("Coming later", { color: "soft", name: "sync", label: "Coming later" })),
+        syncSetting(sync),
       ),
     ),
   );
 }
+
+// ---- sync -------------------------------------------------------------------
+
+const ACCOUNT = "alex.rivera@northwind.example";
+const syncPage = (...kids) => appWindow({}, view({}, sectionHead("Sync"), page(...kids)));
+
+// Where the vault syncs: the Cosmic account (Quantum) or a folder the person already syncs.
+function syncChoose({ folder = false, join = false } = {}) {
+  const shell = (...kids) => join ? appWindow({ locked: true }, view({}, sectionHead("Join a synced vault"), page(...kids))) : syncPage(...kids);
+  return shell(
+    t.body("Entries leave this computer encrypted with the vault's own key. Neither Cosmic nor the folder's provider can read them.", { color: "text" }),
+    col(
+      { gap: 10 },
+      choice(!folder, "Cosmic account", "Sign in once; every computer signed in to the same account shares this vault. Included with Nebula+ Dawn.", "via-account"),
+      choice(folder, "Cloud folder", "A folder already synced by another service, such as OneDrive. Vault writes only its own encrypted files there.", "via-folder"),
+    ),
+    folder
+      ? formField("Folder", row({ gap: 8 }, input("C:\\Users\\alex\\OneDrive\\Vault", { grow: 1, glyph: "folderOpen", ref: "folder" }), button("Choose", { ref: "choose-folder" })))
+      : null,
+    fill(),
+    row({}, fill(), folder ? button(join ? "Continue" : "Start sync", { primary: true, ref: "start-folder" }) : button("Sign in", { primary: true, glyph: "externalLink", ref: "sign-in" })),
+  );
+}
+
+// The browser does the sign-in; the window waits and can open the page again.
+function syncSigningIn() {
+  return appWindow(
+    {},
+    view(
+      {},
+      sectionHead("Sync"),
+      col({ grow: 1, align: "center", justify: "center", pad: [0, 0, 56] }, col({ w: 420, gap: 20 },
+      stack({ w: 48, h: 48, radius: d.r.control, fill: "surface-3", self: "center" }, icon("externalLink", { size: 22, color: "text", place: "center" })),
+      heading("Continue in the browser", { align: "center" }),
+      t.body("The Cosmic sign-in page opened in the browser. Vault continues here once the sign-in is done.", { color: "text", align: "center" }),
+      row({ gap: 10, justify: "center" }, button("Cancel", { ref: "cancel-sign-in" }), button("Open the page again", { ref: "open-again" })),
+      )),
+    ),
+  );
+}
+
+// Signed in. "start": the account has no vault, this one goes in. "join": a new computer, from the welcome screen, opens the account's vault
+// with its master password. "taken": settings on a computer with its own vault, while the account already holds a different one.
+function syncSignedIn({ mode = "start", error } = {}) {
+  const body = {
+    start: [t.body("This account has no vault yet. Starting sync puts this vault in it; other computers join it from their welcome screen with the same master password.", { color: "text" }), notice("info", "The master password and the recovery kit stay with you. Cosmic cannot reset them.")],
+    join: [
+      t.body("This account holds a vault from another computer. Its master password opens it here.", { color: "text" }),
+      formField("Master password", input(error ? "•".repeat(12) : null, { placeholder: "The master password of that vault", mono: true, focus: true, error: !!error, ref: "join-password" }), { error }),
+      row({}, link("Use the recovery key instead", "join-recovery")),
+    ],
+    taken: [
+      row({ pad: 14, gap: 12, align: "start", radius: d.r.group, fill: "error-wash", name: "taken", label: "Account already in use" }, icon("triangleAlert", { size: 18, color: "error" }), t.ui("This account already holds a vault from another computer, and it is not this one. Two vaults cannot share one account.", { size: 14, color: "title" })),
+      t.body("To use the account's vault here: export this vault's entries, remove this computer's vault, open Vault again and choose Join a synced vault, then import the exported entries.", { color: "text" }),
+    ],
+  }[mode];
+  const action = { start: button("Start sync", { primary: true, ref: "start-account" }), join: button("Join", { primary: true, ref: "join" }), taken: button("Sign out", { ref: "sign-out-taken" }) }[mode];
+  const content = [
+    row(
+      { pad: 14, gap: 12, align: "center", radius: d.r.group, fill: "surface-2", name: "account", label: "Signed in" },
+      icon("check", { size: 18, color: "primary" }),
+      col({ gap: 2, grow: 1 }, strong("Signed in"), t.ui(ACCOUNT, { color: "soft" })),
+      link("Use another account", "other-account"),
+    ),
+    ...body,
+    fill(),
+    row({}, fill(), action),
+  ];
+  return mode === "join" ? appWindow({ locked: true }, view({}, sectionHead("Join a synced vault"), page(...content))) : syncPage(...content);
+}
+
+const COMPUTERS = [
+  ["This computer", "Synced 2 minutes ago", "monitor"],
+  ["Office laptop", "Synced 1 hour ago", "laptop"],
+];
+
+// Sync on: where it goes, the computers sharing it, storage, and the ways out.
+function syncOn({ folder = false, problem } = {}) {
+  return syncPage(
+    problem
+      ? row({ pad: 14, gap: 12, align: "start", radius: d.r.group, fill: "error-wash", name: "problem", label: "Sync stopped" }, icon("triangleAlert", { size: 18, color: "error" }), col({ gap: 6, grow: 1 }, t.ui(problem.text, { size: 14, color: "title" })), problem.action ? button(problem.action, { ref: "problem-action" }) : null)
+      : null,
+    col(
+      { gap: 0 },
+      setting(folder ? "Cloud folder" : "Cosmic account", folder ? "C:\\Users\\alex\\OneDrive\\Vault" : ACCOUNT, folder ? button("Move to Cosmic account", { ref: "move" }) : null, "where"),
+      setting("Last synced", "2 minutes ago. Changes go out within seconds while Vault is unlocked.", button("Sync now", { glyph: "refreshCw", ref: "sync-now" }), "last"),
+      folder ? null : setting("Storage", "6.2 MB of the account's 10 GB, shared with the other Cosmic apps.", null, "storage"),
+    ),
+    col(
+      { gap: 0 },
+      label("Computers"),
+      ...COMPUTERS.map(([name, line, glyph]) => row({ pad: [10, 0], gap: 12, align: "center", edge: { side: "bottom", color: "line" }, name: `computer-${slug(name)}`, label: name }, icon(glyph, { size: 18, color: "soft" }), col({ gap: 2, grow: 1 }, strong(name), t.ui(line, { color: "soft" })))),
+    ),
+    fill(),
+    row({}, button("Turn off sync", { danger: true, ref: "turn-off" }), fill()),
+  );
+}
+
+const turnOffDialog = () =>
+  dialog(
+    { title: "Turn off sync on this computer?" },
+    [t.body("The entries stay here. Other computers keep syncing without this one.", { color: "text" }), checkbox(false, "Also remove this computer's encrypted copies from the account", "remove-copies"), checkbox(true, "Sign out of the Cosmic account on this computer", "sign-out")],
+    [button("Cancel"), button("Turn off", { danger: true, ref: "confirm-turn-off" })],
+  );
+
+const moveDialog = () =>
+  dialog(
+    { title: "Move sync to the Cosmic account?" },
+    [t.body("This computer stops using the folder and syncs through the Cosmic account instead. The folder's files are kept. Each other computer moves the same way.", { color: "text" })],
+    [button("Cancel"), button("Sign in and move", { primary: true, ref: "confirm-move" })],
+  );
 
 // The open lists of the three selects, under each one (the select sits at the right of its row).
 const SELECT_X = SIZE.w - 24 - 180;
@@ -661,6 +781,25 @@ const screen = (id, title, col, row, root, note) => ({ id, title, col, row, w: S
 const ADD_ENV_NOTE = "Nova reads these. A command gets them only through a run that a person approves.";
 
 const screens = [
+  // Sync, this round (2026-10-22): new and changed screens kept apart from the flow; the number is the screen's place in the flow.
+  screen("top-changed-welcome", "Changed 1: Welcome", 0, -4, () => welcome(), "Join a synced vault is the third way in: a new computer opens the vault another computer already syncs."),
+  screen("top-changed-settings", "Changed 37: Settings", 1, -4, () => appWindow({}, settingsView()), "Sync replaces Coming later. Set up opens the sync page."),
+  screen("top-changed-light-settings", "Changed 43: Light: settings", 2, -4, () => appWindow({ theme: DIAL_LIGHT }, settingsView()), "The same Sync row in the light theme."),
+  screen("top-sync-choose", "New 48: Sync, where", 3, -4, () => syncChoose(), "Two ways: the Cosmic account (Quantum, included with Nebula+ Dawn in the Beta) or a cloud folder the person already syncs. Sign in opens the Cosmic sign-in page in the browser."),
+  screen("top-sync-choose-folder", "New 49: Sync, cloud folder", 4, -4, () => syncChoose({ folder: true }), "Choose opens the system folder picker. The same encrypted packages as the command line's vault sync setup."),
+  screen("top-sync-signing-in", "New 50: Sync, signing in", 5, -4, syncSigningIn, "Vault waits for the browser. Open the page again reopens the same sign-in; Cancel stops waiting. After five minutes the wait ends with a message."),
+  screen("top-sync-start", "New 51: Sync, signed in", 6, -4, () => syncSignedIn(), "The account has no vault yet, so this one goes in. Start sync uploads only encrypted packages."),
+  screen("top-sync-taken", "New 52: Sync, account holds another vault", 7, -4, () => syncSignedIn({ mode: 'taken' }), "The account already holds a different vault. Nothing is sent; the way to use that vault here is said plainly."),
+  screen("top-sync-on", "New 53: Sync, on", 8, -4, () => syncOn(), "Where it syncs, when it last did, storage of the account's shared pool, and the computers. Signing out comes after Turn off sync, which offers it."),
+  screen("top-sync-on-folder", "New 54: Sync, on, cloud folder", 9, -4, () => syncOn({ folder: true }), "Folder sync offers Move to Cosmic account."),
+  screen("top-sync-move", "New 55: Move to the Cosmic account", 10, -4, () => appWindow({}, view({}, sectionHead('Sync')), [moveDialog()]), "Sign in and move opens the sign-in page, then moves this computer: the folder's files are kept, its entries stay."),
+  screen("top-sync-turn-off", "New 56: Turn off sync", 11, -4, () => appWindow({}, view({}, sectionHead('Sync')), [turnOffDialog()]), "Entries stay on this computer. The checkbox also deletes this computer's encrypted copies from the account or the folder."),
+  screen("top-sync-plan", "New 57: Sync, plan needed", 12, -4, () => syncOn({ problem: { text: 'This Cosmic account does not include Vault sync. Changes stay on this computer and go out once the account includes it.' } }), "Quantum refuses the account (no Vault sync in its plan). Nothing is lost; sync resumes by itself."),
+  screen("top-sync-signin-again", "New 58: Sync, sign in again", 13, -4, () => syncOn({ problem: { text: 'The Cosmic sign-in expired. Changes stay on this computer until it signs in again.', action: 'Sign in' } }), "After 30 days, a revoked device or a copied vault folder, the account asks for a new sign-in."),
+  screen("top-join-choose", "New 59: Join, where", 14, -4, () => syncChoose({ join: true }), "From the welcome screen. The same two ways."),
+  screen("top-join-password", "New 60: Join, master password", 15, -4, () => syncSignedIn({ mode: 'join' }), "After the browser sign-in. The master password of the synced vault opens it; the recovery key works too."),
+  screen("top-join-wrong", "New 61: Join, wrong password", 16, -4, () => syncSignedIn({ mode: 'join', error: 'That is not the master password of the account vault.' }), "The error sits under the field. Repeated attempts wait a little longer each time."),
+  screen("top-settings-sync-on", "New 62: Settings, sync on", 17, -4, () => appWindow({}, settingsView({ sync: 'On, Cosmic account' })), "The Sync row says where it goes; Manage opens the sync page."),
   // New and changed in this round, kept apart from the flow by an empty row; the number is the screen's place in the flow.
   screen("run-request", "New 44: Run request", 0, -2, () => runRequest(), "An agent asked to run commands with a project's values, so Vault comes to the front with the request. Approve opens Windows Hello and covers these commands only; Reject tells the agent nothing ran. vault approve shows the same request in a terminal."),
   screen("run-password", "New 45: Run request, master password", 1, -2, () => runRequest({ password: true }), "The master password instead of Windows Hello, for Linux or when Hello is off."),
@@ -722,6 +861,22 @@ const screens = [
   screen("light-locked", "Light: locked", 0, 9, () => locked({ theme: DIAL_LIGHT }), "The light theme, designed on its own: a dim cool grey with no surface near white, the brass deepened for contrast."),
   screen("light-list", "Light: list", 1, 9, () => main({ theme: DIAL_LIGHT })),
   screen("light-settings", "Light: settings", 2, 9, () => appWindow({ theme: DIAL_LIGHT }, settingsView())),
+  // Sync
+  screen("sync-choose", "Sync, where", 0, 10, () => syncChoose(), "Two ways: the Cosmic account (Quantum, included with Nebula+ Dawn in the Beta) or a cloud folder the person already syncs. Sign in opens the Cosmic sign-in page in the browser."),
+  screen("sync-choose-folder", "Sync, cloud folder", 1, 10, () => syncChoose({ folder: true }), "Choose opens the system folder picker. The same encrypted packages as the command line's vault sync setup."),
+  screen("sync-signing-in", "Sync, signing in", 2, 10, syncSigningIn, "Vault waits for the browser. Open the page again reopens the same sign-in; Cancel stops waiting. After five minutes the wait ends with a message."),
+  screen("sync-start", "Sync, signed in", 3, 10, () => syncSignedIn(), "The account has no vault yet, so this one goes in. Start sync uploads only encrypted packages."),
+  screen("sync-taken", "Sync, account holds another vault", 4, 10, () => syncSignedIn({ mode: 'taken' }), "The account already holds a different vault. Nothing is sent; the way to use that vault here is said plainly."),
+  screen("sync-on", "Sync, on", 5, 10, () => syncOn(), "Where it syncs, when it last did, storage of the account's shared pool, and the computers. Signing out comes after Turn off sync, which offers it."),
+  screen("sync-on-folder", "Sync, on, cloud folder", 6, 10, () => syncOn({ folder: true }), "Folder sync offers Move to Cosmic account."),
+  screen("sync-move", "Move to the Cosmic account", 7, 10, () => appWindow({}, view({}, sectionHead('Sync')), [moveDialog()]), "Sign in and move opens the sign-in page, then moves this computer: the folder's files are kept, its entries stay."),
+  screen("sync-turn-off", "Turn off sync", 8, 10, () => appWindow({}, view({}, sectionHead('Sync')), [turnOffDialog()]), "Entries stay on this computer. The checkbox also deletes this computer's encrypted copies from the account or the folder."),
+  screen("sync-plan", "Sync, plan needed", 9, 10, () => syncOn({ problem: { text: 'This Cosmic account does not include Vault sync. Changes stay on this computer and go out once the account includes it.' } }), "Quantum refuses the account (no Vault sync in its plan). Nothing is lost; sync resumes by itself."),
+  screen("sync-signin-again", "Sync, sign in again", 10, 10, () => syncOn({ problem: { text: 'The Cosmic sign-in expired. Changes stay on this computer until it signs in again.', action: 'Sign in' } }), "After 30 days, a revoked device or a copied vault folder, the account asks for a new sign-in."),
+  screen("join-choose", "Join, where", 11, 10, () => syncChoose({ join: true }), "From the welcome screen. The same two ways."),
+  screen("join-password", "Join, master password", 12, 10, () => syncSignedIn({ mode: 'join' }), "After the browser sign-in. The master password of the synced vault opens it; the recovery key works too."),
+  screen("join-wrong", "Join, wrong password", 13, 10, () => syncSignedIn({ mode: 'join', error: 'That is not the master password of the account vault.' }), "The error sits under the field. Repeated attempts wait a little longer each time."),
+  screen("settings-sync-on", "Settings, sync on", 14, 10, () => appWindow({}, settingsView({ sync: 'On, Cosmic account' })), "The Sync row says where it goes; Manage opens the sync page."),
 ];
 
 const links = [
@@ -779,12 +934,31 @@ const links = [
   { from: "changed-import", to: "import-env", at: "source-env-file", label: ".env file" },
   { from: "import-env", to: "import-env-report", at: "import", label: "Import" },
   { from: "import-env-report", to: "list", at: "done", label: "Done" },
+  { from: "settings", to: "sync-choose", at: "sync-setup", label: "Set up" },
+  { from: "sync-choose", to: "sync-choose-folder", at: "via-folder", label: "Cloud folder" },
+  { from: "sync-choose", to: "sync-signing-in", at: "sign-in", label: "Sign in" },
+  { from: "sync-signing-in", to: "sync-start", label: "Signed in, no vault yet" },
+  { from: "sync-signing-in", to: "sync-taken", label: "Signed in, another vault" },
+  { from: "sync-start", to: "sync-on", at: "start-account", label: "Start sync" },
+  { from: "sync-choose-folder", to: "sync-on-folder", at: "start-folder", label: "Start sync" },
+  { from: "sync-on-folder", to: "sync-move", at: "move", label: "Move to Cosmic account" },
+  { from: "sync-move", to: "sync-signing-in", at: "confirm-move", label: "Sign in and move" },
+  { from: "sync-on", to: "sync-turn-off", at: "turn-off", label: "Turn off sync" },
+  { from: "sync-on", to: "sync-plan", label: "Plan without Vault sync" },
+  { from: "sync-on", to: "sync-signin-again", label: "Sign-in expired" },
+  { from: "sync-signin-again", to: "sync-signing-in", at: "problem-action", label: "Sign in" },
+  { from: "welcome", to: "join-choose", at: "join-synced", label: "Join a synced vault" },
+  { from: "join-choose", to: "sync-signing-in", at: "sign-in", label: "Sign in" },
+  { from: "sync-signing-in", to: "join-password", label: "Signed in, from welcome" },
+  { from: "join-password", to: "list", at: "join", label: "Join" },
+  { from: "join-password", to: "join-wrong", label: "Wrong password" },
+  { from: "settings-sync-on", to: "sync-on", at: "sync-manage", label: "Manage" },
 ];
 
 export default board({
   id: "app",
   title: "Vault app",
-  note: "Vault's own small app, for people without Nebula: view, add, import and export passwords, and choose which apps get in. Drawn in Dial with the keyhole. Each row is one part of the flow: first run, unlock, the list, an entry, adding, import, export, apps, settings, and the light theme at the bottom. Copy ships in English and Spanish; the boards are in English. Click a screen for its note; everything shown is invented.",
+  note: "Vault's own small app, for people without Nebula: view, add, import and export passwords, and choose which apps get in. Drawn in Dial with the keyhole. Each row is one part of the flow: first run, unlock, the list, an entry, adding, import, export, apps, settings, the light theme, and sync at the bottom. Copy ships in English and Spanish; the boards are in English. Click a screen for its note; everything shown is invented.",
   screens,
   links,
 });

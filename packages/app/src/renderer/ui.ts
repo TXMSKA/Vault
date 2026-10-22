@@ -6,8 +6,8 @@ export const bridge: VaultBridge = window.vault;
 export type Context = { state: AppState; t: Dictionary };
 /** Where the person is inside the flows that the service state alone does not say: first run, the recovery key on screen, unlocking another way. */
 export const flow = {
-  first: "welcome" as "welcome" | "create" | "restore",
-  chosen: "create" as "create" | "restore",
+  first: "welcome" as "welcome" | "create" | "restore" | "join",
+  chosen: "create" as "create" | "restore" | "join",
   /** The recovery key on screen after a vault is made or recovered; it stays until the person opens Vault. */
   setup: undefined as { recovery: string; restored: boolean } | undefined,
   unlock: "locked" as "locked" | "recovery" | "hello",

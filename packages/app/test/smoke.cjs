@@ -77,13 +77,13 @@ BrowserWindow.prototype.close = function close() {
   this.emit("close", event); controls.push(event.defaultPrevented ? "close-asked" : "close");
 };
 
-const saved = { kit: path.join(scratch, "kit.txt"), backup: path.join(scratch, "backup.vault"), printed: 0 };
+const saved = { kit: path.join(scratch, "kit.txt"), backup: path.join(scratch, "backup.vault"), folder: path.join(scratch, "sync-folder"), printed: 0 };
 const { prepare } = require(path.join(root, "packages", "app", "dist", "main", "app.js"));
 // The clipboard and the browser are in memory here: what was copied, how often it was cleared, and which addresses were asked for.
 const board = { text: "", writes: 0, clears: 0 }, opened = [], CLIPBOARD_MS = 1200;
 // Started the way the service starts it when a prompt waits and nobody is there.
 const launch = prepare({ env: process.env, argv: ["--prompts"], clipboardMs: CLIPBOARD_MS, noUpdates: true, platform: {
-  saveFile: async () => saved.kit, openFile: async () => saved.backup,
+  saveFile: async () => saved.kit, openFile: async () => saved.backup, chooseFolder: async () => saved.folder,
   print: async () => { saved.printed++; return { ok: true }; },
   clipboard: { readText: async () => board.text, writeText: async text => { board.text = text; board.writes++; }, clear: () => { board.text = ""; board.clears++; } },
   openUrl: async url => { opened.push(url); },
@@ -227,7 +227,7 @@ async function main() {
   plain("the content size", win.getContentSize(), [920, 640]); plain("the minimum size", win.getMinimumSize(), [920, 640]); plain("the menu bar", win.isMenuBarVisible(), false);
   check.equal(wc.getURL(), "app://vault/"); check.equal(win.getTitle(), "Vault");
   check.deepEqual(await evaluate("[typeof require, typeof process, typeof module, typeof Buffer, typeof ipcRenderer, typeof window.electron]"), ["undefined", "undefined", "undefined", "undefined", "undefined", "undefined"]);
-  check.deepEqual(await evaluate("Object.keys(window.vault).sort()"), ["allowImport", "allowImportWithHello", "approveRun", "approveRunWithHello", "cancelClose", "chooseBackup", "close", "confirmClose", "create", "disableHello", "dismissPrompt", "dismissTour", "enableHello", "entries", "entryCode", "entryCopy", "entryCopyCode", "entryFavorite", "entryOpen", "entryOpenSite", "entryRemove", "entryReveal", "entrySave", "entryUndo", "finishSetup", "interact", "lock", "minimize", "onState", "printRecoverySheet", "recover", "restoreBackup", "retry", "saveRecoverySheet", "saveSettings", "state", "toggleMaximize", "unlock", "unlockWithHello"]);
+  check.deepEqual(await evaluate("Object.keys(window.vault).sort()"), ["allowImport", "allowImportWithHello", "approveRun", "approveRunWithHello", "cancelClose", "chooseBackup", "close", "confirmClose", "create", "disableHello", "dismissPrompt", "dismissTour", "enableHello", "entries", "entryCode", "entryCopy", "entryCopyCode", "entryFavorite", "entryOpen", "entryOpenSite", "entryRemove", "entryReveal", "entrySave", "entryUndo", "finishSetup", "interact", "lock", "minimize", "onState", "printRecoverySheet", "recover", "restoreBackup", "retry", "saveRecoverySheet", "saveSettings", "state", "syncCancel", "syncChooseFolder", "syncJoin", "syncLeave", "syncMove", "syncNow", "syncSetup", "syncSignIn", "syncSignOut", "syncStatus", "syncWait", "toggleMaximize", "unlock", "unlockWithHello"]);
   check.equal(await evaluate("Object.isFrozen(window.vault)"), true);
   check.equal(await evaluate("(() => { try { window.vault.create = () => 0; } catch {} return typeof window.vault.create; })()"), "function");
   check.equal(await evaluate("typeof window.vault.invoke"), "undefined");
@@ -724,7 +724,7 @@ async function main() {
   await click("Menu"); await pick("Show the tips again"); await showing("Welcome to Vault", "1 of 2", "Add or import"); await click("Got it"); await gone("Welcome to Vault");
 
   say("the settings: each choice is saved when it is made and applied at once");
-  await click("Menu"); await pick("Settings"); await showing("Settings", "Lock after idle", "Lock when the last app closes", "Windows Hello", "Language", "Theme", "Sync", "Encrypted sync through a cloud folder you choose.", "Coming later");
+  await click("Menu"); await pick("Settings"); await showing("Settings", "Lock after idle", "Lock when the last app closes", "Windows Hello", "Language", "Theme", "Sync", "Keep this vault the same on every computer, encrypted before it leaves.", "Set up");
   check.equal(await exists(".main"), false);
   plain("the controls", await evaluate("[...document.querySelectorAll('.select, .toggle')].map(node => node.getAttribute('aria-label') + '|' + (node.getAttribute('aria-checked') ?? ''))"),
     ["Lock after idle: 15 minutes|", "Lock when the last app closes|false", "Windows Hello|false", "Language: English|", "Theme: Dark|"]);
@@ -735,7 +735,7 @@ async function main() {
   check.equal(await evaluate("document.querySelector('.select').getAttribute('aria-label')"), "Lock after idle: 30 minutes");
   await click("Lock when the last app closes"); await settle("the last-app rule", async () => (await manager.settings.get()).lockWithLastApp === true); check.equal(service.lifecycle.lockWithLastApp, true); await resync();
   await click("Language: English"); await showing("System", "English", "Español"); await shoot("language-open", true); await pick("Español");
-  await poll("Spanish", async () => (await evaluate("document.documentElement.lang")) === "es"); await showing("Ajustes", "Bloquear por inactividad", "Tema", "Idioma", "Próximamente");
+  await poll("Spanish", async () => (await evaluate("document.documentElement.lang")) === "es"); await showing("Ajustes", "Bloquear por inactividad", "Tema", "Idioma", "Configurar");
   check.equal((await manager.settings.get()).language, "es"); await resync(); await capture("settings-es-dark");
   await click("Idioma: Español"); await showing("Sistema"); await pick("English"); await poll("English", async () => (await evaluate("document.documentElement.lang")) === "en"); await showing("Lock after idle"); await resync();
   await click("Theme: Dark"); await showing("System", "Dark", "Light"); await shoot("theme-open", true); await pick("Light");
@@ -744,6 +744,34 @@ async function main() {
   await click("Theme: System"); await pick("Dark"); await poll("dark again", async () => (await evaluate("document.documentElement.dataset.theme")) === "dark"); await resync();
   plain("the settings kept", await manager.settings.get(), { idleMinutes: 30, lockWithLastApp: true, language: "en", theme: "dark" });
   await click("Lock when the last app closes"); await settle("the last-app rule off", async () => (await manager.settings.get()).lockWithLastApp === false); await resync();
+
+  say("sync: a cloud folder starts sync, shows it on and turns it off");
+  fs.mkdirSync(saved.folder, { recursive: true });
+  await click("Set up"); await showing("Sync", "Cosmic account", "Cloud folder", "Sign in"); await shoot("sync-choose", true);
+  await evaluate("document.querySelector('input[type=radio][value=folder]').click()"); await showing("Folder", "Choose", "Start sync"); await click("Start sync"); await showing("Choose a folder first.");
+  await click("Choose"); await poll("the folder in the field", async () => (await evaluate("document.querySelector('input[name=folder]').value")) === saved.folder);
+  await click("Start sync"); await showing("Last synced", "Computers", "This computer", "Move to Cosmic account", "Turn off sync");
+  plain("folder sync", [(await manager.sync.status()).configured, (await manager.sync.status()).origin], [true, "folder"]); await shoot("sync-on-folder", true);
+  await click("Sync now"); await showing("Just now");
+  await click("Turn off sync"); await showing("Turn off sync on this computer?", "Also remove this computer's encrypted copies from the folder"); check.equal(await count("#modal .checkbox"), 1);
+  await click("Turn off", "document.querySelector('#modal')"); await showing("Cosmic account", "Cloud folder"); check.equal((await manager.sync.status()).configured, false);
+
+  say("sync through the Cosmic account: the browser signs in, an empty account takes this vault, and turning off signs out");
+  const { fakeQuantum } = await import(require("node:url").pathToFileURL(path.join(root, "packages", "service", "test", "fake-quantum.mjs")).href), cosmic = await fakeQuantum();
+  process.env.VAULT_QUANTUM_API = cosmic.api; process.env.VAULT_QUANTUM_SITE = cosmic.api;
+  try {
+    await evaluate("document.querySelector('input[type=radio][value=quantum]').click()"); await click("Sign in");
+    await showing("Continue in the browser", "Open the page again"); await shoot("sync-signing", true);
+    await poll("the sign-in page", async () => opened.some(url => url.startsWith(`${cosmic.api}/authorize`)));
+    const issued = cosmic.issue(opened.findLast(url => url.startsWith(`${cosmic.api}/authorize`)), "synthetic@cosmic.invalid"); check.equal((await fetch(issued.callback)).ok, true);
+    await showing("Signed in", "synthetic@cosmic.invalid", "Use another account", "Start sync"); await shoot("sync-signed", true);
+    await click("Start sync"); await showing("Cosmic account", "synthetic@cosmic.invalid", "Storage", "Last synced", "Turn off sync");
+    plain("account sync", [(await manager.sync.status()).configured, (await manager.sync.status()).origin], [true, "quantum"]); await shoot("sync-on-account", true);
+    await click("Turn off sync"); await showing("Sign out of the Cosmic account on this computer"); check.equal(await count("#modal .checkbox"), 2);
+    await click("Turn off", "document.querySelector('#modal')"); await showing("Cosmic account", "Cloud folder"); check.equal((await manager.sync.status()).configured, false);
+    await poll("the account signed out", async () => !fs.existsSync(path.join(home, "secrets", "quantum.json")));
+  } finally { delete process.env.VAULT_QUANTUM_API; delete process.env.VAULT_QUANTUM_SITE; await cosmic.close(); }
+  await click("Back to the list"); await showing("Lock after idle", "Set up");
 
   say("Windows Hello is turned on with the master password, in the board's dialog, and off with one press");
   await poll("Hello to be available", async () => evaluate("window.vault.state().then(state => state.helloAvailable)"));
