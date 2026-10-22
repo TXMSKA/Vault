@@ -11,17 +11,25 @@ import { privateDirectory } from "../../client/src/private.ts";
 import { validateEntry } from "./vault.ts";
 import type { Vault } from "./vault.ts";
 import { ServiceError, object, text } from "./errors.ts";
+import { QuantumAuth, QuantumTransport, quantumUrl } from "./quantum.ts";
 const missing = (error: unknown) => (error as NodeJS.ErrnoException)?.code === "ENOENT";
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const writer = (a: { deviceId: string; generationId: string }) => `${a.deviceId}/${a.generationId}`;
 const binding = (home: string) => createHash("sha256").update(hostname()).update("\0").update(process.platform === "win32" ? resolve(home).toLowerCase() : resolve(home)).update("\0").update(String(fs.statSync(home).birthtimeMs)).digest("hex");
-async function limited<T>(run: (live: () => void) => Promise<T>): Promise<T> {
+export async function limited<T>(run: (live: () => void) => Promise<T>): Promise<T> {
   let expired = false, timer: ReturnType<typeof setTimeout> | undefined;
   const live = () => { if (expired) throw new ServiceError("sync_timeout", 503); };
   try { return await Promise.race([run(live), new Promise<never>((_done, fail) => { timer = setTimeout(() => { expired = true; fail(new ServiceError("sync_timeout", 503)); }, SYNC_CALL_MS); timer.unref(); })]); }
   finally { if (timer) clearTimeout(timer); }
 }
-export class FolderTransport {
+export interface SyncTransport {
+  list(name: string, allowMissingRoot?: boolean): Promise<string[]>;
+  read(name: string, cap?: number): Promise<string>;
+  write(name: string, bytes: string, dataset?: boolean): Promise<boolean>;
+  remove(name: string, dataset?: boolean): Promise<void>;
+  leave(): Promise<void>;
+}
+export class FolderTransport implements SyncTransport {
   root: string; own: string;
   constructor(root: string, own: string) { this.root = resolve(root); this.own = own; }
   private path(name: string) { const result = resolve(this.root, name), inside = relative(this.root, result); if (!inside || inside.startsWith("..") || isAbsolute(inside) || name.split(/[\\/]/).some(part => !part || part === "." || part === "..")) throw new VaultError("invalid"); return result; }
@@ -69,13 +77,16 @@ export class FolderTransport {
 type RecordRow = { operation: SyncOperation; localVersion: number };
 type Kept = { operation: SyncOperation; entry: Sealed | null; blobs: SyncBlob[] };
 type Index = { records: RecordRow[]; applied: Record<string, number>; kept: Kept[] };
-type State = { format: 1; folder: string; datasetId: string; deviceId: string; generationId: string; binding: string; sequence: number; operations: number; checkpoint: number; index: string; lastSynced: string | null; failure: { writer: string | null; cause: string } | null; computers: string[]; conflicts: number };
+type State = { format: 2; origin: "folder" | "quantum"; quantum: { api: string; site: string; account: string } | null; folder: string; datasetId: string; deviceId: string; generationId: string; binding: string; sequence: number; operations: number; checkpoint: number; index: string; lastSynced: string | null; failure: { writer: string | null; cause: string } | null; computers: string[]; conflicts: number };
 type Publication = { path: string; bytes: string };
 type Snapshot = { index: Index; rows: StoredEntry[]; envelope: { state: VaultState; version: number }; chunks: SyncBlob[]; state: State; publications: Publication[]; before: { rows: StoredEntry[]; envelope: { state: VaultState | null; version: number } } };
 const emptyIndex = (): Index => ({ records: [], applied: {}, kept: [] });
 function state(value: unknown): State {
-  const v = object(value, "binding,checkpoint,computers,conflicts,datasetId,deviceId,failure,folder,format,generationId,index,lastSynced,operations,sequence") as unknown as State;
-  if (v.format !== 1 || !/^[0-9a-f]{64}$/.test(v.binding) || !isAbsolute(text(v.folder, 4096)) || v.lastSynced !== null && !Number.isFinite(Date.parse(text(v.lastSynced, 64)))) throw new VaultError("invalid");
+  const legacy = (value as { format?: unknown })?.format === 1, keys = "binding,checkpoint,computers,conflicts,datasetId,deviceId,failure,folder,format,generationId,index,lastSynced,operations,sequence";
+  const source = object(value, legacy ? keys : `${keys},origin,quantum`.split(",").sort().join()), v = (legacy ? { ...source, format: 2, origin: "folder", quantum: null } : source) as unknown as State;
+  if (v.format !== 2 || !["folder", "quantum"].includes(v.origin) || !/^[0-9a-f]{64}$/.test(v.binding) || v.lastSynced !== null && !Number.isFinite(Date.parse(text(v.lastSynced, 64)))) throw new VaultError("invalid");
+  if (v.origin === "folder") { if (!isAbsolute(text(v.folder, 4096)) || v.quantum !== null) throw new VaultError("invalid"); }
+  else { if (v.folder !== "") throw new VaultError("invalid"); const q = object(v.quantum, "account,api,site"); quantumUrl(q.api); quantumUrl(q.site); if (!text(q.account, 320)) throw new VaultError("invalid"); }
   [v.datasetId, v.deviceId, v.generationId, v.index].forEach(id); [v.sequence, v.operations, v.checkpoint].forEach(n => syncNumber(n));
   if (!Array.isArray(v.computers) || v.computers.length > SYNC_WRITER_LIMIT) throw new VaultError("invalid"); v.computers.forEach(id); syncNumber(v.conflicts);
   if (v.failure !== null) { object(v.failure, "cause,writer"); text(v.failure.cause, 80); if (v.failure.writer !== null) { const pair = v.failure.writer.split("/"); if (pair.length !== 2) throw new VaultError("invalid"); pair.forEach(id); } } return v;
@@ -100,10 +111,12 @@ export function recoverSync(home: string) {
   if (fs.existsSync(backup)) fs.rmSync(backup, { recursive: true }); fs.unlinkSync(journal);
 }
 export class Sync {
+  readonly quantum: QuantumAuth;
   private home: string; private vault: Vault; private now: () => number; private disableHello: () => Promise<void>; private logger: VaultLogger;
   private config: State | null = null; private failure: State["failure"] = null; private joinFailures = { count: 0, until: 0 }; private root: string; private prepared = false;
-  constructor(home: string, vault: Vault, now: () => number, disableHello: () => Promise<void>, logger: VaultLogger) { this.home = home; this.vault = vault; this.now = now; this.disableHello = disableHello; this.logger = logger; this.root = join(home, "sync"); }
-  async load() { try { this.config = state(localRead(join(this.root, "state.json"), 16384)); } catch (error) { if (!missing(error)) throw new ServiceError("sync_state", 503); } try { const failure = object(localRead(join(this.root, "failure.json"), 4096), "cause,writer"); text(failure.cause, 80); if (failure.writer !== null) { const pair = text(failure.writer, 80).split("/"); if (pair.length !== 2) throw new VaultError("invalid"); pair.forEach(id); } this.failure = failure as State["failure"]; } catch (error) { if (!missing(error)) throw new ServiceError("sync_state", 503); } }
+  private storage: { at: number; value: SyncStatus["storage"] } | null = null;
+  constructor(home: string, vault: Vault, now: () => number, disableHello: () => Promise<void>, logger: VaultLogger, language?: () => string) { this.home = home; this.vault = vault; this.now = now; this.disableHello = disableHello; this.logger = logger; this.root = join(home, "sync"); this.quantum = new QuantumAuth(home, language); }
+  async load() { await this.quantum.load(); try { this.config = state(localRead(join(this.root, "state.json"), 16384)); } catch (error) { if (!missing(error)) throw new ServiceError("sync_state", 503); } try { const failure = object(localRead(join(this.root, "failure.json"), 4096), "cause,writer"); text(failure.cause, 80); if (failure.writer !== null) { const pair = text(failure.writer, 80).split("/"); if (pair.length !== 2) throw new VaultError("invalid"); pair.forEach(id); } this.failure = failure as State["failure"]; } catch (error) { if (!missing(error)) throw new ServiceError("sync_state", 503); } }
   private check(ticket: number) { return this.vault.memory.get(ticket); }
   private prepare() { if (this.prepared) return; for (const name of ["", "index", "outbox", "kept"]) privateDirectory(join(this.root, name)); this.prepared = true; }
   private async pending(key: CryptoKey) {
@@ -124,7 +137,7 @@ export class Sync {
     }
     if (result.length > 1) throw new VaultError("invalid"); return result;
   }
-  private transport(c: State) { return new FolderTransport(join(c.folder, "Vault Sync", c.datasetId), writer(c)); }
+  private transport(c: State): SyncTransport { if (c.origin === "folder") return new FolderTransport(join(c.folder, "Vault Sync", c.datasetId), writer(c)); const q = this.quantum.identity(); if (q.api !== c.quantum!.api || q.site !== c.quantum!.site || q.account !== c.quantum!.account || q.deviceId !== c.deviceId) throw new ServiceError("sync_signin_required", 401); return new QuantumTransport(this.quantum, q.api, c.datasetId, writer(c)); }
   private address(c: State, type: SyncAddress["type"], sequence: number, packageId: string, source = c): SyncAddress { return { datasetId: c.datasetId, deviceId: source.deviceId, generationId: source.generationId, type, sequence, packageId }; }
   private async saveSnapshot(path: string, snapshot: Snapshot, key: CryptoKey, ticket: number) {
     privateDirectory(path); let part = 0;
@@ -161,7 +174,7 @@ export class Sync {
     for (let publication = 0; publication < publicationParts.size; publication++) { const item = publicationParts.get(publication); if (!item || item.pieces.length !== item.parts) throw new VaultError("invalid"); const bytes = item.pieces.join(""); if (Buffer.byteLength(bytes) > SYNC_PACKAGE_CAP) throw new VaultError("limited"); snapshot.publications.push({ path: item.path, bytes }); } return snapshot;
   }
   private async current(c: State, key: CryptoKey): Promise<Index> { try { return (await this.readSnapshot(join(this.root, "index", c.index), c, key)).index; } catch (error) { if (!missing(error)) throw error; return this.rebuild(c, key); } }
-  private async rebuild(c: State, key: CryptoKey): Promise<Index> {
+  private async rebuild(c: State, key: CryptoKey, remote = false): Promise<Index> {
     const index = (await this.checkpoint(c, key)).index;
     for (const source of await this.writers(c)) {
       const sourceId = writer(source), names = (await this.transport(c).list(`writers/${sourceId}/batches`)).map(name => ({ name, match: syncPatterns.batch.exec(name) })).filter(item => item.match).sort((a, b) => Number(a.match![1]) - Number(b.match![1])); let last = index.applied[sourceId] ?? 0;
@@ -170,6 +183,7 @@ export class Sync {
         for (const op of batch.operations) { if (op.deviceId !== source.deviceId) throw new VaultError("invalid"); await this.validate(op, key); const old = index.records.find(row => row.operation.id.toLowerCase() === op.id.toLowerCase()); if (!old) index.records.push({ operation: op, localVersion: 0 }); else if (op.base === old.operation.revision || syncWinner(old.operation, op) === op) old.operation = op; } last = sequence;
       } if (last) index.applied[sourceId] = last;
     }
+    if (remote) return indexInput(index);
     const rows = await this.vault.store.entries(), envelope = await this.vault.store.envelope();
     for (const row of index.records) { const op = row.operation, local = rows.find(item => item.id === op.id); row.localVersion = op.record === "envelope" ? same(op.value, envelope.state) ? envelope.version : 0 : op.value && local && same((op.value as SyncEntry).sealed, local.sealed) && same((op.value as SyncEntry).chunks, local.chunks) ? local.version : 0; }
     for (const name of fs.readdirSync(join(this.root, "kept"))) { const match = syncPatterns.blob.exec(name.replace(/\.json$/, ".vsync")); if (!match) continue; const revision = match[1], value = object(await decryptJson(key, sealed(localRead(join(this.root, "kept", name))), `sync-kept:${c.datasetId}:${revision}`), "blobs,entry,operation") as unknown as Kept; syncOperation(value.operation); if (value.operation.revision !== revision || !Array.isArray(value.blobs) || value.blobs.length) throw new VaultError("invalid");
@@ -210,24 +224,51 @@ export class Sync {
     for (const source of await this.writers(c)) { try { return await this.blobs(c, source, op, key); } catch (error) { if (!missing(error)) throw error; } } throw new VaultError("invalid");
   }
   async status(): Promise<SyncStatus> {
-    const c = this.config; if (!c) return { configured: false, folder: null, lastSynced: null, computers: [], pending: 0, conflicts: 0, failure: this.failure };
+    const c = this.config; if (!c) return { configured: false, origin: null, account: null, storage: null, folder: null, lastSynced: null, computers: [], pending: 0, conflicts: 0, failure: this.failure };
     const marker = object(localRead(join(this.root, "index", c.index, "versions.json"), 1024 * 1024), "envelope,rows"); syncNumber(marker.envelope); if (!Array.isArray(marker.rows) || marker.rows.length > 4096) throw new VaultError("invalid");
     const versions = new Map<string, number>(); for (const row of marker.rows) { object(row, "id,version"); const recordId = id(row.id); if (versions.has(recordId)) throw new VaultError("invalid"); versions.set(recordId, syncNumber(row.version, false)); }
     const rows = await this.vault.store.entries(), env = await this.vault.store.envelope(), pending = rows.filter(row => versions.get(row.id) !== row.version).length + [...versions.keys()].filter(recordId => !rows.some(row => row.id === recordId)).length + (marker.envelope !== env.version ? 1 : 0);
-    return { configured: true, folder: c.folder, lastSynced: c.lastSynced, computers: c.computers, pending, conflicts: c.conflicts, failure: this.failure ?? c.failure };
+    if (c.origin === "quantum" && (!this.storage || this.now() - this.storage.at >= 60000)) { this.storage = { at: this.now(), value: null }; try { this.transport(c); this.storage.value = await this.quantum.usage(); } catch (error) { this.failure = { writer: null, cause: this.cause(error) }; } }
+    return { configured: true, origin: c.origin, account: c.quantum?.account ?? null, storage: c.origin === "quantum" ? this.storage?.value ?? null : null, folder: c.origin === "folder" ? c.folder : null, lastSynced: c.lastSynced, computers: c.computers, pending, conflicts: c.conflicts, failure: this.failure ?? c.failure };
   }
-  private initial(folder: string, datasetId: string): State { return { format: 1, folder: resolve(folder), datasetId, deviceId: randomUUID(), generationId: randomUUID(), binding: binding(this.home), sequence: 0, operations: 0, checkpoint: 0, index: randomUUID(), lastSynced: null, failure: null, computers: [], conflicts: 0 }; }
-  async setup(folder: string) {
+  private initial(folder: string | true, datasetId: string): State { const q = folder === true ? this.quantum.identity() : null; return { format: 2, origin: q ? "quantum" : "folder", quantum: q ? { api: q.api, site: q.site, account: q.account } : null, folder: folder === true ? "" : resolve(folder), datasetId, deviceId: q?.deviceId ?? randomUUID(), generationId: randomUUID(), binding: binding(this.home), sequence: 0, operations: 0, checkpoint: 0, index: randomUUID(), lastSynced: null, failure: null, computers: [], conflicts: 0 }; }
+  async signIn(api: string, site: string) {
+    const c = this.config;
+    if (c?.origin === "quantum" && c.binding !== binding(this.home)) { const next = { ...c, deviceId: randomUUID(), generationId: randomUUID(), binding: binding(this.home), sequence: 0, operations: 0, checkpoint: 0 }; this.prepare(); for (const name of fs.readdirSync(join(this.root, "outbox"))) if (syncPatterns.writer.test(name)) fs.rmSync(join(this.root, "outbox", name), { recursive: true }); atomic(join(this.root, "state.json"), next); this.config = next; await this.quantum.clear(next.deviceId); }
+    if (this.config?.origin === "quantum" && (quantumUrl(api) !== this.config.quantum!.api || quantumUrl(site) !== this.config.quantum!.site)) throw new ServiceError("sync_configured", 409);
+    let deviceId = this.config?.origin === "quantum" ? this.config.deviceId : undefined;
+    if (!deviceId) { const paths = [join(this.root, "quantum-setup.json")]; if (fs.existsSync(join(this.root, "outbox"))) for (const name of fs.readdirSync(join(this.root, "outbox")).filter(name => syncPatterns.writer.test(name))) paths.push(join(this.root, "outbox", name, "state.json")); for (const path of paths) { let pending: State; try { pending = state(localRead(path, 16384)); } catch (error) { if (missing(error)) continue; throw error; } if (pending.origin === "quantum" && pending.binding === binding(this.home) && pending.quantum!.api === quantumUrl(api) && pending.quantum!.site === quantumUrl(site)) { deviceId = pending.deviceId; break; } } }
+    this.storage = null; return this.quantum.start(api, site, deviceId);
+  }
+  async signOut() { if (this.config?.origin === "quantum") throw new ServiceError("sync_configured", 409); this.storage = null; return this.quantum.signOut(); }
+  private discardOtherAccounts() {
+    const q = this.quantum.identity(), outbox = join(this.root, "outbox"), intent = join(this.root, "quantum-setup.json"), paths = [{ path: intent, file: intent, directory: false }];
+    if (fs.existsSync(outbox)) for (const name of fs.readdirSync(outbox).filter(name => syncPatterns.writer.test(name))) paths.push({ path: join(outbox, name), file: join(outbox, name, "state.json"), directory: true });
+    for (const path of paths) { let previous: State; try { previous = state(localRead(path.file, 16384)); } catch (error) { if (missing(error) || error instanceof SyntaxError || error instanceof VaultError && ["invalid", "limited"].includes(error.code)) continue; throw error; } if (previous.origin === "quantum" && (previous.quantum!.api !== q.api || previous.quantum!.site !== q.site || previous.quantum!.account !== q.account)) fs.rmSync(path.path, { recursive: path.directory, force: true }); }
+  }
+  async setup(folder: string | true) {
     if (this.config) throw new ServiceError("conflict", 409); const ticket = this.vault.memory.ticket(), key = this.check(ticket), env = await this.vault.store.envelope(); if (!env.state) throw new VaultError("not_found");
-    const c = this.initial(folder, randomUUID()); this.check(ticket); this.prepare();
-    try { const pending = await this.pending(key); if (pending.length) { const snapshot = pending[0], header = snapshot.state; if (header.folder !== resolve(folder) || header.binding !== binding(this.home)) throw new VaultError("conflict"); await this.finish(snapshot, key, ticket, null); }
+    let c = this.initial(folder, randomUUID()); this.check(ticket); this.prepare();
+    try { if (folder === true) this.discardOtherAccounts(); const pending = await this.pending(key), snapshot = pending[0], intent = join(this.root, "quantum-setup.json");
+      if (snapshot) { const header = snapshot.state; if (header.origin !== c.origin || header.folder !== c.folder || !same(header.quantum, c.quantum) || header.deviceId !== c.deviceId && c.origin === "quantum" || header.binding !== binding(this.home)) throw new VaultError("conflict"); }
+      if (c.origin === "quantum") {
+        let previous: State | null = null; try { previous = state(localRead(intent, 16384)); } catch (error) { if (!missing(error)) throw error; }
+        if (previous) { if (previous.origin !== "quantum" || !same(previous.quantum, c.quantum) || previous.deviceId !== c.deviceId || previous.binding !== c.binding || snapshot && snapshot.state.datasetId !== previous.datasetId) throw new VaultError("conflict"); c = previous; }
+        else if (snapshot) c = snapshot.state;
+        const datasets = await this.quantum.datasets(); if (datasets.some(dataset => dataset !== c.datasetId) || datasets.length && !previous && !snapshot) throw new ServiceError("sync_dataset_exists", 409);
+        // The durable identity makes a lost dataset response safe to retry.
+        this.check(ticket); if (!previous) atomic(intent, c); await this.quantum.createDataset(c.datasetId); this.check(ticket);
+      }
+      if (snapshot) await this.finish(snapshot, key, ticket, null);
       else await this.run(c, emptyIndex(), key, ticket, true, null, undefined, JSON.stringify({ format: "vault-sync", version: 1, datasetId: c.datasetId, createdAt: this.now(), envelope: env.state }));
+      if (c.origin === "quantum") { fs.rmSync(intent, { force: true }); fs.rmSync(join(this.root, "quantum-switch.json"), { force: true }); }
     } catch (error) { this.failure = { writer: null, cause: this.cause(error) }; throw error; } return this.status();
   }
-  async join(folder: string, secret: string, recovery: boolean) {
-    if (this.config || (await this.vault.store.envelope()).state) throw new ServiceError("sync_existing", 409);
+  async join(folder: string | true, secret: string, recovery: boolean, switching = false) {
+    if (this.config || (await this.vault.store.envelope()).state && !switching) throw new ServiceError("sync_existing", 409);
     if (this.now() < this.joinFailures.until) throw new VaultError("limited");
-    const base = resolve(folder, "Vault Sync"), discovery = new FolderTransport(base, ""), datasets = (await discovery.list("")).filter(name => syncPatterns.writer.test(name)); if (datasets.length !== 1) throw new ServiceError("sync_dataset", 400);
+    if (folder === true) this.discardOtherAccounts();
+    const datasets = folder === true ? await this.quantum.datasets() : (await new FolderTransport(resolve(folder, "Vault Sync"), "").list("")).filter(name => syncPatterns.writer.test(name)); if (datasets.length !== 1) throw new ServiceError("sync_dataset", 400);
     const c = this.initial(folder, datasets[0]), transport = this.transport(c), dataset = syncDataset(JSON.parse(await transport.read("dataset.vsync", 4096))); if (dataset.datasetId !== c.datasetId) throw new VaultError("invalid");
     const candidates: { envelope: VaultState; bytes?: string; address?: SyncAddress; time: number }[] = [];
     for (const source of await this.writers(c)) {
@@ -236,11 +277,17 @@ export class Sync {
     }
     candidates.sort((a, b) => b.time - a.time || b.address!.deviceId.localeCompare(a.address!.deviceId)); candidates.splice(15);
     candidates.push({ envelope: dataset.envelope, time: dataset.createdAt }); const ticket = this.vault.memory.ticket(); let opened: Awaited<ReturnType<typeof unlock>> | undefined, chosen: VaultState | undefined;
-    for (const candidate of candidates) { try { opened = await unlock(candidate.envelope, secret, recovery); const actual = Buffer.from(await hashProof(opened.proof), "base64"), expected = Buffer.from(recovery ? candidate.envelope.recoveryHash : candidate.envelope.masterHash, "base64"); if (!timingSafeEqual(actual, expected)) throw new VaultError("locked"); if (candidate.bytes) { const op = await openSync(opened.key, candidate.address!, candidate.bytes) as SyncOperation; if (!same(op.value, candidate.envelope) || op.time !== candidate.time) throw new VaultError("invalid"); } chosen = candidate.envelope; break; } catch { opened?.bytes.fill(0); opened = undefined; } }
+    for (const candidate of candidates) { try { if (switching) opened = { key: this.check(ticket), bytes: new Uint8Array(0), proof: "" }; else { opened = await unlock(candidate.envelope, secret, recovery); const actual = Buffer.from(await hashProof(opened.proof), "base64"), expected = Buffer.from(recovery ? candidate.envelope.recoveryHash : candidate.envelope.masterHash, "base64"); if (!timingSafeEqual(actual, expected)) throw new VaultError("locked"); } if (candidate.bytes) { const op = await openSync(opened.key, candidate.address!, candidate.bytes) as SyncOperation; if (!same(op.value, candidate.envelope) || op.time !== candidate.time) throw new VaultError("invalid"); } chosen = candidate.envelope; break; } catch { opened?.bytes.fill(0); opened = undefined; } }
     if (!opened || !chosen) { const count = ++this.joinFailures.count; this.joinFailures.until = this.now() + Math.min(30000, 500 * 2 ** Math.min(count, 6)); throw new VaultError("locked"); }
     opened.bytes.fill(0); this.joinFailures = { count: 0, until: 0 }; if (!this.vault.memory.open(opened.key, ticket)) throw new VaultError("locked");
-    try { const checkpoint = await this.checkpoint(c, opened.key); this.check(ticket); this.prepare(); await this.run(c, checkpoint.index, opened.key, ticket, true, null, { envelope: chosen, blobs: checkpoint.blobs }); return this.status(); }
+    try { if (folder === true) { this.prepare(); const snapshot = (await this.pending(opened.key))[0]; if (snapshot) { const previous = snapshot.state; if (previous.origin !== c.origin || previous.datasetId !== c.datasetId || !same(previous.quantum, c.quantum) || previous.deviceId !== c.deviceId || previous.binding !== c.binding) throw new VaultError("conflict"); await this.finish(snapshot, opened.key, ticket, null); return this.status(); } }
+      let checkpoint: { index: Index; blobs: SyncBlob[] }; if (switching) { const index = await this.rebuild(c, opened.key, true), blobs: SyncBlob[] = []; for (const row of index.records) if (row.operation.record === "entry" && row.operation.value) blobs.push(...await this.findBlobs(c, row.operation, opened.key, c)); checkpoint = { index, blobs }; } else checkpoint = await this.checkpoint(c, opened.key);
+      this.check(ticket); this.prepare(); await this.run(c, checkpoint.index, opened.key, ticket, true, null, { envelope: chosen, blobs: checkpoint.blobs, preserve: switching }); return this.status(); }
     catch (error) { this.vault.memory.lock(); this.failure = { writer: null, cause: this.cause(error) }; throw error; }
+  }
+  async switchToQuantum() {
+    const intent = join(this.root, "quantum-switch.json"); let c = this.config; if (!c) { try { c = state(localRead(intent, 16384)); } catch (error) { if (!missing(error)) throw error; throw new ServiceError("sync_unconfigured"); } } if (c.origin !== "folder") throw new ServiceError("sync_configured", 409); const ticket = this.vault.memory.ticket(); this.check(ticket); this.discardOtherAccounts(); const datasets = await this.quantum.datasets(); if (datasets.length > 1) throw new ServiceError("sync_dataset", 400); this.check(ticket);
+    this.prepare(); atomic(intent, c); if (this.config) await this.leave(false); this.storage = null; const result = datasets.length && !fs.existsSync(join(this.root, "quantum-setup.json")) ? await this.join(true, "", false, true) : await this.setup(true); fs.rmSync(intent, { force: true }); return result;
   }
   private cause(error: unknown): string {
     const causes: Record<string, string> = { ENOENT: "sync_folder_missing", EPERM: "sync_permission_denied", EACCES: "sync_access_denied", EBUSY: "sync_busy" };
@@ -254,11 +301,11 @@ export class Sync {
     const original = this.config; if (!original) throw new ServiceError("sync_unconfigured", 400); const ticket = this.vault.memory.ticket(), key = this.check(ticket);
     try {
       this.prepare(); let c = original;
-      if (c.binding !== binding(this.home)) { for (const name of fs.readdirSync(join(this.root, "outbox"))) if (syncPatterns.writer.test(name)) fs.rmSync(join(this.root, "outbox", name), { recursive: true }); c = { ...c, deviceId: randomUUID(), generationId: randomUUID(), binding: binding(this.home), sequence: 0, operations: 0, checkpoint: 0 }; }
+      if (c.binding !== binding(this.home)) { for (const name of fs.readdirSync(join(this.root, "outbox"))) if (syncPatterns.writer.test(name)) fs.rmSync(join(this.root, "outbox", name), { recursive: true }); c = { ...c, deviceId: randomUUID(), generationId: randomUUID(), binding: binding(this.home), sequence: 0, operations: 0, checkpoint: 0 }; if (c.origin === "quantum") { atomic(join(this.root, "state.json"), c); this.config = c; await this.quantum.clear(c.deviceId); throw new ServiceError("sync_signin_required", 401); } }
       const pending = await this.pending(key);
       const published = (await this.transport(c).list(`writers/${writer(c)}/batches`)).map(name => ({ name, match: syncPatterns.batch.exec(name) })).filter(item => item.match && Number(item.match[1]) > c.sequence);
       if (published.length) { const known = new Set(pending.flatMap(snapshot => snapshot.publications.map(item => item.path)));
-        if (published.some(item => !known.has(`writers/${writer(c)}/batches/${item.name}`))) { for (const snapshot of pending) fs.rmSync(join(this.root, "outbox", snapshot.state.index), { recursive: true }); pending.length = 0; c = { ...c, deviceId: randomUUID(), generationId: randomUUID(), binding: binding(this.home), sequence: 0, operations: 0, checkpoint: 0 }; }
+        if (published.some(item => !known.has(`writers/${writer(c)}/batches/${item.name}`))) { for (const snapshot of pending) fs.rmSync(join(this.root, "outbox", snapshot.state.index), { recursive: true }); pending.length = 0; c = { ...c, deviceId: c.origin === "quantum" ? c.deviceId : randomUUID(), generationId: randomUUID(), binding: binding(this.home), sequence: 0, operations: 0, checkpoint: 0 }; }
       }
       if (pending.length) { await this.finish(pending[0], key, ticket, c); c = this.config!; }
       await this.run(c, await this.current(c, key), key, ticket, false, this.config); this.failure = null; return this.status();
@@ -266,19 +313,19 @@ export class Sync {
     finally { this.receiving = null; }
   }
   private receiving: string | null = null;
-  private async run(c: State, index: Index, key: CryptoKey, ticket: number, force: boolean, previous: State | null, joining?: { envelope: VaultState; blobs: SyncBlob[] }, dataset?: string) {
+  private async run(c: State, index: Index, key: CryptoKey, ticket: number, force: boolean, previous: State | null, joining?: { envelope: VaultState; blobs: SyncBlob[]; preserve?: boolean }, dataset?: string) {
     index = structuredClone(index); const appliedBefore = { ...index.applied }, rows = await this.vault.store.entries(), currentEnv = await this.vault.store.envelope(), env = { state: currentEnv.state ?? joining?.envelope!, version: currentEnv.version || 1 }, chunks = new Map<string, SyncBlob>(), publications: Publication[] = [], operations: SyncOperation[] = [];
     const rowMap = new Map(rows.map(row => [row.id.toLowerCase(), row]));
     for (const blob of joining?.blobs ?? []) chunks.set(blob.id, blob);
     const record = (op: SyncOperation) => index.records.find(row => row.operation.id.toLowerCase() === op.id.toLowerCase());
     const set = (op: SyncOperation, localVersion: number) => { const old = record(op); if (old) { old.operation = op; old.localVersion = localVersion; } else index.records.push({ operation: op, localVersion }); };
     const make = (record: SyncOperation["record"], recordId: string, value: SyncOperation["value"], old?: RecordRow): SyncOperation => ({ record, id: recordId, revision: randomUUID(), base: old?.operation.revision ?? null, deviceId: c.deviceId, time: this.now(), value });
-    if (!joining) {
-      for (const row of rows) { const old = index.records.find(item => item.operation.id === row.id); if (old?.localVersion === row.version) continue; const op = make("entry", row.id, { sealed: row.sealed, chunks: row.chunks }, old); await this.validate(op, key); operations.push(op); set(op, row.version); }
-      for (const old of [...index.records]) if (old.operation.record === "entry" && old.localVersion > 0 && !rowMap.has(old.operation.id.toLowerCase())) { const op = make("entry", old.operation.id, null, old); operations.push(op); set(op, 0); }
-      const oldEnv = index.records.find(item => item.operation.id === "envelope"); if (oldEnv?.localVersion !== env.version) { const op = make("envelope", "envelope", env.state, oldEnv); operations.push(op); set(op, env.version); }
-    }
     const keep = (op: SyncOperation, fallback: SyncOperation) => { if (index.kept.some(item => item.operation.revision === op.revision)) return; const entry = op.record === "entry" ? (op.value ?? fallback.value) as SyncEntry | null : null; index.kept.push({ operation: op, entry: entry?.sealed ?? null, blobs: op.record === "entry" && op.value ? (op.value as SyncEntry).chunks.map(chunkId => { const blob = chunks.get(chunkId); if (!blob) throw new VaultError("invalid"); return blob; }) : [] }); };
+    if (!joining || joining.preserve) {
+      for (const row of rows) { const old = index.records.find(item => item.operation.id === row.id); if (old?.localVersion === row.version) continue; if (joining?.preserve && old?.operation.value && same(old.operation.value, { sealed: row.sealed, chunks: row.chunks })) { old.localVersion = row.version; continue; } const op = make("entry", row.id, { sealed: row.sealed, chunks: row.chunks }, old); await this.validate(op, key); if (joining?.preserve && old) keep(old.operation, op); operations.push(op); set(op, row.version); }
+      for (const old of [...index.records]) if (!joining?.preserve && old.operation.record === "entry" && old.localVersion > 0 && !rowMap.has(old.operation.id.toLowerCase())) { const op = make("entry", old.operation.id, null, old); operations.push(op); set(op, 0); }
+      const oldEnv = index.records.find(item => item.operation.id === "envelope"); if (joining?.preserve && oldEnv && same(oldEnv.operation.value, env.state)) oldEnv.localVersion = env.version; else if (oldEnv?.localVersion !== env.version) { const op = make("envelope", "envelope", env.state, oldEnv); if (joining?.preserve && oldEnv) keep(oldEnv.operation, op); operations.push(op); set(op, env.version); }
+    }
     const apply = async (op: SyncOperation) => {
       const old = record(op); if (old?.operation.revision === op.revision) return;
       if (old && op.base !== old.operation.revision) { const winner = syncWinner(old.operation, op); keep(winner === op ? old.operation : op, winner); if (winner !== op) return; }
@@ -425,5 +472,5 @@ export class Sync {
     try { await this.saveSnapshot(join(path, "snapshot"), snapshot, key, ticket); this.check(ticket); atomic(join(path, "state.json"), snapshot.state); await this.finish(snapshot, key, ticket, c); }
     catch (error) { if (this.cause(error) === "locked") fs.rmSync(path, { recursive: true, force: true }); throw error; } return { ok: true as const };
   }
-  async leave(remove: boolean) { const c = this.config; if (!c) throw new ServiceError("sync_unconfigured"); this.prepare(); if (remove) { if (c.binding !== binding(this.home)) throw new VaultError("conflict"); await this.transport(c).leave(); } fs.rmSync(join(this.root, "state.json"), { force: true }); fs.rmSync(join(this.root, "outbox"), { recursive: true, force: true }); fs.rmSync(join(this.root, "failure.json"), { force: true }); this.prepared = false; this.config = null; this.failure = null; return { ok: true as const }; }
+  async leave(remove: boolean) { const c = this.config; if (!c) throw new ServiceError("sync_unconfigured"); this.prepare(); if (remove) { if (c.binding !== binding(this.home)) throw new VaultError("conflict"); await this.transport(c).leave(); } if (c.origin === "quantum") for (const name of ["quantum-setup.json", "quantum-switch.json"]) fs.rmSync(join(this.root, name), { force: true }); fs.rmSync(join(this.root, "state.json"), { force: true }); fs.rmSync(join(this.root, "outbox"), { recursive: true, force: true }); fs.rmSync(join(this.root, "failure.json"), { force: true }); this.prepared = false; this.config = null; this.failure = null; return { ok: true as const }; }
 }

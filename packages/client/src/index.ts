@@ -105,7 +105,16 @@ export async function connect(options: ConnectOptions): Promise<Client> {
   const held = 35000;
   return {
     status: () => call<Status>("GET", "/v1/status"), create: password => call("POST", "/v1/create", { password }),
-    sync: { status: () => call<SyncStatus>("GET", "/v1/sync"), setup: folder => call<SyncStatus>("POST", "/v1/sync/setup", { folder }, 130000), join: (folder, credentials) => call<SyncStatus>("POST", "/v1/sync/join", { folder, ...credentials }, 130000), now: () => call<SyncStatus>("POST", "/v1/sync/now", {}, 130000), conflicts: () => call<SyncConflict[]>("GET", "/v1/sync/conflicts"), restore: id => call("POST", "/v1/sync/conflicts/restore", { id }), dismiss: id => call("POST", "/v1/sync/conflicts/dismiss", { id }), leave: remove => call("POST", "/v1/sync/leave", { remove }) },
+    sync: {
+      status: () => call<SyncStatus>("GET", "/v1/sync", undefined, held), setup: folder => call<SyncStatus>("POST", "/v1/sync/setup", { folder }, 130000), join: (folder, credentials) => call<SyncStatus>("POST", "/v1/sync/join", { folder, ...credentials }, 130000),
+      quantum: {
+        signIn: (api, site) => call<{ url: string; id: string }>("POST", "/v1/sync/quantum/signin", { api, site }, held),
+        async wait(id) { for (;;) { const result = await call<{ pending: true } | { account: string }>("POST", "/v1/sync/quantum/wait", { id }, held); if ("account" in result) return result; } },
+        signOut: () => call("POST", "/v1/sync/quantum/signout", {}, held),
+      },
+      setupQuantum: () => call<SyncStatus>("POST", "/v1/sync/setup", { quantum: true }, 130000), joinQuantum: credentials => call<SyncStatus>("POST", "/v1/sync/join", { quantum: true, ...credentials }, 130000), switchToQuantum: () => call<SyncStatus>("POST", "/v1/sync/switch", {}, 130000),
+      now: () => call<SyncStatus>("POST", "/v1/sync/now", {}, 130000), conflicts: () => call<SyncConflict[]>("GET", "/v1/sync/conflicts"), restore: id => call("POST", "/v1/sync/conflicts/restore", { id }), dismiss: id => call("POST", "/v1/sync/conflicts/dismiss", { id }), leave: remove => call("POST", "/v1/sync/leave", { remove }, held),
+    },
     unlock: password => call("POST", "/v1/unlock", { password }), recover: (recovery, password) => call("POST", "/v1/recover", { recovery, password }),
     hello: { enable: password => call("POST", "/v1/unlock/hello/enable", { password }), unlock: hwnd => call("POST", "/v1/unlock/hello", { hwnd }), disable: () => call("POST", "/v1/unlock/hello/disable", {}) },
     lock: () => call("POST", "/v1/lock", {}), present,

@@ -30,7 +30,7 @@ export type ImportFormat = "chrome" | "edge" | "firefox" | "bitwarden" | "1passw
 export type ImportCount = { imported: number; duplicates: number; skipped: number };
 export type Backup = { format: "vault-backup"; version: 1; envelope: unknown; sealed: { iv: string; data: string } };
 export type EnvImportCount = { added: number; replaced: number; unchanged: number; kept: number; skipped: number };
-export type SyncStatus = { configured: boolean; folder: string | null; lastSynced: string | null; computers: string[]; pending: number; conflicts: number; failure: { writer: string | null; cause: string } | null };
+export type SyncStatus = { configured: boolean; origin: "folder" | "quantum" | null; folder: string | null; account: string | null; storage: { used: number; pool: number | null } | null; lastSynced: string | null; computers: string[]; pending: number; conflicts: number; failure: { writer: string | null; cause: string } | null };
 export type SyncConflict = { id: string; kind: Kind | null; title: string; deviceId: string; time: string; deleted: boolean };
 export type RunStatus = "pending" | "running" | "done" | "failed" | "stopped" | "rejected" | "expired";
 export type RunRequest = { project: string; commands: string[][]; cwd: string; env: Record<string, string> };
@@ -43,7 +43,12 @@ export type RunChunk = { seq: number; command: number; stream: "stdout" | "stder
 export type RunCommandState = { status: "waiting" | "running" | "done" | "failed" | "skipped" | "stopped"; exit: number | null; reason?: string; truncated: boolean };
 export type RunProgress = { id: string; project: string; status: RunStatus; reason?: string; expiresAt: string; commands: RunCommandState[]; chunks: RunChunk[]; next: number; more: boolean };
 export interface Client {
-  sync: { status(): Promise<SyncStatus>; setup(folder: string): Promise<SyncStatus>; join(folder: string, credentials: { password: string } | { recovery: string }): Promise<SyncStatus>; now(): Promise<SyncStatus>; conflicts(): Promise<SyncConflict[]>; restore(id: string): Promise<{ ok: true }>; dismiss(id: string): Promise<{ ok: true }>; leave(remove: boolean): Promise<{ ok: true }> };
+  sync: {
+    status(): Promise<SyncStatus>; setup(folder: string): Promise<SyncStatus>; join(folder: string, credentials: { password: string } | { recovery: string }): Promise<SyncStatus>;
+    quantum: { signIn(api: string, site: string): Promise<{ url: string; id: string }>; wait(id: string): Promise<{ account: string }>; signOut(): Promise<{ ok: true }> };
+    setupQuantum(): Promise<SyncStatus>; joinQuantum(credentials: { password: string } | { recovery: string }): Promise<SyncStatus>; switchToQuantum(): Promise<SyncStatus>;
+    now(): Promise<SyncStatus>; conflicts(): Promise<SyncConflict[]>; restore(id: string): Promise<{ ok: true }>; dismiss(id: string): Promise<{ ok: true }>; leave(remove: boolean): Promise<{ ok: true }>;
+  };
   status(): Promise<Status>;
   create(password: string): Promise<{ recovery: string }>;
   unlock(password: string): Promise<{ ok: true }>;

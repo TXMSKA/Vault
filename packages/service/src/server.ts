@@ -49,7 +49,7 @@ export async function startService(options: ServiceOptions = {}) {
   try { bootstrap = bootstrapKey(home); apps = new Apps(home); await apps.load(); await settings.load(); }
   catch (error) { release(); throw error; }
   try { recoverSync(home); } catch (error) { release(); throw error; }
-  const idleMs = options.idleMs ?? settings.idleMs, vault = new Vault(join(home, "store"), now, idleMs, logger), lifecycle = new Lifecycle(vault.memory, now, options.presenceMs), hello = helloAdapter(home, vault), runs = new Runs(now, options.runs), sync = new Sync(home, vault, now, () => hello.disable(), logger);
+  const idleMs = options.idleMs ?? settings.idleMs, vault = new Vault(join(home, "store"), now, idleMs, logger), lifecycle = new Lifecycle(vault.memory, now, options.presenceMs), hello = helloAdapter(home, vault), runs = new Runs(now, options.runs), sync = new Sync(home, vault, now, () => hello.disable(), logger, () => settings.get().language === "system" ? Intl.DateTimeFormat().resolvedOptions().locale : settings.get().language);
   const unlocked = () => { try { vault.memory.get(vault.memory.ticket()); return true; } catch { return false; } };
   const prompts = new Prompts(now, runs, { unlocked, start: appStarter(home, lifecycle, now) }, options.prompts);
   lifecycle.lockWithLastApp = settings.get().lockWithLastApp; vault.memory.onOpen = () => prompts.opened();
@@ -108,7 +108,7 @@ export async function startService(options: ServiceOptions = {}) {
         if (["/v1/unlock", "/v1/unlock/hello", "/v1/recover"].includes(route.path)) checkSync();
       };
       // Lock and presence departures invalidate in-flight key work immediately; a long poll must not hold the queue.
-      if (["/v1/lock", "/v1/apps/leave", "/v1/apps/present"].includes(route.path) || route.method === "GET" && route.path.startsWith("/v1/prompts")) await execute();
+      if (["/v1/lock", "/v1/apps/leave", "/v1/apps/present", "/v1/sync/quantum/wait"].includes(route.path) || route.method === "GET" && route.path.startsWith("/v1/prompts")) await execute();
       else {
         if (pending >= 20) throw new ServiceError("busy", 503); pending++;
         const enqueued = now(); const run = queue.catch(() => undefined).then(async () => { if (now() - enqueued > 30000 || stopping) throw new ServiceError("busy", 503); await execute(); }); queue = run;
@@ -127,7 +127,7 @@ export async function startService(options: ServiceOptions = {}) {
   const timer = setInterval(() => { checkSync(); void checkLifecycle().catch(() => { process.exitCode = 1; }); }, 1000); timer.unref();
   async function shutdown() {
     if (stopping) return stopping;
-    vault.memory.lock(); clearInterval(timer); runs.stopAll(); prompts.stop();
+    vault.memory.lock(); clearInterval(timer); runs.stopAll(); prompts.stop(); sync.quantum.stop();
     stopping = (async () => {
       try { server.closeAllConnections(); await new Promise<void>(done => server.close(() => done())); await queue.catch(() => undefined); }
       finally { await rm(recordPath, { force: true }); release(); process.off("SIGINT", signal); process.off("SIGTERM", signal); }
