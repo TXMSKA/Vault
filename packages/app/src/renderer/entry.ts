@@ -58,7 +58,10 @@ export function entryPane({ t }: Context, entry: EntryView, hooks: EntryHooks): 
     if (entry.kind === "login" && field.id === "password" && entry.totp) rows.push(codeRow());
   }
   if (entry.kind === "login" && entry.totp && !shownFields.some(field => field.id === "password")) rows.unshift(codeRow());
-  for (const file of entry.files) rows.push(div("frow file", icon(file.type === "application/zip" ? "fileArchive" : "fileText", 18), div("fcopy", h("span", { class: "value selectable" }, file.name)), h("span", { class: "dim" }, t.kb(file.size))));
+  for (const file of entry.files) rows.push(div("frow file", icon(file.type === "application/zip" ? "fileArchive" : "fileText", 18), div("fcopy", h("span", { class: "value selectable" }, file.name)), h("span", { class: "dim" }, t.kb(file.size)), iconButton("download", t.downloadFile(file.name), async () => {
+    const result = await bridge.entryDownload({ id: entry.id, file: file.id }); if (disposed) return;
+    if (result.ok) hooks.toast(t.fileSaved); else if (result.code !== "cancelled") hooks.failed(result.code);
+  })));
   if (entry.note.filled) rows.push(rowFor({ label: entry.kind === "note" ? t.fieldLabel("text") : t.noteLabel, part: "note", secret: true, block: true }));
   function codeRow(): HTMLElement {
     let code: string | undefined, expires = 0, bad = false, fetching = false;

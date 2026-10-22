@@ -29,7 +29,7 @@ export type EntryView = {
  * `note` and `totp` are the same: left out, they stay as they are.
  */
 export type FieldInput = { id: string; name: string; secret: boolean; value?: string };
-export type EntryInput = { id: string; kind: Kind; title: string; favorite: boolean; fields: FieldInput[]; note?: string; totp?: string };
+export type EntryInput = { id: string; kind: Kind; title: string; favorite: boolean; fields: FieldInput[]; note?: string; totp?: string; files?: string[] };
 export type AppState = {
   phase: "starting" | "ready" | "unavailable";
   /** Why Vault is out of reach, while `phase` is "unavailable". */
@@ -90,6 +90,10 @@ export interface VaultBridge {
   /** `undo` says whether the entry can be put back (a document with files cannot). */
   entryRemove(input: { id: string; expected: number }): Promise<Result<{ undo: boolean }>>;
   entryUndo(input: { id: string }): Promise<Result>;
+  entryAttach(): Promise<Result<{ file: FileView }>>;
+  entryAttachDropped(file: File): Promise<Result<{ file: FileView }>>;
+  entryDownload(input: { id: string; file: string }): Promise<Result>;
+  entryDiscard(): Promise<Result>;
   saveSettings(input: SettingsView): Promise<Result>;
   enableHello(input: { password: string }): Promise<Result>;
   disableHello(): Promise<Result>;

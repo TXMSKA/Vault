@@ -1,4 +1,4 @@
-import type { EntryInput, EntryView, FieldInput, FieldView, Kind } from "../shared/api.js";
+import type { EntryInput, EntryView, FieldInput, FieldView, FileView, Kind } from "../shared/api.js";
 import { div, h } from "./dom.ts";
 import type { Child } from "./dom.ts";
 import { clampLength, DEFAULT_GENERATOR, generate, LENGTH_MAX, LENGTH_MIN } from "./generator.ts";
@@ -65,6 +65,8 @@ export function formPane({ t }: Context, options: { kind: Kind; entry?: EntryVie
   const { kind, entry, hooks } = options, known = new Map((entry?.fields ?? []).map(item => [item.id, item]));
   let dirty = false, disposed = false;
   const slots: Slot[] = [], rows: VRow[] = [], status = div("slot"), body = div("fields");
+  let files: FileView[] = [...entry?.files ?? []], attaching = false;
+  const fileList = div("filelist");
   const mark = () => { dirty = true; };
   const eyes = new Map<Control, HTMLButtonElement>();
   /** Shows or hides what a secret control holds, and keeps its eye button saying which. */
@@ -132,6 +134,7 @@ export function formPane({ t }: Context, options: { kind: Kind; entry?: EntryVie
     ],
     doc: () => [
       slotFor({ target: "title", label: t.formName, placeholder: t.fieldPlaceholder("docName") }),
+      fileField(),
       slotFor({ target: "note", label: t.noteLabel, placeholder: t.fieldPlaceholder("optional"), tall: 96, part: "note" }),
     ],
     note: () => [
@@ -152,6 +155,25 @@ export function formPane({ t }: Context, options: { kind: Kind; entry?: EntryVie
       h("span", { class: "label" }, t.fieldsLabel), valueRows(),
     ],
   };
+  function paintFiles() {
+    fileList.replaceChildren(...files.map(file => div("frow file", icon(file.type === "application/zip" ? "fileArchive" : "fileText", 18), div("fcopy", h("span", { class: "value" }, file.name)), h("span", { class: "dim" }, t.kb(file.size)), iconButton("trash2", t.removeFile(file.name), () => { files = files.filter(item => item.id !== file.id); paintFiles(); mark(); }))));
+  }
+  /** A file stays in the main process until the entry is saved or the form is discarded. */
+  function fileField(): HTMLElement {
+    const attach = async (file?: File) => {
+      if (attaching || root.hasAttribute("aria-busy") || files.length >= 50) return;
+      attaching = true;
+      const result = await busy(root, () => file ? bridge.entryAttachDropped(file) : bridge.entryAttach()); attaching = false;
+      if (disposed) { await bridge.entryDiscard(); return; }
+      if (result.ok) { files.push(result.file); paintFiles(); mark(); }
+      else if (result.code !== "cancelled") status.replaceChildren(notice("circleAlert", reason(t, result.code), "error"));
+    };
+    const zone = h("button", { class: "dropzone", type: "button", onclick: () => { void attach(); } }, icon("upload", 20), h("span", {}, t.dropFile), h("span", { class: "hint" }, t.keptEncrypted));
+    zone.addEventListener("dragover", event => { event.preventDefault(); if (!attaching) zone.classList.add("over"); });
+    zone.addEventListener("dragleave", () => zone.classList.remove("over"));
+    zone.addEventListener("drop", event => { event.preventDefault(); zone.classList.remove("over"); const file = event.dataTransfer?.files[0]; if (file) void attach(file); });
+    paintFiles(); return div("fg", h("span", { class: "label" }, t.filesLabel), fileList, zone);
+  }
   /** The rows of an environment entry (a name and a value) or of a custom one (a name, a value and whether it is hidden), with the buttons to add and remove. */
   function valueRows(): HTMLElement {
     const list = div("vrows"), env = kind === "env";
@@ -218,13 +240,14 @@ export function formPane({ t }: Context, options: { kind: Kind; entry?: EntryVie
       result.fields.push(keep ? { id, name, secret: true } : { id, name: kind === "env" ? name : name, secret: kind === "env" ? true : row.secret, value });
     }
     if (bad) return undefined;
-    return { id: entry?.id ?? crypto.randomUUID(), kind, title: result.title, favorite: entry?.favorite ?? false, fields: result.fields, ...result.note !== undefined ? { note: result.note } : {}, ...result.totp !== undefined ? { totp: result.totp } : {} };
+    return { id: entry?.id ?? crypto.randomUUID(), kind, title: result.title, favorite: entry?.favorite ?? false, fields: result.fields, ...kind === "doc" ? { files: files.map(file => file.id) } : {}, ...result.note !== undefined ? { note: result.note } : {}, ...result.totp !== undefined ? { totp: result.totp } : {} };
   }
   root.addEventListener("submit", async event => {
-    event.preventDefault(); const input = collect(); if (!input) return;
-    const result = await busy(root, () => bridge.entrySave({ entry: input, expected: entry?.version ?? 0 }));
+    event.preventDefault(); if (attaching || root.hasAttribute("aria-busy")) return; const input = collect(); if (!input) return;
+    const result = await busy(root, async () => { const result = await bridge.entrySave({ entry: input, expected: entry?.version ?? 0 }); await bridge.entryDiscard(); return result; });
     if (disposed) return;
     if (result.ok) { hooks.saved(input.id); return; }
+    files = files.filter(file => entry?.files.some(old => old.id === file.id)); paintFiles();
     if (result.code === "conflict") { status.replaceChildren(notice("circleAlert", t.conflict, "error"), button(t.reload, { onclick: () => hooks.reload() })); return; }
     if (result.code === "project_taken") { slots[0].control.error(t.projectTaken(input.title)); slots[0].control.input.focus(); return; }
     if (result.code === "not_found" && entry) { status.replaceChildren(notice("circleAlert", t.entryGone, "error")); return; }
@@ -232,5 +255,5 @@ export function formPane({ t }: Context, options: { kind: Kind; entry?: EntryVie
   });
   root.addEventListener("keydown", event => { if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); hooks.cancel(); } });
   queueMicrotask(() => (slots[0]?.control.input ?? rows[0]?.name)?.focus());
-  return { root, dirty: () => dirty, dispose() { disposed = true; closePopovers(); } };
+  return { root, dirty: () => dirty, dispose() { disposed = true; closePopovers(); void bridge.entryDiscard(); } };
 }

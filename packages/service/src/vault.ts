@@ -27,6 +27,7 @@ export function origin(value: string): string {
   if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) throw new ServiceError("invalid"); return url.origin;
 }
 const fieldValue = (entry: Entry, name: string) => entry.fields.find(field => field.id === name)?.value ?? "";
+const batchIds = (value: unknown) => { if (!Array.isArray(value) || value.length < 1 || value.length > 64) throw new ServiceError("invalid"); return value.map(value => id(value).toLowerCase()); };
 export class Vault {
   store: FileVaultStore; memory: VaultMemory; auth: ReturnType<typeof createVaultUnlock>;
   constructor(home: string, now: () => number, idle: number, logger: VaultLogger) {
@@ -86,6 +87,38 @@ export class Vault {
     const row = (await this.rows()).find(row => row.entry.id.toLowerCase() === entry.toLowerCase());
     if (!row) throw new ServiceError("not_found", 404);
     this.allowed(app, row.entry.kind); return row;
+  }
+  async putChunks(app: AppView, data: unknown) {
+    this.allowed(app, "doc");
+    if (!Array.isArray(data) || data.length < 1 || data.length > 64) throw new ServiceError("invalid");
+    for (const value of data) {
+      if (typeof value !== "string" || value.length > 43692) throw new ServiceError("invalid");
+      const bytes = Buffer.from(value, "base64");
+      try { if (!bytes.length || bytes.length > 32768 || bytes.toString("base64") !== value) throw new ServiceError("invalid"); } finally { bytes.fill(0); }
+    }
+    const { key, ticket } = this.key(), ids: string[] = [];
+    try {
+      for (const value of data) {
+        const bytes = Buffer.from(value, "base64"), next = crypto.randomUUID();
+        try { const sealed = await encrypt(key, bytes, `chunk:${next}`); this.check(ticket); await this.store.putChunk(next, sealed); ids.push(next); this.check(ticket); } finally { bytes.fill(0); }
+      }
+      return { ids };
+    } catch (error) { for (const chunk of ids) await this.store.removeChunk(chunk).catch(() => undefined); throw error; }
+  }
+  async getChunks(app: AppView, entryId: unknown, ids: unknown) {
+    const row = await this.get(app, entryId), requested = batchIds(ids), claims = new Set(row.entry.files.flatMap(file => file.chunks).map(chunk => chunk.toLowerCase()));
+    if (requested.some(chunk => !claims.has(chunk))) throw new ServiceError("not_found", 404);
+    const { key, ticket } = this.key(), data: string[] = [];
+    for (const chunk of requested) {
+      const bytes = await decrypt(key, await this.store.getChunk(chunk), `chunk:${chunk}`);
+      try { this.check(ticket); data.push(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64")); } finally { bytes.fill(0); }
+    }
+    this.check(ticket); return { data };
+  }
+  async removeChunks(app: AppView, ids: unknown) {
+    this.allowed(app, "doc"); const requested = batchIds(ids), { ticket } = this.key();
+    for (const chunk of requested) { this.check(ticket); try { await this.store.removeChunk(chunk); } catch (error) { if (!(error instanceof VaultError && error.code === "not_found")) throw error; } }
+    this.check(ticket); return { ok: true };
   }
   async create(password: string) {
     const ticket = this.memory.ticket(), next = await createEnvelope(password); if (!this.memory.current(ticket)) throw new VaultError("locked");

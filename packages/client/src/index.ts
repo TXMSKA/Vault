@@ -113,6 +113,7 @@ export async function connect(options: ConnectOptions): Promise<Client> {
     logins: origin => call<EntryRow[]>("GET", `/v1/logins?origin=${encodeURIComponent(origin)}`),
     listLogins: () => call<LoginSummary[]>("GET", "/v1/logins/all"), getLogin: id => call<EntryRow>("GET", `/v1/logins/get?id=${encodeURIComponent(id)}`),
     entries: { list: () => call<EntryRow[]>("GET", "/v1/entries"), get: id => call<EntryRow>("GET", `/v1/entries/get?id=${encodeURIComponent(id)}`), save: (entry, expected) => call("POST", "/v1/entries", { entry, expected }), remove: (id, expected) => call("POST", "/v1/entries/remove", { id, expected }) },
+    chunks: { put: data => call("POST", "/v1/chunks", { data }), get: (entry, ids) => call("POST", "/v1/chunks/get", { entry, ids }), remove: ids => call("POST", "/v1/chunks/remove", { ids }) },
     environment: project => call("GET", `/v1/env?project=${encodeURIComponent(project)}`),
     import: (format, text) => call<ImportCount>("POST", "/v1/import", { format, text }), importEnv: (project, text) => call<EnvImportCount>("POST", "/v1/import/env", { project, text }), export: password => call<Backup>("POST", "/v1/export", { password }), restore: (backup, password) => call<ImportCount>("POST", "/v1/restore", { backup, password }),
     runs: {

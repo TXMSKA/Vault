@@ -5,6 +5,7 @@ import { homedir, hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { connect, resolveHome } from "vault-client";
+import { filename } from "vault-core";
 import type { AppState, Result } from "../shared/api.js";
 import { parseArgs } from "./args.ts";
 import { createClipboard } from "./clipboard.ts";
@@ -28,6 +29,8 @@ export const PARTITION = "vault-app";
 export type Platform = {
   saveFile(window: BrowserWindow): Promise<string | undefined>;
   openFile(window: BrowserWindow): Promise<string | undefined>;
+  chooseAttachment(window: BrowserWindow): Promise<string | undefined>;
+  saveAttachment(window: BrowserWindow, name: string): Promise<string | undefined>;
   print(contents: WebContents): Promise<Result>;
   clipboard: ClipboardPort;
   /** Opens a website in the person's browser. */
@@ -41,6 +44,14 @@ export const systemPlatform: Platform = {
   async openFile(window) {
     const answer = await dialog.showOpenDialog(window, { filters: [{ name: "Vault backup", extensions: ["vault", "json"] }, { name: "All files", extensions: ["*"] }], properties: ["openFile"] });
     return answer.canceled ? undefined : answer.filePaths[0];
+  },
+  async chooseAttachment(window) {
+    const answer = await dialog.showOpenDialog(window, { filters: [{ name: "All files", extensions: ["*"] }], properties: ["openFile"] });
+    return answer.canceled ? undefined : answer.filePaths[0];
+  },
+  async saveAttachment(window, name) {
+    const answer = await dialog.showSaveDialog(window, { defaultPath: join(homedir(), "Downloads", filename(name)), properties: ["showOverwriteConfirmation"] });
+    return answer.canceled ? undefined : answer.filePath;
   },
   clipboard: { readText: () => clipboard.readText(), writeText: text => clipboard.writeText(text), clear: () => clipboard.clear() },
   openUrl: url => shell.openExternal(url),
@@ -161,6 +172,18 @@ async function run(promptsOnly: boolean, home: string, platform: Platform, clipb
     entrySave: ({ entry, expected }) => read(entries.save(entry, expected)),
     entryRemove: ({ id, expected }) => read(entries.remove(id, expected)),
     entryUndo: ({ id }) => read(entries.undo(id)),
+    entryAttach: async () => {
+      if (!link.snapshot().unlocked) return { ok: false, code: "locked" };
+      const path = await platform.chooseAttachment(window); if (!path) return { ok: false, code: "cancelled" };
+      return link.snapshot().unlocked ? read(entries.attach(path)) : { ok: false, code: "locked" };
+    },
+    entryAttachDropped: ({ path }) => link.snapshot().unlocked ? read(entries.attach(path)) : { ok: false, code: "locked" },
+    entryDownload: async ({ id, file }) => {
+      const opened = await read(entries.open(id)); if (!opened.ok) return opened;
+      const found = opened.entry.files.find(item => item.id === file); if (!found) return { ok: false, code: "not_found" };
+      const target = await platform.saveAttachment(window, found.name); return target ? read(entries.download(id, file, target)) : { ok: false, code: "cancelled" };
+    },
+    entryDiscard: () => entries.discard(),
     saveSettings: next => link.saveSettings(next),
     enableHello: ({ password }) => link.enableHello(password),
     disableHello: () => link.disableHello(),

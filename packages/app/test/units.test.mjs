@@ -14,6 +14,7 @@ import { codeOf } from "../dist/main/link.js";
 import { commandLine, keyLines, minutesLeft, visible } from "../dist/renderer/text.js";
 import { en, es } from "../dist/renderer/i18n.js";
 import { recoveryKit } from "../../client/dist/index.js";
+import { runInNewContext } from "node:vm";
 
 // The window's pure parts: what the bridge accepts, what the protocol serves, which prompt shows, the kit and the words. Every value is synthetic.
 export const counts = { checks: 0 };
@@ -22,9 +23,23 @@ const scratch = await mkdtemp(join(resolve(tmpdir()), "app-units-"));
 const uuid = "0f8fad5b-d9cb-469f-a165-70867728950e", other = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
 const password = "synthetic-long-password-1", short = "too short";
 try {
+  for (const call of ["entryAttach", "entryDiscard"]) { check.equal(accepts(call, undefined), true); check.equal(accepts(call, {}), false); }
+  check.equal(accepts("entryAttachDropped", { path: "C:\\synthetic.keystore" }), true);
+  for (const path of ["", "x".repeat(4097), "x\0y", 1]) check.equal(accepts("entryAttachDropped", { path }), false);
+  check.equal(accepts("entryAttachDropped", { file: "x" }), false);
+  check.equal(accepts("entryDownload", { id: uuid, file: other }), true);
+  for (const value of [{ id: uuid }, { id: uuid, file: "x" }, { id: "x", file: other }, { id: uuid, file: other, path: "x" }]) check.equal(accepts("entryDownload", value), false);
+  const document = { id: uuid, kind: "doc", title: "Synthetic", favorite: false, fields: [] };
+  for (const files of [[], [other], Array(50).fill(other)]) check.equal(accepts("entrySave", { entry: { ...document, files }, expected: 0 }), true);
+  for (const files of [null, "x", ["x"], Array(51).fill(other)]) check.equal(accepts("entrySave", { entry: { ...document, files }, expected: 0 }), false);
   // ---- the bridge's arguments: exactly the keys of the call, each one within its cap -------------------------------------------------------
   const bridge = ["state", "onState", "create", "chooseBackup", "restoreBackup", "unlock", "unlockWithHello", "recover", "lock", "saveRecoverySheet", "printRecoverySheet", "finishSetup", "approveRun", "approveRunWithHello", "allowImport", "allowImportWithHello", "dismissPrompt", "entries", "entryOpen", "entryReveal", "entryCopy", "entryCode", "entryCopyCode", "entryOpenSite", "entryFavorite", "entrySave", "entryRemove", "entryUndo", "saveSettings", "enableHello", "disableHello", "dismissTour", "cancelClose", "confirmClose", "interact", "retry", "minimize", "toggleMaximize", "close"];
   const preload = await readFile(new URL("../dist/preload/preload.cjs", import.meta.url), "utf8");
+  let exposed, filePath = "", invoked = [];
+  const dropped = {};
+  runInNewContext(preload, { exports: {}, require: name => { check.equal(name, "electron"); return { contextBridge: { exposeInMainWorld: (_name, value) => { exposed = value; } }, ipcRenderer: { invoke: async (...args) => { invoked.push(args); return { ok: true }; } }, webUtils: { getPathForFile: file => { check.equal(file, dropped); return filePath; } } }; } });
+  check.equal((await exposed.entryAttachDropped(dropped)).code, "invalid"); check.equal(invoked.length, 0);
+  filePath = "C:\\synthetic.keystore"; await exposed.entryAttachDropped(dropped); check.equal(invoked[0][0], "vault:entryAttachDropped"); check.equal(invoked[0][1].path, filePath);
   // The preload stands alone, so its channels are written out there and the main process knows them from SHAPES: they must be the same set.
   const named = [...preload.matchAll(/call\("([A-Za-z]+)"/g)].map(match => match[1]).sort();
   check.deepEqual(named, Object.keys(SHAPES).sort());

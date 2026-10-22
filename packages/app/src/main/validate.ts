@@ -20,9 +20,10 @@ const field = (value: unknown): value is FieldInput =>
   plain(value) && only(value, ["id", "name", "secret"], ["value"]) && text(1, 100)(value.id) && text(0, 100)(value.name) && yes(value.secret) && (value.value === undefined || text(0, 32000)(value.value));
 /** What a save may carry, key by key and within the service's own limits; the service checks it again. */
 const entry = (value: unknown): value is EntryInput => {
-  if (!plain(value) || !only(value, ["id", "kind", "title", "favorite", "fields"], ["note", "totp"])) return false;
+  if (!plain(value) || !only(value, ["id", "kind", "title", "favorite", "fields"], ["note", "totp", "files"])) return false;
   if (!promptId(value.id) || !KINDS.includes(value.kind as Kind) || !text(0, 500)(value.title) || !yes(value.favorite)) return false;
   if (!Array.isArray(value.fields) || value.fields.length > 100 || !value.fields.every(field)) return false;
+  if (value.files !== undefined && (!Array.isArray(value.files) || value.files.length > 50 || !value.files.every(promptId))) return false;
   return (value.note === undefined || text(0, 32000)(value.note)) && (value.totp === undefined || text(0, 8192)(value.totp));
 };
 const settings: Check<Settings> = (value): value is Settings => isSettings(value);
@@ -54,6 +55,10 @@ export const SHAPES = {
   entrySave: { entry, expected: version },
   entryRemove: { id: promptId, expected: version },
   entryUndo: { id: promptId },
+  entryAttach: null,
+  entryAttachDropped: { path: text(1, 4096) },
+  entryDownload: { id: promptId, file: promptId },
+  entryDiscard: null,
   saveSettings: settings,
   enableHello: { password: text(1, 128) },
   disableHello: null,
