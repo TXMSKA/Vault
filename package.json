@@ -1,6 +1,6 @@
 {
   "name": "vault",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "private": true,
   "description": "Vault, the local password service shared by Cosmic apps.",
   "license": "Apache-2.0",

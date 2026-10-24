@@ -32,7 +32,7 @@ export const latestHash = text => text.match(/^[ \t]*sha512: (.+?)[ \t]*$/m)?.[1
 /** The line about code signing the release notes carry, in both languages. */
 export const SIGNING = {
   signed: { en: "The installer and the programs in it are code signed. Free code signing provided by SignPath.io, certificate by SignPath Foundation.", es: "El instalador y los programas que contiene están firmados. Firma de código gratuita provista por SignPath.io, certificado de SignPath Foundation." },
-  unsigned: { en: "This release is not code signed yet, so Windows SmartScreen can warn when the installer runs. Free code signing from the SignPath Foundation has been applied for.", es: "Esta versión todavía no está firmada, por lo que Windows SmartScreen puede mostrar una advertencia al ejecutar el instalador. Se solicitó la firma de código gratuita de SignPath Foundation." },
+  unsigned: { en: "This release is not code signed yet, so Windows SmartScreen can warn when the installer runs.", es: "Esta versión todavía no está firmada, por lo que Windows SmartScreen puede mostrar una advertencia al ejecutar el instalador." },
 };
 /**
  * Fills the release notes template: {{version}}, {{checksums}} (the sums file) and the signing line of each language. The template keeps each
