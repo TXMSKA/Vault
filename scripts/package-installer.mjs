@@ -2,7 +2,7 @@
 // build/release gets Vault-Setup-x64.exe, its blockmap, latest.yml and the unpacked app in win-unpacked. Run node scripts/package-console.mjs --finish afterwards.
 // Usage: node scripts/package-installer.mjs [--prepackaged]
 //   --prepackaged  builds the installer from build/release/win-unpacked as it is, which is how the release workflow builds it from the signed files.
-// ELECTRON_OVERRIDE_DIST_PATH, when set, names an Electron 44.5.1 folder to pack instead of downloading one.
+// ELECTRON_OVERRIDE_DIST_PATH, when set, names an Electron 44.9.3 folder to pack instead of downloading one.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";

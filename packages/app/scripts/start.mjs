@@ -1,5 +1,5 @@
 // Starts the Vault app from this checkout, against the vault home that VAULT_HOME names (or the default one when it is not set).
-// Electron is not downloaded here: point ELECTRON_OVERRIDE_DIST_PATH at an Electron 44.5.1 folder, or install the binary once with
+// Electron is not downloaded here: point ELECTRON_OVERRIDE_DIST_PATH at an Electron 44.9.3 folder, or install the binary once with
 // `node node_modules/electron/install.js`. Run `npm run build` first.
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -14,7 +14,7 @@ const override = process.env.ELECTRON_OVERRIDE_DIST_PATH, folder = dirname(creat
 let binary;
 if (override) binary = join(override, names[process.platform] ?? "electron");
 else if (existsSync(join(folder, "path.txt"))) binary = join(folder, "dist", readFileSync(join(folder, "path.txt"), "utf8"));
-if (!binary || !existsSync(binary)) fail("Electron is not installed. Set ELECTRON_OVERRIDE_DIST_PATH to an Electron 44.5.1 folder, or run node node_modules/electron/install.js once.");
+if (!binary || !existsSync(binary)) fail("Electron is not installed. Set ELECTRON_OVERRIDE_DIST_PATH to an Electron 44.9.3 folder, or run node node_modules/electron/install.js once.");
 const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE; delete env.NODE_OPTIONS;
 const child = spawn(binary, [app, ...process.argv.slice(2)], { stdio: "inherit", env });
 child.on("error", error => fail(`Electron could not start: ${error.message}`));

@@ -5,7 +5,7 @@
 // service state and saving a screenshot of each screen in the dark and the light theme under build/screens.
 //
 // Run it with the Electron binary, after `npm run build`:
-//   $env:ELECTRON_OVERRIDE_DIST_PATH = "<folder of Electron 44.5.1>"; & "$env:ELECTRON_OVERRIDE_DIST_PATH\electron.exe" packages\app\test\smoke.cjs
+//   $env:ELECTRON_OVERRIDE_DIST_PATH = "<folder of Electron 44.9.3>"; & "$env:ELECTRON_OVERRIDE_DIST_PATH\electron.exe" packages\app\test\smoke.cjs
 //
 // Everything is synthetic and lives in one temporary folder: the vault home (the browser's data is inside it) and the files the app saves. The home is created
 // here, whatever VAULT_HOME says, and the test guard refuses any access to the default Cosmic folders. Windows Hello is a stand-in for the native helper
@@ -758,7 +758,7 @@ async function main() {
   say("sync: a cloud folder starts sync, shows it on and turns it off");
   fs.mkdirSync(saved.folder, { recursive: true });
   await click("Set up"); await showing("Sync", "Cosmic account", "Cloud folder", "Sign in"); await shoot("sync-choose", true);
-  await evaluate("document.querySelector('input[type=radio][value=folder]').click()"); await showing("Folder", "Choose", "Start sync"); await click("Start sync"); await showing("Choose a folder first.");
+  await poll("the folder choice", () => evaluate("(() => { const radio = document.querySelector('input[type=radio][value=folder]'); if (!radio) return false; radio.click(); return true; })()")); await showing("Folder", "Choose", "Start sync"); await click("Start sync"); await showing("Choose a folder first.");
   await click("Choose"); await poll("the folder in the field", async () => (await evaluate("document.querySelector('input[name=folder]').value")) === saved.folder);
   await click("Start sync"); await showing("Last synced", "Computers", "This computer", "Move to Cosmic account", "Turn off sync");
   plain("folder sync", [(await manager.sync.status()).configured, (await manager.sync.status()).origin], [true, "folder"]); await shoot("sync-on-folder", true);
@@ -770,7 +770,7 @@ async function main() {
   const { fakeQuantum } = await import(require("node:url").pathToFileURL(path.join(root, "packages", "service", "test", "fake-quantum.mjs")).href), cosmic = await fakeQuantum();
   process.env.VAULT_QUANTUM_API = cosmic.api; process.env.VAULT_QUANTUM_SITE = cosmic.api;
   try {
-    await evaluate("document.querySelector('input[type=radio][value=quantum]').click()"); await click("Sign in");
+    await poll("the quantum choice", () => evaluate("(() => { const radio = document.querySelector('input[type=radio][value=quantum]'); if (!radio) return false; radio.click(); return true; })()")); await click("Sign in");
     await showing("Continue in the browser", "Open the page again"); await shoot("sync-signing", true);
     await poll("the sign-in page", async () => opened.some(url => url.startsWith(`${cosmic.api}/authorize`)));
     const issued = cosmic.issue(opened.findLast(url => url.startsWith(`${cosmic.api}/authorize`)), "synthetic@cosmic.invalid"); check.equal((await fetch(issued.callback)).ok, true);
