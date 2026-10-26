@@ -35,7 +35,7 @@ const accountCard = (t: Dictionary, again: () => void) =>
   div("account", icon("check", 18), div("acopy", h("strong", { class: "strong" }, t.signedIn), h("span", { class: "line" }, progress.account)), link(t.otherAccount, again));
 
 /**
- * The page behind Settings, Sync: off, it offers the Cosmic account or a cloud folder, waits for the browser sign-in and starts sync; on, it says where sync goes,
+ * The page behind Settings, Sync: off, it offers the Cosmic account or a folder, waits for the browser sign-in and starts sync; on, it says where sync goes,
  * when it last ran, the account's storage and the computers, with Sync now, Move to Cosmic account (folder) and Turn off sync.
  */
 export function syncScreen(context: Context): HTMLElement {
@@ -127,7 +127,7 @@ export function syncScreen(context: Context): HTMLElement {
   return div("view page syncpage", div("sectionhead", back, h("h1", { class: "h h18" }, t.syncPageTitle)), content);
 }
 
-/** Join a synced vault, from the welcome screen: the Cosmic account or a cloud folder, then the master password (or the recovery key) of that vault. */
+/** Join a synced vault, from the welcome screen: the Cosmic account or a folder, then the master password (or the recovery key) of that vault. */
 export function joinScreen({ t }: Context): HTMLElement {
   const content = div("syncbody"), status = div("slot");
   let disposed = false;

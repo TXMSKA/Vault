@@ -755,16 +755,16 @@ async function main() {
   plain("the settings kept", await manager.settings.get(), { idleMinutes: 30, lockWithLastApp: true, language: "en", theme: "dark" });
   await click("Lock when the last app closes"); await settle("the last-app rule off", async () => (await manager.settings.get()).lockWithLastApp === false); await resync();
 
-  say("sync: a cloud folder starts sync, shows it on and turns it off");
+  say("sync: a folder starts sync, shows it on and turns it off; no storage provider is named");
   fs.mkdirSync(saved.folder, { recursive: true });
-  await click("Set up"); await showing("Sync", "Cosmic account", "Cloud folder", "Sign in"); await shoot("sync-choose", true);
+  await click("Set up"); await showing("Sync", "Cosmic account", "Folder", "Sign in"); check.equal(/OneDrive|cloud folder|Nebula\+ Dawn/i.test(await text()), false); await shoot("sync-choose", true);
   await poll("the folder choice", () => evaluate("(() => { const radio = document.querySelector('input[type=radio][value=folder]'); if (!radio) return false; radio.click(); return true; })()")); await showing("Folder", "Choose", "Start sync"); await click("Start sync"); await showing("Choose a folder first.");
   await click("Choose"); await poll("the folder in the field", async () => (await evaluate("document.querySelector('input[name=folder]').value")) === saved.folder);
   await click("Start sync"); await showing("Last synced", "Computers", "This computer", "Move to Cosmic account", "Turn off sync");
   plain("folder sync", [(await manager.sync.status()).configured, (await manager.sync.status()).origin], [true, "folder"]); await shoot("sync-on-folder", true);
   await click("Sync now"); await showing("Just now");
   await click("Turn off sync"); await showing("Turn off sync on this computer?", "Also remove this computer's encrypted copies from the folder"); check.equal(await count("#modal .checkbox"), 1);
-  await click("Turn off", "document.querySelector('#modal')"); await showing("Cosmic account", "Cloud folder"); check.equal((await manager.sync.status()).configured, false);
+  await click("Turn off", "document.querySelector('#modal')"); await showing("Cosmic account", "Folder"); check.equal((await manager.sync.status()).configured, false);
 
   say("sync through the Cosmic account: the browser signs in, an empty account takes this vault, and turning off signs out");
   const { fakeQuantum } = await import(require("node:url").pathToFileURL(path.join(root, "packages", "service", "test", "fake-quantum.mjs")).href), cosmic = await fakeQuantum();
@@ -778,7 +778,7 @@ async function main() {
     await click("Start sync"); await showing("Cosmic account", "synthetic@cosmic.invalid", "Storage", "Last synced", "Turn off sync");
     plain("account sync", [(await manager.sync.status()).configured, (await manager.sync.status()).origin], [true, "quantum"]); await shoot("sync-on-account", true);
     await click("Turn off sync"); await showing("Sign out of the Cosmic account on this computer"); check.equal(await count("#modal .checkbox"), 2);
-    await click("Turn off", "document.querySelector('#modal')"); await showing("Cosmic account", "Cloud folder"); check.equal((await manager.sync.status()).configured, false);
+    await click("Turn off", "document.querySelector('#modal')"); await showing("Cosmic account", "Folder"); check.equal((await manager.sync.status()).configured, false);
     await poll("the account signed out", async () => !fs.existsSync(path.join(home, "secrets", "quantum.json")));
   } finally { delete process.env.VAULT_QUANTUM_API; delete process.env.VAULT_QUANTUM_SITE; await cosmic.close(); }
   await click("Back to the list"); await showing("Lock after idle", "Set up");
