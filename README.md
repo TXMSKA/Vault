@@ -354,8 +354,10 @@ that value (and at once on quit). One-time codes (RFC 6238, SHA-1, 30 seconds, 6
 process from the entry's key, a base32 secret or an `otpauth://totp` address, and only the current code
 and its seconds reach the window. Saving sends the version the window saw; an entry that changed meanwhile
 answers a conflict instead of being overwritten, and a secret the form never held is put back by the main
-process, not sent by the window. Documents list their files, but there is no way yet to add one, and deleting
-a document that has files asks first and cannot be undone.
+process, not sent by the window. A document takes files (up to 20 MiB each) from a picker or by dropping
+them, lists them with name and size, saves each back to disk and removes them; the bytes travel to the service
+in encrypted 32 KiB chunks and never reach the window. Deleting a document that has files asks first and cannot
+be undone.
 
 The main process alone talks to the service. The window is a frameless 920 by 640
 page served from `app://vault/` (no other address loads) under a strict
@@ -461,11 +463,22 @@ until you restore or dismiss it. Under `Vault Sync/<datasetId>`,
 checkpoint parts, blobs and wrapped envelopes. Local bookkeeping stays
 under `<home>/sync/`.
 
+Quantum sync carries the same packages through a Cosmic account that has
+the `vault:sync` capability: `vault sync signin` opens the Cosmic sign-in
+page in the browser, then `vault sync setup --quantum` or
+`vault sync join --quantum` (or Settings, Sync in the app; a new computer can
+join from the welcome screen). `vault sync switch --quantum` moves a
+folder-synced vault to the account and keeps the folder's files. One
+transport is used at a time. Signing in never unlocks the vault: joining
+still takes the master password or the recovery key. The addresses default
+to https://quantum.txmska.com and https://cosmic.txmska.com;
+`VAULT_QUANTUM_API` and `VAULT_QUANTUM_SITE` override them for local tests.
+
 ## Code signing policy
 
-Free code signing is applied for from the SignPath Foundation. Once it is granted, the
-release says: *Free code signing provided by SignPath.io, certificate by SignPath Foundation*.
-Until it is granted, the builds are unsigned and the release notes say so.
+Releases are unsigned, and the release notes say so. The SignPath Foundation declined the
+free signing application, and signing stays disabled for the Beta. The release workflow keeps
+its signing jobs behind the `SIGNPATH_ENABLED` variable should signing be enabled later.
 
 - Authors, reviewers and approvers: TXMSKA.
 - Every signing request is approved by hand.
@@ -476,8 +489,11 @@ Until it is granted, the builds are unsigned and the release notes say so.
 ## Privacy
 
 Vault does not transfer any information to other networked systems unless the person asks for it.
-Sync writes encrypted packages only to the folder the person chooses. Update checks read the
-releases of TXMSKA/Vault on GitHub and send nothing but the request for them.
+Folder sync writes encrypted packages only to the folder the person chooses. Quantum sync, which
+the person turns on by signing in to a Cosmic account, sends the same encrypted packages to
+quantum.txmska.com: Quantum stores only ciphertext and never receives the master password, the
+recovery key or the vault's data key. Update checks read the releases of TXMSKA/Vault on GitHub
+and send nothing but the request for them.
 
 ## Checks and limits
 
