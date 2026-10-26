@@ -11,10 +11,13 @@ export type AskingApp = { id: string; name: string };
 export type PromptView =
   | { id: string; kind: "unlock"; app: AskingApp; reason: string | null; expiresAt: string }
   | { id: string; kind: "run"; app: AskingApp; project: string; cwd: string; commands: string[][]; short: string[] | null; problem: "missing" | "ambiguous" | null; expiresAt: string }
-  | { id: string; kind: "permission"; app: AskingApp; permission: "import"; expiresAt: string };
+  | { id: string; kind: "permission"; app: AskingApp; permission: "import"; expiresAt: string }
+  | { id: string; kind: "key"; app: AskingApp; entry: string; provider: string; label: string; expiresAt: string };
 /** The person's choices, as chosen: "system" is still "system" here (see `language` and `theme` of the state for what shows). */
 export type SettingsView = { idleMinutes: 1 | 5 | 15 | 30 | 60 | 240; lockWithLastApp: boolean; language: "system" | "en" | "es"; theme: "system" | "dark" | "light" };
-export type Kind = "login" | "card" | "doc" | "note" | "key" | "custom" | "env";
+export type Kind = "login" | "card" | "doc" | "note" | "key" | "custom" | "env" | "apikey";
+/** Who read an API key entry last, by app; never the value. */
+export type KeyUsage = { entry: string; app: string; lastRead: string };
 /** One line of the list. `detail` is a username, a website's host, a bank or a file type: never a secret. `search` is the text a search looks through. */
 export type EntrySummary = { id: string; kind: Kind; title: string; favorite: boolean; version: number; updatedAt: string; detail: string; count: number; search: string };
 /** A field of an open entry. A secret field has no value here, only whether it holds one. */
@@ -78,6 +81,12 @@ export interface VaultBridge {
   allowImport(input: { id: string; password: string }): Promise<Result>;
   allowImportWithHello(input: { id: string }): Promise<Result>;
   dismissPrompt(input: { id: string }): Promise<Result>;
+  /** Lets the asking app read the API key the prompt names, after the master password or Windows Hello. */
+  keyApprove(input: { id: string; password: string }): Promise<Result>;
+  keyApproveWithHello(input: { id: string }): Promise<Result>;
+  /** Stops an app from reading an API key entry: its permission goes and it leaves the entry's apps. */
+  keyRevoke(input: { app: string; entry: string }): Promise<Result>;
+  keyUsage(): Promise<Result<{ usage: KeyUsage[] }>>;
   /** The entries, newest change first, read again from the service. */
   entries(): Promise<Result<{ entries: EntrySummary[] }>>;
   entryOpen(input: { id: string }): Promise<Result<{ entry: EntryView }>>;

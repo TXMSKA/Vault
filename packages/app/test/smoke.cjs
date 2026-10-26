@@ -228,7 +228,7 @@ async function main() {
   plain("the content size", win.getContentSize(), [920, 640]); plain("the minimum size", win.getMinimumSize(), [920, 640]); plain("the menu bar", win.isMenuBarVisible(), false);
   check.equal(wc.getURL(), "app://vault/"); check.equal(win.getTitle(), "Vault");
   check.deepEqual(await evaluate("[typeof require, typeof process, typeof module, typeof Buffer, typeof ipcRenderer, typeof window.electron]"), ["undefined", "undefined", "undefined", "undefined", "undefined", "undefined"]);
-  check.deepEqual(await evaluate("Object.keys(window.vault).sort()"), ["allowImport", "allowImportWithHello", "approveRun", "approveRunWithHello", "cancelClose", "chooseBackup", "close", "confirmClose", "create", "disableHello", "dismissPrompt", "dismissTour", "enableHello", "entries", "entryAttach", "entryAttachDropped", "entryCode", "entryCopy", "entryCopyCode", "entryDiscard", "entryDownload", "entryFavorite", "entryOpen", "entryOpenSite", "entryRemove", "entryReveal", "entrySave", "entryUndo", "finishSetup", "interact", "lock", "minimize", "onState", "printRecoverySheet", "recover", "restoreBackup", "retry", "saveRecoverySheet", "saveSettings", "state", "syncCancel", "syncChooseFolder", "syncJoin", "syncLeave", "syncMove", "syncNow", "syncSetup", "syncSignIn", "syncSignOut", "syncStatus", "syncWait", "toggleMaximize", "unlock", "unlockWithHello"]);
+  check.deepEqual(await evaluate("Object.keys(window.vault).sort()"), ["allowImport", "allowImportWithHello", "approveRun", "approveRunWithHello", "cancelClose", "chooseBackup", "close", "confirmClose", "create", "disableHello", "dismissPrompt", "dismissTour", "enableHello", "entries", "entryAttach", "entryAttachDropped", "entryCode", "entryCopy", "entryCopyCode", "entryDiscard", "entryDownload", "entryFavorite", "entryOpen", "entryOpenSite", "entryRemove", "entryReveal", "entrySave", "entryUndo", "finishSetup", "interact", "keyApprove", "keyApproveWithHello", "keyRevoke", "keyUsage", "lock", "minimize", "onState", "printRecoverySheet", "recover", "restoreBackup", "retry", "saveRecoverySheet", "saveSettings", "state", "syncCancel", "syncChooseFolder", "syncJoin", "syncLeave", "syncMove", "syncNow", "syncSetup", "syncSignIn", "syncSignOut", "syncStatus", "syncWait", "toggleMaximize", "unlock", "unlockWithHello"]);
   check.equal(await evaluate("Object.isFrozen(window.vault)"), true);
   check.equal(await evaluate("(() => { try { window.vault.create = () => 0; } catch {} return typeof window.vault.create; })()"), "function");
   check.equal(await evaluate("typeof window.vault.invoke"), "undefined");
@@ -479,10 +479,10 @@ async function main() {
   const passphrase = `phrase-${randomBytes(8).toString("hex")}`, envValue = `env-${randomBytes(9).toString("hex")}`, spare = `spare-${randomBytes(6).toString("hex")}`, gate = `gate-${randomBytes(4).toString("hex")}`;
   const leaseNote = `lease-note-${randomBytes(6).toString("hex")}`, wifiText = `wifi-${randomBytes(8).toString("hex")}`, totpKey = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
 
-  say("the kinds menu offers the seven kinds, each with what it is for");
+  say("the kinds menu offers the eight kinds, each with what it is for");
   await click("Add an entry");
-  await showing("Login", "A website or app account", "Card", "A payment card", "Document", "A file, kept encrypted", "Note", "Private text", "Key", "An SSH or API key", "Environment", "Values a project loads in the terminal", "Custom", "Fields you name yourself");
-  check.equal(await count(".popover .menu-item"), 7); await shoot("add-open", true);
+  await showing("Login", "A website or app account", "Card", "A payment card", "Document", "A file, kept encrypted", "Note", "Private text", "Key", "An SSH key or a licence", "API key", "A key from an AI provider, for Lyra", "Environment", "Values a project loads in the terminal", "Custom", "Fields you name yourself");
+  check.equal(await count(".popover .menu-item"), 8); await shoot("add-open", true);
 
   say("a login: the generator's length and switches, then Save");
   await pick("Login"); await showing("New login", "Name", "Username", "Password", "Website", "One-time code key");
@@ -611,7 +611,7 @@ async function main() {
             await set(field, typed); await evaluate("document.querySelector('.add').click()"); await poll("the Add menu", () => exists(".popover .menu-item"));
             await expectRow(`${tag}, Add menu open${typed ? " with Clear" : ""}`, { open: "true" });
             plain(`${tag}: the Add menu`, await evaluate(`(() => { const box = document.querySelector(".popover").getBoundingClientRect(), add = document.querySelector(".add").getBoundingClientRect(); return { left: Math.round((box.left - add.left) * 100) / 100, below: Math.round((box.top - add.bottom) * 100) / 100, width: box.width, inside: box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight, items: document.querySelectorAll(".popover .menu-item").length }; })()`),
-              { left: 0, below: 6, width: 300, inside: true, items: 7 });
+              { left: 0, below: 6, width: 300, inside: true, items: 8 });
             if (typed || !smallest) await capture(`${name}-menu${typed ? "" : "-empty"}`);
             await evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))"); await poll("the Add menu to close", async () => !(await exists(".popover")));
             await expectRow(`${tag}, Add menu closed`, { open: "false", focus: "add" });
@@ -627,7 +627,7 @@ async function main() {
   say("the kind filter shows its counts, favourites first");
   await click("Show: All entries"); await poll("the filter menu", () => exists(".popover .menu-item"));
   plain("the filter lines", await evaluate("[...document.querySelectorAll('.popover .menu-item')].map(node => [node.querySelector('.name').textContent, node.querySelector('.hint').textContent, node.getAttribute('aria-checked')])"),
-    [["All entries", "8", "true"], ["Favourites", "0", "false"], ["Logins", "1", "false"], ["Cards", "1", "false"], ["Documents", "1", "false"], ["Notes", "1", "false"], ["Keys", "1", "false"], ["Environment", "2", "false"], ["Custom", "1", "false"]]);
+    [["All entries", "8", "true"], ["Favourites", "0", "false"], ["Logins", "1", "false"], ["Cards", "1", "false"], ["Documents", "1", "false"], ["Notes", "1", "false"], ["Keys", "1", "false"], ["API keys", "0", "false"], ["Environment", "2", "false"], ["Custom", "1", "false"]]);
   await shoot("filter-open", true); await pick("Environment"); plain("the environments", (await rowsText()).map(row => row[0]), ["forge", "sprout"]); check.equal(await read(".filter span"), "Environment"); check.equal(await read(".filterrow .count"), "2");
   await click("Show: Environment"); await pick("Logins"); plain("the logins", (await rowsText()).map(row => row[0]), ["Northwind Mail"]);
   await choose("Northwind Mail"); await click("Add to favourites"); await settle("the favourite", async () => (await rowOf("Northwind Mail")).entry.favorite === true);
@@ -796,6 +796,20 @@ async function main() {
   await poll("the switch on", async () => (await evaluate("document.querySelector('[aria-label=\"Windows Hello\"]').getAttribute('aria-checked')")) === "true");
   await click("Windows Hello"); await poll("Hello off", async () => !fs.existsSync(path.join(home, "secrets", "hello.json")));
   await poll("the switch off", async () => (await evaluate("document.querySelector('[aria-label=\"Windows Hello\"]').getAttribute('aria-checked')")) === "false");
+
+  say("API keys for Lyra: added in the window, Lyra asks once and is approved with the master password, reads the key, and is stopped");
+  await click("Back to the list"); await listShown(); await addKind("API key"); await showing("New API key", "Provider", "Base URL", "Lyra can use this key"); await wait(800); await showing("New API key");
+  const apiKey = `sk-synthetic-${randomBytes(12).toString("hex")}`; await set('input[name="title"]', "Work account"); await set('input[name="key"]', apiKey); await shoot("add-apikey", true);
+  await click("Save"); await showing("Apps that can use it", "Lyra", "Not read yet");
+  const lyra = await as("lyra", "Lyra", "cosmic"); check.deepEqual((await lyra.keys.providers()).map(row => [row.provider, row.label, row.hasBaseUrl]), [["openai", "Work account", false]]);
+  let keyAsked; try { await lyra.keys.read("openai"); } catch (error) { keyAsked = error?.code; } check.equal(keyAsked, "key_approval_required");
+  await showing("Lyra wants to use the OpenAI key"); await shoot("key-request", true);
+  await type("password", changed, "document.querySelector('#overlay')"); await click("Allow", "document.querySelector('#overlay')"); await gone("Lyra wants to use the OpenAI key");
+  check.equal((await lyra.keys.read("openai")).key, apiKey);
+  await choose("Work account"); await showing("Last read just now"); await shoot("apikey-open", true);
+  await click("Stop Lyra"); await showing("No app can use this key."); let keyStopped; try { await lyra.keys.read("openai"); } catch (error) { keyStopped = error?.code; } check.equal(keyStopped, "not_found");
+  await lyra.close(); { const row = (await manager.entries.list()).find(item => item.entry.kind === "apikey"); await manager.entries.remove(row.entry.id, row.version); }
+  await click("Menu"); await pick("Settings"); await showing("Lock after idle");
   await click("Back to the list"); await listShown(); await showing("Choose an entry to see it.");
   await wait(CLIPBOARD_MS + 300);
 

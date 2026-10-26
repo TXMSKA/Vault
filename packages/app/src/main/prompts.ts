@@ -17,6 +17,7 @@ export function toView(prompt: Prompt, run?: Pick<RunSummary, "short" | "problem
   const app = { id: clip(prompt.app.id, 40), name: clip(prompt.app.name, 120) }, expiresAt = prompt.expiresAt;
   if (prompt.kind === "unlock") return { id: prompt.id, kind: "unlock", app, reason: prompt.summary.reason === null ? null : clip(prompt.summary.reason, 120), expiresAt };
   if (prompt.kind === "permission") return { id: prompt.id, kind: "permission", app, permission: "import", expiresAt };
+  if (prompt.kind === "key") return { id: prompt.id, kind: "key", app, entry: prompt.summary.entry, provider: clip(prompt.summary.provider, 40), label: clip(prompt.summary.label, 500), expiresAt };
   return {
     id: prompt.id, kind: "run", app, project: clip(prompt.summary.project, 500), cwd: clip(prompt.summary.cwd, 4096), expiresAt,
     commands: prompt.summary.commands.slice(0, 10).map(argv => argv.slice(0, 64).map(arg => clip(arg, 8192))),

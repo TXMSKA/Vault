@@ -4,15 +4,15 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { resolveHome, appIdPattern, serviceEnv } from "./paths.ts";
 import { privateDirectoryAsync, privateFileAsync } from "./private.ts";
-import { readCapped, FILE_CAP } from "./files.ts";
+import { readCapped, readFirstLine, FILE_CAP } from "./files.ts";
 import { VaultClientError } from "./errors.ts";
 import { isSettings } from "./settings.ts";
 import { isPromptId, isReason } from "./prompts.ts";
 import { installedApp } from "./app.ts";
 import { recoveryKit } from "./kit.ts";
-import type { AppView, Backup, Client, ConnectOptions, EntryRow, EnvImportCount, ImportCount, InstallRecord, LoginSummary, Prompt, PromptState, PromptTicket, RunProgress, RunSummary, ServiceRecord, Settings, Status, SyncStatus, SyncConflict, TokenStore } from "./types.ts";
+import type { ApiKeyProvider, ApiKeyUsage, ApiKeyValue, AppView, Backup, Client, ConnectOptions, EntryRow, EnvImportCount, ImportCount, InstallRecord, LoginSummary, Prompt, PromptState, PromptTicket, RunProgress, RunSummary, ServiceRecord, Settings, Status, SyncStatus, SyncConflict, TokenStore } from "./types.ts";
 export type * from "./types.ts";
-export { VaultClientError, resolveHome, readCapped, FILE_CAP, installedApp, recoveryKit };
+export { VaultClientError, resolveHome, readCapped, readFirstLine, FILE_CAP, installedApp, recoveryKit };
 const pause = (ms: number) => new Promise<void>(done => setTimeout(done, ms));
 async function request<T>(record: ServiceRecord, method: string, route: string, auth?: string, body?: unknown, timeout = 15000): Promise<T> {
   try {
@@ -22,7 +22,7 @@ async function request<T>(record: ServiceRecord, method: string, route: string, 
     try {
       for (;;) { const next = await reader.read(); if (next.done) break; size += next.value.length; if (size > 16 * 1024 * 1024) { await reader.cancel(); throw new VaultClientError("too_large"); } parts.push(next.value); }
       const value = JSON.parse(Buffer.concat(parts).toString("utf8"));
-      if (!response.ok) throw new VaultClientError(typeof value?.error?.code === "string" ? value.error.code : "unavailable");
+      if (!response.ok) { const code = typeof value?.error?.code === "string" ? value.error.code : "unavailable"; throw new VaultClientError(code, code === "key_approval_required" && isPromptId(value?.error?.fields?.prompt) ? { prompt: value.error.fields.prompt } : undefined); }
       return value as T;
     } finally { reader.releaseLock(); }
   } catch (error) { throw error instanceof VaultClientError ? error : new VaultClientError("unavailable"); }
@@ -123,9 +123,17 @@ export async function connect(options: ConnectOptions): Promise<Client> {
     logins: origin => call<EntryRow[]>("GET", `/v1/logins?origin=${encodeURIComponent(origin)}`),
     listLogins: () => call<LoginSummary[]>("GET", "/v1/logins/all"), getLogin: id => call<EntryRow>("GET", `/v1/logins/get?id=${encodeURIComponent(id)}`),
     entries: { list: () => call<EntryRow[]>("GET", "/v1/entries"), get: id => call<EntryRow>("GET", `/v1/entries/get?id=${encodeURIComponent(id)}`), save: (entry, expected) => call("POST", "/v1/entries", { entry, expected }), remove: (id, expected) => call("POST", "/v1/entries/remove", { id, expected }) },
+    keys: {
+      providers: () => call<ApiKeyProvider[]>("GET", "/v1/keys/providers"), read: provider => call<ApiKeyValue>("POST", "/v1/keys/read", { provider }),
+      approve: async (id, password) => call("POST", "/v1/keys/approve", { id: promptId(id), password }),
+      // Windows Hello waits for the person, up to two minutes.
+      approveWithHello: async (id, hwnd) => call("POST", "/v1/keys/approve/hello", { hwnd, id: promptId(id) }, 130000),
+      revoke: async (app, entry) => call("POST", "/v1/keys/revoke", { app: appId(app), entry }), usage: () => call<ApiKeyUsage[]>("GET", "/v1/keys/usage"),
+    },
     chunks: { put: data => call("POST", "/v1/chunks", { data }), get: (entry, ids) => call("POST", "/v1/chunks/get", { entry, ids }), remove: ids => call("POST", "/v1/chunks/remove", { ids }) },
     environment: project => call("GET", `/v1/env?project=${encodeURIComponent(project)}`),
     import: (format, text) => call<ImportCount>("POST", "/v1/import", { format, text }), importEnv: (project, text) => call<EnvImportCount>("POST", "/v1/import/env", { project, text }), export: password => call<Backup>("POST", "/v1/export", { password }), restore: (backup, password) => call<ImportCount>("POST", "/v1/restore", { backup, password }),
+    exportToFile: (password, path) => call("POST", "/v1/export/file", { password, path }, 600000), restoreFromFile: (path, password) => call<ImportCount>("POST", "/v1/restore/file", { password, path }, 600000),
     runs: {
       submit: value => call("POST", "/v1/runs", value), list: () => call<RunSummary[]>("GET", "/v1/runs"),
       get(id, after = 0) { if (!Number.isSafeInteger(after) || after < 0) throw new VaultClientError("invalid"); return call<RunProgress>("GET", `/v1/runs/get?after=${after}&id=${encodeURIComponent(id)}`); },

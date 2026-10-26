@@ -11,7 +11,8 @@ const version: Check<number> = (value): value is number => typeof value === "num
 /** A field of an entry as the window names it for a reveal or a copy: `f:` and the field's id, or `note`. */
 const part: Check<string> = (value): value is string => typeof value === "string" && (value === "note" || value.startsWith("f:") && value.length > 2 && value.length <= 102 && !value.includes("\0"));
 const plain = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
-const KINDS: readonly Kind[] = ["login", "card", "doc", "note", "key", "custom", "env"];
+const KINDS: readonly Kind[] = ["login", "card", "doc", "note", "key", "custom", "env", "apikey"];
+const appId: Check<string> = (value): value is string => typeof value === "string" && /^[a-z][a-z0-9-]{1,39}$/.test(value);
 const only = (value: Record<string, unknown>, required: string[], optional: string[]) => {
   const keys = Object.keys(value);
   return required.every(key => Object.hasOwn(value, key)) && keys.every(key => required.includes(key) || optional.includes(key));
@@ -50,6 +51,10 @@ export const SHAPES = {
   allowImport: { id: promptId, password: text(1, 128) },
   allowImportWithHello: { id: promptId },
   dismissPrompt: { id: promptId },
+  keyApprove: { id: promptId, password: text(1, 128) },
+  keyApproveWithHello: { id: promptId },
+  keyRevoke: { app: appId, entry: promptId },
+  keyUsage: null,
   entries: null,
   entryOpen: { id: promptId },
   entryReveal: { id: promptId, part },

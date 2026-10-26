@@ -1,6 +1,6 @@
 import "../../../test/guard.mjs";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { quitWhenIdle } from "../dist/main/quit.js";
@@ -34,7 +34,7 @@ try {
   for (const files of [[], [other], Array(50).fill(other)]) check.equal(accepts("entrySave", { entry: { ...document, files }, expected: 0 }), true);
   for (const files of [null, "x", ["x"], Array(51).fill(other)]) check.equal(accepts("entrySave", { entry: { ...document, files }, expected: 0 }), false);
   // ---- the bridge's arguments: exactly the keys of the call, each one within its cap -------------------------------------------------------
-  const bridge = ["state", "onState", "create", "chooseBackup", "restoreBackup", "unlock", "unlockWithHello", "recover", "lock", "saveRecoverySheet", "printRecoverySheet", "finishSetup", "approveRun", "approveRunWithHello", "allowImport", "allowImportWithHello", "dismissPrompt", "entries", "entryOpen", "entryReveal", "entryCopy", "entryCode", "entryCopyCode", "entryOpenSite", "entryFavorite", "entrySave", "entryRemove", "entryUndo", "saveSettings", "enableHello", "disableHello", "dismissTour", "cancelClose", "confirmClose", "interact", "retry", "minimize", "toggleMaximize", "close", "syncStatus", "syncSignIn", "syncWait", "syncCancel", "syncChooseFolder", "syncSetup", "syncJoin", "syncMove", "syncNow", "syncLeave", "syncSignOut"];
+  const bridge = ["state", "onState", "create", "chooseBackup", "restoreBackup", "unlock", "unlockWithHello", "recover", "lock", "saveRecoverySheet", "printRecoverySheet", "finishSetup", "approveRun", "approveRunWithHello", "allowImport", "allowImportWithHello", "dismissPrompt", "entries", "entryOpen", "entryReveal", "entryCopy", "entryCode", "entryCopyCode", "entryOpenSite", "entryFavorite", "entrySave", "entryRemove", "entryUndo", "saveSettings", "enableHello", "disableHello", "dismissTour", "cancelClose", "confirmClose", "interact", "retry", "minimize", "toggleMaximize", "close", "syncStatus", "syncSignIn", "syncWait", "syncCancel", "syncChooseFolder", "syncSetup", "syncJoin", "syncMove", "syncNow", "syncLeave", "syncSignOut", "keyApprove", "keyApproveWithHello", "keyRevoke", "keyUsage"];
   const preload = await readFile(new URL("../dist/preload/preload.cjs", import.meta.url), "utf8");
   let exposed, filePath = "", invoked = [];
   const dropped = {};
@@ -48,6 +48,8 @@ try {
   check.equal([...preload.matchAll(/ipcRenderer\.(invoke|on|removeListener|send|sendSync)\(/g)].map(match => match[1]).sort().join(), "invoke,on,removeListener");
   check.match(preload, /Object\.freeze\(bridge\)/); check.doesNotMatch(preload, /require\((?!"electron")/);
   check.deepEqual(quantumConfig({}), { api: "https://quantum.txmska.com", site: "https://cosmic.txmska.com" }); check.deepEqual(quantumConfig({ VAULT_QUANTUM_API: "http://127.0.0.1:1", VAULT_QUANTUM_SITE: "http://127.0.0.1:2" }), { api: "http://127.0.0.1:1", site: "http://127.0.0.1:2" });
+  check.equal(accepts("keyApprove", { id: crypto.randomUUID(), password: "x" }), true); check.equal(accepts("keyApprove", { id: "nope", password: "x" }), false); check.equal(accepts("keyApproveWithHello", { id: crypto.randomUUID() }), true);
+  check.equal(accepts("keyRevoke", { app: "lyra", entry: crypto.randomUUID() }), true); check.equal(accepts("keyRevoke", { app: "Lyra!", entry: crypto.randomUUID() }), false); check.equal(accepts("keyRevoke", { app: "lyra" }), false); check.equal(accepts("keyUsage", undefined), true); check.equal(accepts("keyUsage", {}), false);
   check.equal(accepts("syncSetup", { via: "quantum" }), true); check.equal(accepts("syncSetup", { via: "cloud" }), false); check.equal(accepts("syncSetup", { via: "folder", folder: "C:/x" }), false);
   check.equal(accepts("syncJoin", { via: "quantum", password: "x" }), true); check.equal(accepts("syncJoin", { via: "folder", recovery: "ABCD" }), true); check.equal(accepts("syncJoin", { via: "quantum", password: "x", recovery: "y" }), false); check.equal(accepts("syncJoin", { via: "quantum", password: "" }), false); check.equal(accepts("syncJoin", { via: "quantum" }), false);
   check.equal(accepts("syncLeave", { remove: false, signOut: true }), true); check.equal(accepts("syncLeave", { remove: "no", signOut: true }), false); check.equal(accepts("syncLeave", { remove: false }), false);
@@ -146,11 +148,18 @@ try {
   check.deepEqual([kitName("C:\\Users\\a\\kit"), kitName("C:\\Users\\a\\kit.TXT"), kitName("/tmp/kit.txt")], ["kit.txt", "kit.TXT", "kit.txt"]);
   // The recovery key is shown in groups of four, three to a line, whatever separators the service uses.
   check.deepEqual(keyLines(key), ["ABCD-EFGH-JKLM", "NPQR-STUV-WXYZ"]); check.deepEqual(keyLines("abcdefghjklmnpqrstuvwxyz"), ["ABCD-EFGH-JKLM", "NPQR-STUV-WXYZ"]); check.deepEqual(keyLines(""), []); check.deepEqual(keyLines("ABCDE"), ["ABCD-E"]);
-  // A backup is JSON with exactly the backup's keys.
+  // A backup is the older JSON object or the first-line header of a streamed file, each with exactly its keys.
   const backup = { format: "vault-backup", version: 1, envelope: {}, sealed: { iv: "x", data: "y" } };
-  for (const [name, content, ok] of [["good", JSON.stringify(backup), true], ["extra", JSON.stringify({ ...backup, extra: 1 }), false], ["missing", JSON.stringify({ format: "vault-backup", version: 1, envelope: {} }), false], ["format", JSON.stringify({ ...backup, format: "other" }), false], ["version", JSON.stringify({ ...backup, version: 2 }), false], ["array", "[]", false], ["null", "null", false], ["text", "not json", false], ["empty", "", false]]) {
+  for (const [name, content, ok] of [["good", JSON.stringify(backup), true], ["pretty", JSON.stringify(backup, null, 2), true], ["extra", JSON.stringify({ ...backup, extra: 1 }), false], ["missing", JSON.stringify({ format: "vault-backup", version: 1, envelope: {} }), false], ["format", JSON.stringify({ ...backup, format: "other" }), false], ["version", JSON.stringify({ ...backup, version: 2 }), false], ["array", "[]", false], ["null", "null", false], ["text", "not json", false], ["empty", "", false]]) {
     await writeFile(join(scratch, `${name}.vault`), content); const read = await readBackup(join(scratch, `${name}.vault`)); check.equal(read !== undefined, ok, name);
   }
+  const header = { format: "vault-backup", version: 2, envelope: {}, counts: { entries: 1, chunks: 640 } };
+  for (const [name, value, ok] of [["stream", header, true], ["stream-extra", { ...header, extra: 1 }, false], ["stream-counts", { ...header, counts: { entries: 1, chunks: -1 } }, false], ["stream-count-extra", { ...header, counts: { ...header.counts, extra: 1 } }, false], ["stream-format", { ...header, format: "other" }, false]]) {
+    await writeFile(join(scratch, `${name}.vault`), `${JSON.stringify(value)}\n{"entry":{}}\n`); const read = await readBackup(join(scratch, `${name}.vault`)); check.equal(read !== undefined, ok, name);
+  }
+  const streamed = join(scratch, "large-stream.vault"), stream = await open(streamed, "wx");
+  try { await stream.writeFile(`${JSON.stringify(header)}\n`); await stream.writeFile(Buffer.from([255])); await stream.truncate(9 * 1024 * 1024); } finally { await stream.close(); }
+  check.deepEqual(await readBackup(streamed), header);
   check.equal(await readBackup(join(scratch, "absent.vault")), undefined);
 
   // ---- what a request may disguise, and the words of the window ------------------------------------------------------------------------------------

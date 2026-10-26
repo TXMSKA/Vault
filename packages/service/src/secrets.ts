@@ -4,12 +4,12 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readCapped, atomicJson } from "../../client/src/files.ts";
 import { privateFile } from "../../client/src/private.ts";
 import { appIdPattern } from "../../client/src/paths.ts";
-import type { AppIdentity, AppView, Kind } from "../../client/src/types.ts";
+import type { AppIdentity, AppView, Kind, Permission } from "../../client/src/types.ts";
 import { object, text, ServiceError } from "./errors.ts";
 const all: Kind[] = ["login", "card", "doc", "note", "key", "custom", "env"];
-const trusted = new Set(["horizon", "nova", "nebula", "vault-cli", "vault-app"]);
-export const manages = (app: AppView) => app.id === "vault-cli" || app.id === "vault-app";
-export const blocked = (app: AppIdentity) => /^lyra(?:-|$)/.test(app.id);
+const trusted = new Set(["horizon", "nova", "nebula", "lyra", "vault-cli", "vault-app"]);
+export const manages = (app: AppIdentity) => app.id === "vault-cli" || app.id === "vault-app";
+export const blocked = (app: AppIdentity) => /^lyra-/.test(app.id);
 // An agent never receives values: once allowed, it can only propose runs that a person approves.
 export const isAgent = (app: AppIdentity) => app.kind === "agent";
 export const hashToken = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -28,16 +28,19 @@ export class Apps {
   constructor(home: string) { this.filename = join(home, "secrets", "apps.json"); }
   async load() {
     let value;
-    try { value = JSON.parse(await readCapped(this.filename, 128 * 1024)); }
+    try { value = JSON.parse(await readCapped(this.filename, 512 * 1024)); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw new ServiceError("unavailable", 500); }
     if (!Array.isArray(value) || value.length > 100) throw new ServiceError("unavailable", 500);
     for (const row of value) {
-      object(row, "app,tokenHash"); object(row.app, Object.hasOwn(row.app ?? {}, "permissions") ? "id,kind,kinds,name,permissions,status" : "id,kind,kinds,name,status"); identity({ id: row.app.id, name: row.app.name, kind: row.app.kind });
+      object(row, "app,tokenHash"); object(row.app, Object.hasOwn(row.app ?? {}, "permissions") ? "id,kind,kinds,name,permissions,status" : "id,kind,kinds,name,status");
+      // Older Lyra registrations were blocked ordinary apps; their existing status still needs to be respected.
+      if (row.app.id === "lyra" && row.app.kind === "app" && ["pending", "revoked"].includes(row.app.status)) row.app.kind = "cosmic";
+      identity({ id: row.app.id, name: row.app.name, kind: row.app.kind });
       if (!/^[a-f0-9]{64}$/.test(row.tokenHash) || !["granted", "pending", "revoked"].includes(row.app.status)) throw new ServiceError("unavailable", 500);
       row.app.kinds = kinds(row.app); if (blocked(row.app) && row.app.status === "granted") throw new ServiceError("unavailable", 500);
       // Rows written before permissions existed have none.
       const permissions = row.app.permissions ?? [];
-      if (!Array.isArray(permissions) || permissions.some(item => item !== "import") || new Set(permissions).size !== permissions.length || permissions.length && (blocked(row.app) || isAgent(row.app))) throw new ServiceError("unavailable", 500);
+      if (!Array.isArray(permissions) || permissions.length > 4096 || permissions.some(item => !permissionAllowed(row.app, item)) || new Set(permissions).size !== permissions.length || permissions.length && (blocked(row.app) || isAgent(row.app))) throw new ServiceError("unavailable", 500);
       row.app.permissions = permissions;
     }
     if (new Set(value.map(row => row.app.id)).size !== value.length) throw new ServiceError("unavailable", 500);
@@ -61,16 +64,23 @@ export class Apps {
     const app = { ...row.app, status, permissions: status === "revoked" ? [] : row.app.permissions }, rows = this.rows.map(current => current === row ? { ...row, app } : current);
     await atomicJson(this.filename, rows); this.rows = rows; return app;
   }
-  // Recorded only after the person proved it is them; an agent or a blocked app can never hold one.
-  async grant(id: string, permission: "import") {
+  // Recorded only after the person's proof; provider key permissions belong only to Lyra.
+  async grant(id: string, permission: Permission) {
     const row = this.rows.find(row => row.app.id === id); if (!row) throw new ServiceError("not_found", 404);
-    if (blocked(row.app) || isAgent(row.app) || row.app.status !== "granted") throw new ServiceError("forbidden", 403);
+    if (blocked(row.app) || isAgent(row.app) || row.app.status !== "granted" || !permissionAllowed(row.app, permission)) throw new ServiceError("forbidden", 403);
     if (row.app.permissions.includes(permission)) return row.app;
+    if (row.app.permissions.length >= 4096) throw new ServiceError("limited", 429);
     const app = { ...row.app, permissions: [...row.app.permissions, permission] }, rows = this.rows.map(current => current === row ? { ...row, app } : current);
     await atomicJson(this.filename, rows); this.rows = rows; return app;
   }
+  async revoke(id: string, permission: Permission) {
+    const row = this.rows.find(row => row.app.id === id); if (!row) throw new ServiceError("not_found", 404);
+    const app = { ...row.app, permissions: row.app.permissions.filter(value => value !== permission) }, rows = this.rows.map(current => current === row ? { ...row, app } : current);
+    await atomicJson(this.filename, rows); this.rows = rows; return app;
+  }
 }
-function kinds(app: AppIdentity): Kind[] { return blocked(app) || isAgent(app) ? [] : app.id === "horizon" ? ["login"] : app.id === "nova" ? ["env"] : [...all]; }
+const permissionAllowed = (app: AppIdentity, permission: unknown) => typeof permission === "string" && (permission === "import" ? app.id !== "lyra" : app.id === "lyra" && /^key:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(permission));
+function kinds(app: AppIdentity): Kind[] { return blocked(app) || isAgent(app) || app.id === "lyra" ? [] : app.id === "horizon" ? ["login"] : app.id === "nova" ? ["env"] : manages(app) ? [...all, "apikey"] : [...all]; }
 // Held by policy, never by request, so no app can ask to keep Vault unlocked.
 export const holds = (app: string) => app === "horizon";
 export function identity(value: unknown): AppIdentity {

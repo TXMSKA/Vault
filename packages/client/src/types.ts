@@ -1,4 +1,4 @@
-export type Kind = "login" | "card" | "doc" | "note" | "key" | "custom" | "env";
+export type Kind = "login" | "card" | "doc" | "note" | "key" | "custom" | "env" | "apikey";
 export type Field = { id: string; name: string; value: string; secret: boolean };
 export type Attachment = { id: string; name: string; type: string; size: number; chunks: string[] };
 export type Entry = {
@@ -8,7 +8,12 @@ export type Entry = {
 export type EntryRow = { entry: Entry; version: number };
 export type LoginSummary = { id: string; version: number; title: string; username: string; website: string };
 export type AppIdentity = { id: string; name: string; kind: "cosmic" | "app" | "agent" };
-export type AppView = AppIdentity & { status: "granted" | "pending" | "revoked"; kinds: Kind[]; permissions: "import"[] };
+export type Permission = "import" | `key:${string}`;
+export type AppView = AppIdentity & { status: "granted" | "pending" | "revoked"; kinds: Kind[]; permissions: Permission[] };
+export type ProviderId = "openai" | "anthropic" | "gemini" | "openrouter" | "mistral" | "deepseek" | "xai" | "groq";
+export type ApiKeyProvider = { id: string; provider: ProviderId; label: string; hasBaseUrl: boolean };
+export type ApiKeyValue = { key: string; baseUrl: string | null };
+export type ApiKeyUsage = { entry: string; app: string; lastRead: string };
 /** In the answer to vault-app and vault-cli only: whether Windows Hello can be used here, and whether it is set up for this vault (its wrapped key exists). */
 export type HelloStatus = { available: boolean; enabled: boolean };
 export type Status = { created: boolean; unlocked: boolean; present: number; idleMs: number; hello?: HelloStatus };
@@ -19,7 +24,8 @@ type PromptBase = { id: string; app: PromptApp; createdAt: string; expiresAt: st
 export type Prompt =
   | PromptBase & { kind: "unlock"; summary: { reason: string | null } }
   | PromptBase & { kind: "run"; summary: { project: string; cwd: string; commands: string[][] } }
-  | PromptBase & { kind: "permission"; summary: { permission: "import" } };
+  | PromptBase & { kind: "permission"; summary: { permission: "import" } }
+  | PromptBase & { kind: "key"; summary: { entry: string; provider: ProviderId; label: string } };
 export type PromptState = "pending" | "done" | "cancelled" | "expired";
 export type PromptTicket = { id: string; expiresAt: string };
 export type ServiceRecord = { version: 1; pid: number; port: number; serviceVersion: string; startedAt: string };
@@ -29,6 +35,7 @@ export type ConnectOptions = { app: AppIdentity; tokens?: TokenStore; home?: str
 export type ImportFormat = "chrome" | "edge" | "firefox" | "bitwarden" | "1password" | "keepass";
 export type ImportCount = { imported: number; duplicates: number; skipped: number };
 export type Backup = { format: "vault-backup"; version: 1; envelope: unknown; sealed: { iv: string; data: string } };
+export type BackupHeader = { format: "vault-backup"; version: 2; envelope: unknown; counts: { entries: number; chunks: number } };
 export type EnvImportCount = { added: number; replaced: number; unchanged: number; kept: number; skipped: number };
 export type SyncStatus = { configured: boolean; origin: "folder" | "quantum" | null; folder: string | null; account: string | null; storage: { used: number; pool: number | null } | null; lastSynced: string | null; computers: string[]; pending: number; conflicts: number; failure: { writer: string | null; cause: string } | null };
 export type SyncConflict = { id: string; kind: Kind | null; title: string; deviceId: string; time: string; deleted: boolean };
@@ -62,6 +69,11 @@ export interface Client {
   listLogins(): Promise<LoginSummary[]>;
   getLogin(id: string): Promise<EntryRow>;
   entries: { list(): Promise<EntryRow[]>; get(id: string): Promise<EntryRow>; save(entry: Entry, expected: number): Promise<{ version: number }>; remove(id: string, expected: number): Promise<{ ok: true }> };
+  keys: {
+    providers(): Promise<ApiKeyProvider[]>; read(provider: ProviderId): Promise<ApiKeyValue>;
+    approve(id: string, password: string): Promise<{ ok: true }>; approveWithHello(id: string, hwnd: string): Promise<{ ok: true }>;
+    revoke(app: string, entry: string): Promise<{ ok: true }>; usage(): Promise<ApiKeyUsage[]>;
+  };
   environment(project: string): Promise<Record<string, string>>;
   import(format: ImportFormat, text: string): Promise<ImportCount>;
   importEnv(project: string, text: string): Promise<EnvImportCount>;
@@ -71,6 +83,8 @@ export interface Client {
   };
   export(password: string): Promise<Backup>;
   restore(backup: Backup, password: string): Promise<ImportCount>;
+  exportToFile(password: string, path: string): Promise<{ entries: number; chunks: number; bytes: number }>;
+  restoreFromFile(path: string, password: string): Promise<ImportCount>;
   apps: { list(): Promise<AppView[]>; self(): Promise<AppView>; allow(id: string): Promise<AppView>; revoke(id: string): Promise<AppView> };
   /** `app` names the app that receives the permission; only vault-app and vault-cli may name one, after their own proof. */
   permissions: { importWithPassword(password: string, app?: string): Promise<AppView>; importWithHello(hwnd: string, app?: string): Promise<AppView>; request(): Promise<PromptTicket> };

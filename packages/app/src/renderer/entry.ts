@@ -3,7 +3,8 @@ import { div, h } from "./dom.ts";
 import { icon } from "./icons.ts";
 import type { IconName } from "./icons.ts";
 import { fieldTitle, ordered } from "./kinds.ts";
-import { iconButton } from "./parts.ts";
+import { providerName } from "./i18n-entries.ts";
+import { button, iconButton, notice } from "./parts.ts";
 import { codeGroups, initial } from "./text.ts";
 import { bridge } from "./ui.ts";
 import type { Context } from "./ui.ts";
@@ -13,6 +14,8 @@ export type EntryHooks = {
   toast(text: string, glyph?: IconName): void;
   /** A call failed; the code says why. */
   failed(code: string): void;
+  /** The entry changed here (an app was stopped): read it again. */
+  changed(): void;
 };
 export type EntryPane = { root: HTMLElement; dispose(): void };
 const DOTS = "•".repeat(14);
@@ -50,9 +53,9 @@ export function entryPane({ t }: Context, entry: EntryView, hooks: EntryHooks): 
     paint();
     return div("frow", div("fcopy", h("span", { class: "label" }, spec.label), value), ...actions);
   };
-  const fieldRow = (field: FieldView, mono = false): Row => ({ label: fieldTitle(t, entry.kind, field), part: `f:${field.id}`, secret: field.secret, text: field.value ?? "", mono: mono || field.id === "key", block: field.id === "key", site: field.id === "website" });
+  const fieldRow = (field: FieldView, mono = false): Row => ({ label: fieldTitle(t, entry.kind, field), part: `f:${field.id}`, secret: field.secret, text: entry.kind === "apikey" && field.id === "provider" ? providerName(field.value ?? "") : field.value ?? "", mono: mono || field.id === "key", block: field.id === "key", site: field.id === "website" });
   const rows: HTMLElement[] = [];
-  const shownFields = ordered(entry).filter(field => field.filled);
+  const shownFields = ordered(entry).filter(field => field.filled && !(entry.kind === "apikey" && field.id === "apps"));
   for (const field of shownFields) {
     rows.push(rowFor(fieldRow(field, entry.kind === "env")));
     if (entry.kind === "login" && field.id === "password" && entry.totp) rows.push(codeRow());
@@ -89,9 +92,23 @@ export function entryPane({ t }: Context, entry: EntryView, hooks: EntryHooks): 
   const star = iconButton("star", entry.favorite ? t.removeFavourite : t.addFavourite, () => hooks.favourite(!entry.favorite));
   star.classList.toggle("on", entry.favorite); star.setAttribute("aria-pressed", String(entry.favorite));
   const edit = h("button", { class: "small", type: "button", onclick: () => hooks.edit() }, icon("pencil", 14), h("span", {}, t.edit));
+  // An API key lists the apps that may read it, when each last did, and a way to stop each one.
+  const apps = entry.kind === "apikey" ? div("keyapps") : null;
+  async function paintApps() {
+    const allowed = (entry.fields.find(field => field.id === "apps")?.value ?? "").split(",").map(app => app.trim()).filter(Boolean);
+    const usage = allowed.length ? await bridge.keyUsage() : undefined; if (disposed || !apps) return;
+    const rows = allowed.map(app => {
+      const used = usage?.ok ? usage.usage.find(item => item.entry === entry.id && item.app === app) : undefined, name = app === "lyra" ? "Lyra" : app;
+      const stop = button(t.stop(name), { onclick: async () => { const result = await bridge.keyRevoke({ app, entry: entry.id }); if (result.ok) hooks.changed(); else hooks.failed(result.code); } });
+      return div("keyapp", div("appicon", icon("wandSparkles", 18)), div("acopy", h("strong", { class: "strong" }, name), h("span", { class: "line" }, used ? t.lastRead(t.ago((Date.now() - Date.parse(used.lastRead)) / 60000)) : t.notReadYet)), stop);
+    });
+    apps.replaceChildren(h("span", { class: "label" }, t.appsTitle), ...rows.length ? rows : [h("span", { class: "line dim" }, t.noApps)], notice("info", t.keyInfo));
+  }
+  if (apps) void paintApps();
   const root = div("entry",
     div("head", tile(entry.title, 48), div("titles", h("h1", { class: "h h20 selectable" }, entry.title), h("span", { class: "kind" }, t.kindName(entry.kind))), star, edit),
     rows.length ? div("group", ...rows) : null,
+    apps,
     div("clip", icon("clock", 14), h("span", {}, t.clipboardNote)));
   return { root, dispose() { disposed = true; if (timer !== undefined) clearInterval(timer); timer = undefined; } };
 }

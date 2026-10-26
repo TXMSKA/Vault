@@ -290,7 +290,7 @@ try {
     check.equal(accepts("saveSettings", settings), true); check.equal(accepts("saveSettings", { ...settings, extra: 1 }), false); check.equal(accepts("saveSettings", { ...settings, idleMinutes: 3 }), false); check.equal(accepts("saveSettings", { ...settings, theme: "blue" }), false); check.equal(accepts("saveSettings", { ...settings, lockWithLastApp: "yes" }), false); check.equal(accepts("saveSettings", { idleMinutes: 15 }), false); check.equal(accepts("saveSettings", undefined), false); check.equal(accepts("saveSettings", [settings]), false);
     check.equal(accepts("enableHello", { password: "x" }), true); check.equal(accepts("enableHello", { password: "" }), false); check.equal(accepts("enableHello", { password: "x".repeat(129) }), false); check.equal(accepts("enableHello", {}), false);
     for (const call of ["disableHello", "dismissTour", "cancelClose", "confirmClose"]) { check.equal(accepts(call, undefined), true); check.equal(accepts(call, {}), false); check.equal(accepts(call, { password: "x" }), false); }
-    check.equal(Object.keys(SHAPES).length, 53);
+    check.equal(Object.keys(SHAPES).length, 57);
   }
 
   // ---- the settings the window offers are the ones the service takes ------------------------------------------------------------------------------------
@@ -348,7 +348,7 @@ try {
     // A search looks through every entry, whatever the filter, over names, usernames and websites, word by word.
     check.deepEqual(visible(list, "card", "north").map(entry => entry.title), ["Northwind Mail", "Northside Gym"]); check.deepEqual(visible(list, "all", "  NORTH  alex.rivera@ ").map(entry => entry.title), ["Northwind Mail"]); check.deepEqual(visible(list, "all", "zzz"), []);
     check.deepEqual(visible(list, "env", "   ").map(entry => entry.title), ["Sprout"]);
-    const number = entryCounts(list); check.deepEqual(number, { all: 5, favourites: 2, login: 2, card: 1, doc: 0, note: 1, key: 0, env: 1, custom: 0 }); check.deepEqual(Object.keys(number), [...FILTERS]);
+    const number = entryCounts(list); check.deepEqual(number, { all: 5, favourites: 2, login: 2, card: 1, doc: 0, note: 1, key: 0, apikey: 0, env: 1, custom: 0 }); check.deepEqual(Object.keys(number), [...FILTERS]);
     check.deepEqual([initial("northwind"), initial("  élan"), initial(""), initial("😀 smile"), initial("ß")], ["N", "É", "?", "😀", "SS"]);
   }
 

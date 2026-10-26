@@ -97,6 +97,7 @@ export function listScreen(context: Context): HTMLElement {
       favourite: async favorite => { const answer = await bridge.entryFavorite({ id: entry.id, favorite }); if (answer.ok) await load(); else failure(answer.code); },
       toast: (text, glyph) => toast(text, glyph ?? "check"),
       failed: failure,
+      changed: () => { void load(); },
     });
     set(pane.root);
   }

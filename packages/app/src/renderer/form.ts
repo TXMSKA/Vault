@@ -5,8 +5,9 @@ import { clampLength, DEFAULT_GENERATOR, generate, LENGTH_MAX, LENGTH_MIN } from
 import type { GeneratorOptions } from "./generator.ts";
 import { icon } from "./icons.ts";
 import { tile } from "./entry.ts";
-import { KIND_GLYPH, KNOWN_FIELDS } from "./kinds.ts";
-import { closePopovers, openPopover, opened } from "./menu.ts";
+import { KIND_GLYPH, KNOWN_FIELDS, PROVIDERS } from "./kinds.ts";
+import { providerName } from "./i18n-entries.ts";
+import { closePopovers, openMenu, openPopover, opened } from "./menu.ts";
 import { busy, button, checkbox, field, iconButton, notice, reason } from "./parts.ts";
 import { bridge } from "./ui.ts";
 import type { Context } from "./ui.ts";
@@ -67,6 +68,8 @@ export function formPane({ t }: Context, options: { kind: Kind; entry?: EntryVie
   const slots: Slot[] = [], rows: VRow[] = [], status = div("slot"), body = div("fields");
   let files: FileView[] = [...entry?.files ?? []], attaching = false;
   const fileList = div("filelist");
+  // An API key's provider and the apps that may read it are chosen, not typed.
+  let provider = known.get("provider")?.value || "openai", lyra = (known.get("apps")?.value ?? "lyra").split(",").map(app => app.trim()).includes("lyra");
   const mark = () => { dirty = true; };
   const eyes = new Map<Control, HTMLButtonElement>();
   /** Shows or hides what a secret control holds, and keeps its eye button saying which. */
@@ -150,6 +153,13 @@ export function formPane({ t }: Context, options: { kind: Kind; entry?: EntryVie
       slotFor({ target: "title", label: t.fieldLabel("project"), placeholder: t.fieldPlaceholder("project"), hint: t.projectHint, mono: true }),
       h("span", { class: "label" }, t.valuesLabel), valueRows(),
     ],
+    apikey: () => [
+      providerSelect(),
+      slotFor({ target: "title", label: t.formName, placeholder: t.fieldPlaceholder("apikeyName"), hint: t.keyNameHint }),
+      slotFor({ target: "field", id: "key", label: t.fieldLabel("key"), placeholder: t.fieldPlaceholder("apikey"), secret: true, mono: true, part: "f:key" }),
+      slotFor({ target: "field", id: "baseUrl", label: t.fieldLabel("baseUrl"), placeholder: t.fieldPlaceholder("baseUrl"), mono: true }),
+      lyraField(),
+    ],
     custom: () => [
       slotFor({ target: "title", label: t.formName, placeholder: t.fieldPlaceholder("customName") }),
       h("span", { class: "label" }, t.fieldsLabel), valueRows(),
@@ -173,6 +183,21 @@ export function formPane({ t }: Context, options: { kind: Kind; entry?: EntryVie
     zone.addEventListener("dragleave", () => zone.classList.remove("over"));
     zone.addEventListener("drop", event => { event.preventDefault(); zone.classList.remove("over"); const file = event.dataTransfer?.files[0]; if (file) void attach(file); });
     paintFiles(); return div("fg", h("span", { class: "label" }, t.filesLabel), fileList, zone);
+  }
+  /** The provider of an API key, in the theme's select, as the board draws it across the form. */
+  function providerSelect(): HTMLElement {
+    const label = t.fieldLabel("provider"), text = h("span", { class: "grow" }, providerName(provider));
+    const select = h("button", { class: "select wide", type: "button", name: "provider", "aria-haspopup": "listbox", "aria-expanded": "false", "aria-label": `${label}: ${providerName(provider)}` }, text, icon("chevronDown", 16));
+    select.addEventListener("click", () => {
+      if (opened(select)) { closePopovers(); return; }
+      openMenu(select, PROVIDERS.map(id => ({ label: providerName(id), on: id === provider, run: () => { provider = id; text.textContent = providerName(id); select.setAttribute("aria-label", `${label}: ${providerName(id)}`); mark(); } })), { width: 260, choose: true, label });
+    });
+    return div("fg", h("span", { class: "label" }, label), select);
+  }
+  /** Whether Lyra may read the key; it still asks once in Vault before its first read. */
+  function lyraField(): HTMLElement {
+    const box = checkbox(t.lyraCanUse, lyra, on => { lyra = on; mark(); });
+    return div("fg", box.root, h("span", { class: "hint" }, t.lyraHint));
   }
   /** The rows of an environment entry (a name and a value) or of a custom one (a name, a value and whether it is hidden), with the buttons to add and remove. */
   function valueRows(): HTMLElement {
@@ -239,6 +264,7 @@ export function formPane({ t }: Context, options: { kind: Kind; entry?: EntryVie
       const id = kind === "env" ? name : row.existing?.id ?? crypto.randomUUID(), keep = !!row.existing?.secret && row.existing.filled && !row.touched && row.secret;
       result.fields.push(keep ? { id, name, secret: true } : { id, name: kind === "env" ? name : name, secret: kind === "env" ? true : row.secret, value });
     }
+    if (kind === "apikey") result.fields.push({ id: "provider", name: "", secret: false, value: provider }, { id: "apps", name: "", secret: false, value: lyra ? "lyra" : "" });
     if (bad) return undefined;
     return { id: entry?.id ?? crypto.randomUUID(), kind, title: result.title, favorite: entry?.favorite ?? false, fields: result.fields, ...kind === "doc" ? { files: files.map(file => file.id) } : {}, ...result.note !== undefined ? { note: result.note } : {}, ...result.totp !== undefined ? { totp: result.totp } : {} };
   }

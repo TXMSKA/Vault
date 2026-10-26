@@ -144,7 +144,7 @@ async function run(promptsOnly: boolean, home: string, platform: Platform, clipb
     chooseBackup: async () => {
       const file = await platform.openFile(window); if (!file) return { ok: false, code: "cancelled" };
       const backup = await readBackup(file); if (!backup) return { ok: false, code: "invalid_backup" };
-      link.backup.set(basename(file), backup); return { ok: true, name: basename(file) };
+      link.backup.set(file, backup); return { ok: true, name: basename(file) };
     },
     restoreBackup: ({ password }) => link.restoreBackup(password),
     unlock: ({ password }) => link.unlock(password),
@@ -168,6 +168,10 @@ async function run(promptsOnly: boolean, home: string, platform: Platform, clipb
     allowImport: ({ id, password }) => link.allowImport(id, password),
     allowImportWithHello: ({ id }) => link.allowImportWithHello(id),
     dismissPrompt: ({ id }) => link.dismiss(id),
+    keyApprove: ({ id, password }) => link.keyApprove(id, password),
+    keyApproveWithHello: ({ id }) => link.keyApproveWithHello(id),
+    keyRevoke: ({ app, entry }) => link.keyRevoke(app, entry),
+    keyUsage: () => link.keyUsage(),
     entries: () => read(entries.list()),
     entryOpen: ({ id }) => read(entries.open(id)),
     entryReveal: ({ id, part }) => read(entries.reveal(id, part)),

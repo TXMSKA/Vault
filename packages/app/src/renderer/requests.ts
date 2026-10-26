@@ -3,9 +3,10 @@ import { div, h } from "./dom.ts";
 import { icon } from "./icons.ts";
 import { busy, button, field, heading, link, notice, reason } from "./parts.ts";
 import { commandLine, minutesLeft, visible } from "./text.ts";
+import { providerName } from "./i18n-entries.ts";
 import { bridge, flow, view } from "./ui.ts";
 import type { Context } from "./ui.ts";
-type Request = Extract<PromptView, { kind: "run" | "permission" }>;
+type Request = Extract<PromptView, { kind: "run" | "permission" | "key" }>;
 export type Dialog = { root: HTMLElement; dispose(): void };
 const fact = (name: string, value: string, mono = false) => div("fact", h("span", { class: "label" }, name), h("span", { class: `value selectable${mono ? " mono" : ""}` }, value));
 
@@ -15,8 +16,8 @@ const fact = (name: string, value: string, mono = false) => div("fact", h("span"
  */
 export function request({ state, t }: Context, prompt: Request): Dialog {
   let hello = state.hello && !flow.helloOff;
-  const run = prompt.kind === "run" ? prompt : undefined, name = visible(prompt.app.name);
-  const title = run ? t.runTitle(name, run.commands.length) : t.permissionTitle(name), titleId = "dialog-title";
+  const run = prompt.kind === "run" ? prompt : undefined, key = prompt.kind === "key" ? prompt : undefined, name = visible(prompt.app.name);
+  const title = run ? t.runTitle(name, run.commands.length) : key ? t.keyTitle(name, providerName(key.provider)) : t.permissionTitle(name), titleId = "dialog-title";
   const clock = h("span", {}, "");
   const tick = () => { const minutes = minutesLeft(prompt.expiresAt, Date.now()); clock.textContent = `${t.expires(minutes)}${minutes > 0 && run ? ` ${t.covers(run.commands.length)}` : ""}`; };
   tick(); const timer = setInterval(tick, 15000);
@@ -33,6 +34,10 @@ export function request({ state, t }: Context, prompt: Request): Dialog {
           div("commands", ...run.commands.map(argv => h("div", { class: "command selectable" }, commandLine(argv)))),
           notice("info", t.runValues(visible(run.project))),
           run.problem ? notice("circleAlert", run.problem === "missing" ? t.runMissing(visible(run.project)) : t.runAmbiguous(visible(run.project)), "error") : run.short?.length ? notice("eye", t.runShort(run.short.map(visible).join(", "), run.short.length)) : null,
+        ]
+      : key ? [
+          h("p", { class: "lead" }, t.keyBody(name, providerName(key.provider))),
+          div("facts", fact(t.keyApp, `${providerName(key.provider)}, ${visible(key.label)}`)),
         ]
       : [
           div("facts", fact(t.permissionApp, `${name} (${visible(prompt.app.id)})`)),
@@ -57,6 +62,7 @@ export function request({ state, t }: Context, prompt: Request): Dialog {
       if (hello) waiting.replaceChildren(notice("info", t.helloBody));
       const result = await busy(dialog, () => run
         ? hello ? bridge.approveRunWithHello({ id: prompt.id }) : bridge.approveRun({ id: prompt.id, password: typed! })
+        : key ? hello ? bridge.keyApproveWithHello({ id: prompt.id }) : bridge.keyApprove({ id: prompt.id, password: typed! })
         : hello ? bridge.allowImportWithHello({ id: prompt.id }) : bridge.allowImport({ id: prompt.id, password: typed! }));
       waiting.replaceChildren();
       if (!result.ok) {

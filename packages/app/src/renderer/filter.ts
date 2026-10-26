@@ -1,8 +1,8 @@
 import type { EntrySummary, Kind } from "../shared/api.js";
 /** What the list shows: everything, the favourites, or one kind. */
 export type Filter = "all" | "favourites" | Kind;
-export const KINDS: readonly Kind[] = ["login", "card", "doc", "note", "key", "env", "custom"];
-export const FILTERS: readonly Filter[] = ["all", "favourites", "login", "card", "doc", "note", "key", "env", "custom"];
+export const KINDS: readonly Kind[] = ["login", "card", "doc", "note", "key", "apikey", "env", "custom"];
+export const FILTERS: readonly Filter[] = ["all", "favourites", "login", "card", "doc", "note", "key", "apikey", "env", "custom"];
 /** The entries that show for a filter and a search. A search looks through every entry, whatever the filter says. */
 export function visible(entries: readonly EntrySummary[], filter: Filter, search: string): EntrySummary[] {
   const words = search.trim().toLowerCase().split(/\s+/).filter(Boolean);

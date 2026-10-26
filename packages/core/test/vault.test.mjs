@@ -24,6 +24,14 @@ await assert.rejects(crypto.decryptJson(opened.key, encrypted, `entry:${randomUU
 const bad = { ...encrypted, data: crypto.base64(Buffer.from(encrypted.data, "base64").map((byte, i) => i === 0 ? byte ^ 1 : byte)) };
 await assert.rejects(crypto.decryptJson(opened.key, bad, `entry:${entry.id}`)); checks += 5;
 
+const apiKey = model.newEntry("apikey"); apiKey.title = "Synthetic provider"; apiKey.fields.find(field => field.id === "provider").value = "openai"; apiKey.fields.find(field => field.id === "key").value = canary;
+assert.equal(model.KINDS.includes(apiKey.kind), true);
+assert.deepEqual(model.KEY_PROVIDERS, ["openai", "anthropic", "gemini", "openrouter", "mistral", "deepseek", "xai", "groq"]);
+assert.deepEqual(apiKey.fields.map(field => [field.id, field.secret]), [["provider", false], ["key", true], ["baseUrl", false], ["apps", false]]);
+assert.equal(apiKey.fields.find(field => field.id === "apps").value, "lyra"); assert.equal(apiKey.fields.find(field => field.id === "baseUrl").value, "");
+const apiSeal = await crypto.encryptJson(opened.key, apiKey, `entry:${apiKey.id}`);
+assert.equal(JSON.stringify(apiSeal).includes(canary), false); assert.deepEqual(await crypto.decryptJson(opened.key, apiSeal, `entry:${apiKey.id}`), apiKey); checks += 7;
+
 // RFC 6238 Appendix B: independent published SHA1 vectors, 30 second step.
 for (const [time, expected] of [[59, "94287082"], [1111111109, "07081804"], [1111111111, "14050471"], [1234567890, "89005924"], [2000000000, "69279037"]]) {
   assert.equal(await crypto.totp(`otpauth://totp/Test?secret=${entry.totp}&digits=8`, time * 1000), expected); checks++;

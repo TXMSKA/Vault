@@ -82,7 +82,7 @@ export async function startService(options: ServiceOptions = {}) {
       const matchesPath = table.filter(route => { if (!route.path.includes("{id}")) return route.path === url.pathname; const [before, after] = route.path.split("{id}"); if (!url.pathname.startsWith(before) || !url.pathname.endsWith(after)) return false; const value = url.pathname.slice(before.length, -after.length); if (!appIdPattern.test(value)) return false; routeId = value; return true; });
       if (!matchesPath.length) throw new ServiceError("not_found", 404);
       const route = matchesPath.find(route => route.method === request.method); if (!route) throw new ServiceError("method_not_allowed", 405);
-      event = ({ "/v1/sync": "sync_status", "/v1/sync/setup": "sync_setup", "/v1/sync/join": "sync_join", "/v1/sync/now": "sync_now", "/v1/sync/conflicts": "sync_conflicts", "/v1/sync/conflicts/restore": "sync_restore", "/v1/sync/conflicts/dismiss": "sync_dismiss", "/v1/sync/leave": "sync_leave", "/v1/apps/register": "app_register", "/v1/apps/{id}/allow": "app_allow", "/v1/apps/{id}/revoke": "app_revoke", "/v1/apps/permissions/import": "app_permission", "/v1/apps/permissions/import/hello": "app_permission", "/v1/unlock": "unlock", "/v1/recover": "recovery", "/v1/create": "create", "/v1/lock": "lock", "/v1/import": "import", "/v1/import/env": "import", "/v1/export": "export", "/v1/restore": "restore", "/v1/runs": "run_request", "/v1/runs/approve": "run_approve", "/v1/runs/approve/hello": "run_approve", "/v1/runs/reject": "run_reject", "/v1/apps/permissions/import/request": "permission_request", "/v1/prompts/unlock": "prompt_unlock", "/v1/prompts/dismiss": "prompt_dismiss", "/v1/settings": "settings" } as Record<string, string>)[route.method !== "GET" || route.path.startsWith("/v1/sync") ? route.path : ""] ?? "request";
+      event = ({ "/v1/sync": "sync_status", "/v1/sync/setup": "sync_setup", "/v1/sync/join": "sync_join", "/v1/sync/now": "sync_now", "/v1/sync/conflicts": "sync_conflicts", "/v1/sync/conflicts/restore": "sync_restore", "/v1/sync/conflicts/dismiss": "sync_dismiss", "/v1/sync/leave": "sync_leave", "/v1/apps/register": "app_register", "/v1/apps/{id}/allow": "app_allow", "/v1/apps/{id}/revoke": "app_revoke", "/v1/apps/permissions/import": "app_permission", "/v1/apps/permissions/import/hello": "app_permission", "/v1/unlock": "unlock", "/v1/recover": "recovery", "/v1/create": "create", "/v1/lock": "lock", "/v1/import": "import", "/v1/import/env": "import", "/v1/export": "export", "/v1/restore": "restore", "/v1/export/file": "export", "/v1/restore/file": "restore", "/v1/runs": "run_request", "/v1/runs/approve": "run_approve", "/v1/runs/approve/hello": "run_approve", "/v1/runs/reject": "run_reject", "/v1/apps/permissions/import/request": "permission_request", "/v1/prompts/unlock": "prompt_unlock", "/v1/prompts/dismiss": "prompt_dismiss", "/v1/settings": "settings" } as Record<string, string>)[route.method !== "GET" || route.path.startsWith("/v1/sync") ? route.path : ""] ?? "request";
       const authorization = request.headers.authorization ?? "";
       const authenticate = () => {
         if (route.access === "bootstrap") { if (!authorization.startsWith("Bootstrap ") || !matches(authorization.slice(10), bootstrap)) throw new ServiceError("unauthenticated", 401); }
@@ -90,7 +90,7 @@ export async function startService(options: ServiceOptions = {}) {
           app = authorization.startsWith("Bearer ") ? apps.byToken(authorization.slice(7)) : undefined;
           if (!app) throw new ServiceError("unauthenticated", 401);
           if (app.status !== "granted") throw new ServiceError(app.status, 403);
-          if (blocked(app) || route.access === "manage" && !manages(app) || isAgent(app) && route.access !== "run") throw new ServiceError("forbidden", 403);
+          if (blocked(app) || route.access === "manage" && !manages(app) || isAgent(app) && route.access !== "run" || app.id === "lyra" && (/^\/v1\/(?:entries|logins|chunks|env|import|export|restore|runs|sync)(?:\/|$)/.test(route.path) || route.path.startsWith("/v1/apps/permissions/"))) throw new ServiceError("forbidden", 403);
         }
       };
       authenticate(); take(app?.id ?? route.access, route.access === "bootstrap" ? 30 : 240);
@@ -100,10 +100,10 @@ export async function startService(options: ServiceOptions = {}) {
         authenticate(); lifecycle.check();
         const result = await route.handle({ app, apps, vault, lifecycle, runs, sync, prompts, settings, hello, body: body as Record<string, unknown>, query: url.searchParams, id: routeId, idleMs: vault.memory.idle ?? idleMs });
         if (["/v1/unlock", "/v1/unlock/hello", "/v1/recover"].includes(route.path)) scheduleSync(0);
-        else if (route.method === "POST" && ["/v1/entries", "/v1/entries/remove", "/v1/import", "/v1/import/env", "/v1/restore", "/v1/sync/conflicts/restore"].includes(route.path)) scheduleSync(SYNC_WRITE_MS);
+        else if (route.method === "POST" && ["/v1/entries", "/v1/entries/remove", "/v1/import", "/v1/import/env", "/v1/restore", "/v1/restore/file", "/v1/sync/conflicts/restore", "/v1/keys/revoke"].includes(route.path)) scheduleSync(SYNC_WRITE_MS);
         authenticate(); lifecycle.check();
         // A response that contains values must still have a live key after async work.
-        if (["/v1/entries", "/v1/entries/get", "/v1/logins", "/v1/logins/all", "/v1/logins/get", "/v1/env", "/v1/export"].includes(route.path)) vault.memory.get(vault.memory.ticket());
+        if (["/v1/entries", "/v1/entries/get", "/v1/logins", "/v1/logins/all", "/v1/logins/get", "/v1/env", "/v1/export", "/v1/keys/read"].includes(route.path)) vault.memory.get(vault.memory.ticket());
         logger(event, { actor: app?.id ?? "unknown", source: "loopback", outcome: "allowed", requestId }); respond(response, 200, result);
         if (["/v1/unlock", "/v1/unlock/hello", "/v1/recover"].includes(route.path)) checkSync();
       };
@@ -117,7 +117,7 @@ export async function startService(options: ServiceOptions = {}) {
     })().catch(error => {
       const mapped = error instanceof ServiceError ? error : error instanceof VaultError ? new ServiceError(error.code, ({ invalid: 400, locked: 423, conflict: 409, unavailable: 503, not_found: 404, limited: 429 })[error.code]) : error instanceof Error && error.message === "locked" ? new ServiceError("locked", 423) : new ServiceError("internal", 500);
       try { audit(mapped.code, requestId, app?.id); } catch { vault.memory.lock(); }
-      if (!response.headersSent && !response.destroyed) respond(response, mapped.status, { error: { code: mapped.code, message: "Vault could not complete the request.", fields: {}, requestId } }, mapped.status === 429 ? { "Retry-After": "60" } : {});
+      if (!response.headersSent && !response.destroyed) respond(response, mapped.status, { error: { code: mapped.code, message: "Vault could not complete the request.", fields: mapped.fields, requestId } }, mapped.status === 429 ? { "Retry-After": "60" } : {});
       request.resume();
     });
   });

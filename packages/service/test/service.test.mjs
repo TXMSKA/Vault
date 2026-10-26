@@ -187,9 +187,9 @@ try {
   stage = "registration and grants";
   const cliTokens = tokenStore(), cli = await connect({ home, app: { id: "vault-cli", name: "Synthetic CLI", kind: "cosmic" }, tokens: cliTokens }); clients.push(cli);
   const horizon = await app("horizon"), nova = await app("nova"), nebula = await app("nebula");
-  const unknown = await app("synthetic-app", "app"), agent = await app("synthetic-agent", "agent"), lyra = await app("lyra", "app");
+  const unknown = await app("synthetic-app", "app"), agent = await app("synthetic-agent", "agent"), lyra = await app("lyra");
   await rejects(() => unknown.status(), "pending"); await cli.apps.allow("synthetic-app"); await unknown.present(); assert.equal((await unknown.status()).created, false);
-  await cli.apps.allow("synthetic-agent"); const allowedAgent = (await cli.apps.list()).find(row => row.id === "synthetic-agent"); assert.equal(allowedAgent.kind, "agent"); assert.deepEqual(allowedAgent.kinds, []); await rejects(() => agent.status(), "forbidden"); await rejects(() => agent.entries.list(), "forbidden"); await rejects(() => cli.apps.allow("lyra"), "forbidden");
+  await cli.apps.allow("synthetic-agent"); const allowedAgent = (await cli.apps.list()).find(row => row.id === "synthetic-agent"); assert.equal(allowedAgent.kind, "agent"); assert.deepEqual(allowedAgent.kinds, []); await rejects(() => agent.status(), "forbidden"); await rejects(() => agent.entries.list(), "forbidden"); assert.equal((await cli.apps.allow("lyra")).status, "granted"); assert.deepEqual((await lyra.apps.self()).kinds, []);
   await cli.apps.revoke("synthetic-app"); await rejects(() => unknown.status(), "revoked"); checks += 7;
   const hashFile = await readFile(join(home, "secrets", "apps.json"), "utf8"); assert.equal(hashFile.includes(cliTokens.token()), false); checks++;
   const badToken = await probe(service, "/v1/status", { auth: `Bearer ${randomBytes(32).toString("base64url")}` }); assert.equal(badToken.status, 401); checks++;

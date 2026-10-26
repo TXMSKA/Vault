@@ -161,7 +161,7 @@ try {
       runs: { list: async () => [], approve: record("approve"), approveWithHello: record("approveWithHello") },
       prompts: { list: async () => { calls.push(["list"]); return overrides.list?.() ?? []; }, dismiss: record("dismiss") },
       permissions: { importWithPassword: record("importWithPassword"), importWithHello: record("importWithHello") },
-      create: record("create"), restore: record("restore"), unlock: record("unlock"), hello: { unlock: record("helloUnlock"), enable: record("helloEnable"), disable: record("helloDisable") },
+      create: record("create"), restore: record("restore"), restoreFromFile: record("restoreFromFile"), unlock: record("unlock"), hello: { unlock: record("helloUnlock"), enable: record("helloEnable"), disable: record("helloDisable") },
     };
     return { client, calls };
   };
@@ -227,13 +227,14 @@ try {
   {
     // A backup whose password opens it: the vault is made first with that password, then the backup is restored into it; a failed restore is reported, not hidden.
     const made = await createEnvelope(password), backup = { format: "vault-backup", version: 1, envelope: made.state, sealed: await encryptJson(made.key, { entries: [], chunks: [] }, "backup") };
-    for (const failing of [false, true]) {
-      const { client, calls } = fake({ create: async () => ({ recovery: "ABCD - EFGH" }), restore: async () => { if (failing) throw { code: "invalid" }; return { imported: 0, duplicates: 0, skipped: 0 }; } });
+    for (const version of [1, 2]) for (const failing of [false, true]) {
+      const selected = version === 1 ? backup : { format: "vault-backup", version: 2, envelope: made.state, counts: { entries: 0, chunks: 0 } }, path = join(scratch, "backup.vault"), restore = async () => { if (failing) throw { code: "invalid" }; return { imported: 0, duplicates: 0, skipped: 0 }; };
+      const { client, calls } = fake({ create: async () => ({ recovery: "ABCD - EFGH" }), restore, restoreFromFile: restore });
       const link = open("unused", { connect: async () => client, sleep: ms => wait(Math.min(ms, 10)) }); link.start(); await until(() => link.snapshot().phase === "ready", "ready");
-      link.backup.set("backup.vault", backup);
+      link.backup.set(path, selected);
       check.deepEqual(await link.restoreBackup(wrong), { ok: false, code: "wrong_backup_password" }); check.equal(calls.some(call => call[0] === "create"), false);
       check.deepEqual(await link.restoreBackup(password), { ok: true, recovery: "ABCD - EFGH", restored: !failing });
-      check.deepEqual(calls.filter(call => ["create", "restore"].includes(call[0])).map(call => [call[0], call[1] === undefined ? call[1] : call[0] === "create" ? call[1] === password : call[1] === backup && call[2] === password]), [["create", true], ["restore", true]]);
+      check.deepEqual(calls.filter(call => ["create", "restore", "restoreFromFile"].includes(call[0])).map(call => [call[0], call[0] === "create" ? call[1] === password : call[1] === (version === 1 ? selected : path) && call[2] === password]), [["create", true], [version === 1 ? "restore" : "restoreFromFile", true]]);
       check.equal(link.recovery(), "ABCD - EFGH"); await link.stop();
     }
   }

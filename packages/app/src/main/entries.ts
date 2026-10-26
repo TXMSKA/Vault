@@ -18,6 +18,7 @@ const host = (site: string) => { try { const url = new URL(site); return /^https
 export function detailOf(entry: Entry): string {
   if (entry.kind === "login") return plain(entry, "username").trim() || host(plain(entry, "website"));
   if (entry.kind === "card") return plain(entry, "bank").trim() || plain(entry, "holder").trim();
+  if (entry.kind === "apikey") return plain(entry, "provider").trim();
   if (entry.kind === "doc") { const name = entry.files[0]?.name ?? "", dot = name.lastIndexOf("."); return dot > 0 && dot < name.length - 1 ? name.slice(dot + 1).toUpperCase().slice(0, 8) : ""; }
   return "";
 }

@@ -1,4 +1,4 @@
-import type { AppIdentity, Backup, Client, Prompt, RunSummary, Settings } from "vault-client";
+import type { AppIdentity, Backup, BackupHeader, Client, Prompt, RunSummary, Settings } from "vault-client";
 import { stateInput, unlock as openBackup } from "vault-core";
 import type { PromptView, Result } from "../shared/api.js";
 import { route, toView } from "./prompts.ts";
@@ -24,7 +24,7 @@ export type Snapshot = { phase: "starting" | "ready" | "unavailable"; problem: "
  */
 export function createLink(options: LinkOptions) {
   let client: Client | undefined, phase: Snapshot["phase"] = "starting", problem: Snapshot["problem"] = null, created = false, unlocked = false, hello = false, helloAvailable = false, settings = DEFAULTS;
-  let prompts: Prompt[] = [], held: string | undefined, secured = false, stopped = false, failures = 0, ticks = 0, last = "", started = false, backup: { name: string; value: Backup } | undefined;
+  let prompts: Prompt[] = [], held: string | undefined, secured = false, stopped = false, failures = 0, ticks = 0, last = "", started = false, backup: { path: string; value: Backup | BackupHeader } | undefined;
   const seen = new Set<string>(), gone = new Set<string>(), details = new Map<string, Pick<RunSummary, "short" | "problem">>();
   const changes = new Set<(snapshot: Snapshot) => void>(), arrivals = new Set<(ids: string[]) => void>(), wakers = new Set<() => void>();
   const wake = () => { for (const waker of [...wakers]) waker(); };
@@ -129,7 +129,7 @@ export function createLink(options: LinkOptions) {
     saveSettings: (next: Settings) => act(async service => { settings = await service.settings.set(toService(next)); }),
     enableHello: (password: string) => act(service => service.hello.enable(password)),
     disableHello: () => act(service => service.hello.disable()),
-    backup: { set(name: string, value: Backup) { backup = { name, value }; }, clear() { backup = undefined; } },
+    backup: { set(path: string, value: Backup | BackupHeader) { backup = { path, value }; }, clear() { backup = undefined; } },
     create: (password: string) => act(async service => { const { recovery } = await service.create(password); held = recovery; secured = false; return { recovery }; }),
     unlock: (password: string) => act(service => service.unlock(password)),
     unlockWithHello: () => act(service => service.hello.unlock(options.handle())),
@@ -139,6 +139,10 @@ export function createLink(options: LinkOptions) {
     approveRunWithHello: (id: string) => act(async service => { await service.runs.approveWithHello(id, options.handle()); answered(id); }),
     /** The permission goes to the app that asked, as named by the prompt on hand, never by the window. */
     allowImport: (id: string, password: string) => act(async service => { const prompt = waiting(id, "permission"); if (!prompt) throw { code: "not_found" }; await service.permissions.importWithPassword(password, prompt.app.id); answered(id); }),
+    keyApprove: (id: string, password: string) => act(async service => { if (!waiting(id, "key")) throw { code: "not_found" }; await service.keys.approve(id, password); answered(id); }),
+    keyApproveWithHello: (id: string) => act(async service => { if (!waiting(id, "key")) throw { code: "not_found" }; await service.keys.approveWithHello(id, options.handle()); answered(id); }),
+    keyRevoke: (app: string, entry: string) => act(service => service.keys.revoke(app, entry)),
+    keyUsage: () => act(async service => ({ usage: await service.keys.usage() })),
     allowImportWithHello: (id: string) => act(async service => { const prompt = waiting(id, "permission"); if (!prompt) throw { code: "not_found" }; await service.permissions.importWithHello(options.handle(), prompt.app.id); answered(id); }),
     dismiss: (id: string) => act(async service => { await service.prompts.dismiss(id); answered(id); }),
     /**
@@ -150,7 +154,7 @@ export function createLink(options: LinkOptions) {
       try { (await openBackup(stateInput(chosen.value.envelope), password)).bytes.fill(0); } catch { return { ok: false, code: "wrong_backup_password" }; }
       const result = await act<{ recovery: string; restored: boolean }>(async service => {
         const { recovery } = await service.create(password); held = recovery; secured = false;
-        let restored = true; try { await service.restore(chosen.value, password); } catch { restored = false; }
+        let restored = true; try { await (chosen.value.version === 2 ? service.restoreFromFile(chosen.path, password) : service.restore(chosen.value, password)); } catch { restored = false; }
         return { recovery, restored };
       });
       if (result.ok) backup = undefined; return result;
