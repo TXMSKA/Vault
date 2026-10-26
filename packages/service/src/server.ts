@@ -137,6 +137,6 @@ export async function startService(options: ServiceOptions = {}) {
   try {
     await new Promise<void>((done, fail) => { server.once("error", fail); server.listen(0, "127.0.0.1", () => { server.off("error", fail); done(); }); }); port = (server.address() as { port: number }).port;
     await atomicJson(recordPath, { version: 1, pid: process.pid, port, serviceVersion: "0.1.0", startedAt: new Date(now()).toISOString() }); process.on("SIGINT", signal); process.on("SIGTERM", signal);
-  } catch (error) { clearInterval(timer); server.close(); release(); throw error; }
+  } catch (error) { clearInterval(timer); server.close(); server.closeAllConnections(); release(); throw error; }
   return { home, port, server, vault, apps, lifecycle, runs, sync, prompts, settings, checkSync, checkLifecycle, shutdown };
 }

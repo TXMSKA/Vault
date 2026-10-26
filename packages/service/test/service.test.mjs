@@ -18,6 +18,7 @@ import { Apps } from "../src/secrets.ts";
 import { ServiceError } from "../src/errors.ts";
 import { defaultRoots } from "../../../test/guard.mjs";
 import { resolveHome } from "../../client/src/paths.ts";
+import { atomicJson } from "../../client/src/files.ts";
 import { runHelper, runHelperSync } from "../../client/src/helper.ts";
 import { privateDirectory, privateFile } from "../../client/src/private.ts";
 import { foregroundWindow } from "../../cli/src/window.ts";
@@ -601,6 +602,10 @@ try {
   const discovered = await app("vault-cli", "cosmic", discoveryHome); assert.equal((await discovered.status()).created, false); assert.equal((await findService(discoveryHome)).port, first.port);
   await discovered.close(); process.kill(first.pid); for (let i = 0; i < 100; i++) { try { process.kill(first.pid, 0); await wait(50); } catch { detached.delete(first.pid); break; } }
   assert.equal(detached.has(first.pid), false);
+  // Windows refuses to replace a file another process is reading. A client polling service.json must not stop a starting service from writing its record.
+  stage = "record replaced while read";
+  { const target = join(scratch, "record-race.json"); await writeFile(target, "{}"); const reader = await open(target, "r"); const closing = wait(300).then(() => reader.close());
+    await atomicJson(target, { written: true }); await closing; assert.deepEqual(JSON.parse(await readFile(target, "utf8")), { written: true }); checks++; }
   // A new process takes over a dead lease and starts locked with the same hashed grant.
   stage = "dead lease startup";
   const restarted = await ensureRunning(discoveryHome); detached.add(restarted.pid); assert.notEqual(restarted.pid, first.pid); const restartedClient = await app("vault-app", "cosmic", discoveryHome); assert.equal((await restartedClient.status()).unlocked, false); checks += 9;

@@ -16,11 +16,20 @@ export async function readCapped(filename: string, cap = FILE_CAP): Promise<stri
   } finally { await file.close(); }
 }
 export async function atomicJson(filename: string, value: unknown) { await atomicText(filename, JSON.stringify(value)); }
+// Windows refuses to replace a file while another process has it open (a client reading service.json, an antivirus scan),
+// so the swap is tried again for up to about three seconds before the error is passed on.
+const BUSY = new Set(["EPERM", "EACCES", "EBUSY"]);
+async function replace(from: string, to: string) {
+  for (let attempt = 0; ; attempt++) {
+    try { await rename(from, to); return; }
+    catch (error) { if (process.platform !== "win32" || attempt >= 30 || !BUSY.has((error as NodeJS.ErrnoException).code ?? "")) throw error; await new Promise(done => setTimeout(done, Math.min(200, 10 * 2 ** attempt))); }
+  }
+}
 export async function atomicText(filename: string, text: string, mode = 0o600) {
   const temporary = `${filename}.${randomUUID()}.tmp`;
   try {
     const file = await open(temporary, "wx", mode);
     try { await file.writeFile(text); await file.sync(); } finally { await file.close(); }
-    await rename(temporary, filename);
+    await replace(temporary, filename);
   } finally { await rm(temporary, { force: true }); }
 }
