@@ -12,7 +12,7 @@ export type PromptView =
   | { id: string; kind: "unlock"; app: AskingApp; reason: string | null; expiresAt: string }
   | { id: string; kind: "run"; app: AskingApp; project: string; cwd: string; commands: string[][]; short: string[] | null; problem: "missing" | "ambiguous" | null; expiresAt: string }
   | { id: string; kind: "permission"; app: AskingApp; permission: "import"; expiresAt: string }
-  | { id: string; kind: "key"; app: AskingApp; entry: string; provider: string; label: string; expiresAt: string };
+  | { id: string; kind: "key"; app: AskingApp; entry: string; label: string; expiresAt: string };
 /** The person's choices, as chosen: "system" is still "system" here (see `language` and `theme` of the state for what shows). */
 export type SettingsView = { idleMinutes: 1 | 5 | 15 | 30 | 60 | 240; lockWithLastApp: boolean; language: "system" | "en" | "es"; theme: "system" | "dark" | "light" };
 export type Kind = "login" | "card" | "doc" | "note" | "key" | "custom" | "env" | "apikey";

@@ -1,7 +1,5 @@
 export const KINDS = ["login", "card", "doc", "note", "key", "custom", "env", "apikey"] as const;
 export type Kind = typeof KINDS[number];
-export const KEY_PROVIDERS = ["openai", "anthropic", "gemini", "openrouter", "mistral", "deepseek", "xai", "groq"] as const;
-export type KeyProvider = typeof KEY_PROVIDERS[number];
 export type Field = { id: string; name: string; value: string; secret: boolean };
 export type Attachment = { id: string; name: string; type: string; size: number; chunks: string[] };
 export type Entry = {
@@ -21,7 +19,7 @@ export const MAX_FILE_BYTES = 20 * 1024 * 1024;
 export const MAX_ENTRIES = 4096;
 export const FIELD_KEYS = {
   login: ["username", "password", "website"], card: ["bank", "number", "expiry", "securityCode", "holder", "pin"],
-  doc: [], note: [], key: ["key", "license"], custom: [], env: [], apikey: ["provider", "key", "baseUrl", "apps"],
+  doc: [], note: [], key: ["key", "license"], custom: [], env: [], apikey: ["key", "apps"],
 } satisfies Record<Kind, string[]>;
 
 export function filename(value: string): string {
@@ -29,5 +27,5 @@ export function filename(value: string): string {
 }
 
 export function newEntry(kind: Kind): Entry {
-  return { id: crypto.randomUUID(), kind, title: "", favorite: false, fields: FIELD_KEYS[kind].map(id => ({ id, name: "", value: kind === "apikey" && id === "apps" ? "lyra" : "", secret: ["password", "number", "securityCode", "pin", "key", "license"].includes(id) })), note: "", totp: "", recovery: [], files: [], updatedAt: new Date().toISOString() };
+  return { id: crypto.randomUUID(), kind, title: "", favorite: false, fields: FIELD_KEYS[kind].map(id => ({ id, name: "", value: "", secret: ["password", "number", "securityCode", "pin", "key", "license"].includes(id) })), note: "", totp: "", recovery: [], files: [], updatedAt: new Date().toISOString() };
 }

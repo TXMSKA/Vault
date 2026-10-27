@@ -30,21 +30,18 @@ const pick = (table: Record<string, string>, key: unknown) => Object.hasOwn(tabl
 const low = (value: unknown) => String(value).toLowerCase();
 const plural = (n: number, one: string, many: string) => n === 1 ? one : many;
 
-/** How each AI provider is written; the same in both languages. */
-const PROVIDER_NAMES: Record<string, string> = { openai: "OpenAI", anthropic: "Anthropic", gemini: "Gemini", openrouter: "OpenRouter", mistral: "Mistral", deepseek: "DeepSeek", xai: "xAI", groq: "Groq" };
-export const providerName = (id: string) => PROVIDER_NAMES[id] ?? id;
 const enKind ={ login: "Login", card: "Card", doc: "Document", note: "Note", key: "Key", custom: "Custom", env: "Environment", apikey: "API key" };
 const enFilter = { all: "All entries", favourites: "Favourites", results: "Results", login: "Logins", card: "Cards", doc: "Documents", note: "Notes", key: "Keys", apikey: "API keys", env: "Environment", custom: "Custom" };
-const enLine = { login: "A website or app account", card: "A payment card", doc: "A file, kept encrypted", note: "Private text", key: "An SSH key or a licence", apikey: "A key from an AI provider, for Lyra", env: "Values a project loads in the terminal", custom: "Fields you name yourself" };
+const enLine = { login: "A website or app account", card: "A payment card", doc: "A file, kept encrypted", note: "Private text", key: "An SSH key or a licence", apikey: "A key for any service's API", env: "Values a project loads in the terminal", custom: "Fields you name yourself" };
 const enNew = { login: "New login", card: "New card", doc: "New document", note: "New note", key: "New key", apikey: "New API key", env: "New environment", custom: "New custom entry" };
 const enField = {
   username: "Username", password: "Password", website: "Website", bank: "Bank", number: "Number", expiry: "Expires", securityCode: "Security code", holder: "Cardholder", pin: "PIN",
-  key: "Key", license: "License key", passphrase: "Passphrase", note: "Note", totp: "One-time code key", name: "Name", project: "Project", text: "Text", provider: "Provider", baseUrl: "Base URL",
+  key: "Key", license: "License key", passphrase: "Passphrase", note: "Note", totp: "One-time code key", name: "Name", project: "Project", text: "Text",
 };
 const enHolder = {
   loginName: "Northside Gym", username: "Email or user name", password: "Type one or generate it", website: "https://", cardName: "Atlas Card", holder: "Name on the card", number: "1234 5678 9012 3456",
   expiry: "MM/YY", securityCode: "CVC", docName: "Lease contract", optional: "Optional", noteName: "Home Wi-Fi", noteText: "Only you can read this", keyName: "Build server", key: "Paste the private key",
-  passphrase: "Optional", project: "sprout", customName: "Gate code", totp: "Optional", apikeyName: "Work account", apikey: "Paste the key", baseUrl: "Optional, for a proxy or a compatible server",
+  passphrase: "Optional", project: "sprout", customName: "Gate code", totp: "Optional", apikeyName: "Service name", apikey: "Paste the key",
 };
 export const enEntries: EntriesDictionary = {
   dropFile: "Drop a file here or choose one", keptEncrypted: "Kept encrypted inside Vault", downloadFile: name => `Save ${name}`, removeFile: name => `Remove ${name}`, fileSaved: "File saved", fileTooLarge: "The file is larger than 20 MB",
@@ -58,7 +55,6 @@ export const enEntries: EntriesDictionary = {
     if (kind === "doc") return detail ? `Document, ${detail}` : count > 1 ? `Document, ${count} files` : "Document";
     if (kind === "login") return detail || "Login";
     if (kind === "card") return detail ? `Card, ${detail}` : "Card";
-    if (kind === "apikey") return detail ? `API key, ${providerName(detail)}` : "API key";
     return pick(enKind, kind);
   },
   edit: "Edit", addFavourite: "Add to favourites", removeFavourite: "Remove from favourites", copyField: label => `Copy ${low(label)}`, openWebsite: "Open website", oneTimeCode: "One-time code",
@@ -86,16 +82,16 @@ export const enEntries: EntriesDictionary = {
 
 const esKind = { login: "Inicio de sesión", card: "Tarjeta", doc: "Documento", note: "Nota", key: "Clave", custom: "Personalizada", env: "Entorno", apikey: "Clave de API" };
 const esFilter = { all: "Todas las entradas", favourites: "Favoritas", results: "Resultados", login: "Inicios de sesión", card: "Tarjetas", doc: "Documentos", note: "Notas", key: "Claves", apikey: "Claves de API", env: "Entornos", custom: "Personalizadas" };
-const esLine = { login: "Una cuenta de un sitio web o de una app", card: "Una tarjeta de pago", doc: "Un archivo, guardado con cifrado", note: "Texto privado", key: "Una clave SSH o una licencia", apikey: "Una clave de un proveedor de IA, para Lyra", env: "Valores que un proyecto carga en la terminal", custom: "Campos con nombre propio" };
+const esLine = { login: "Una cuenta de un sitio web o de una app", card: "Una tarjeta de pago", doc: "Un archivo, guardado con cifrado", note: "Texto privado", key: "Una clave SSH o una licencia", apikey: "Una clave para la API de cualquier servicio", env: "Valores que un proyecto carga en la terminal", custom: "Campos con nombre propio" };
 const esNew = { login: "Nuevo inicio de sesión", card: "Nueva tarjeta", doc: "Nuevo documento", note: "Nueva nota", key: "Nueva clave", apikey: "Nueva clave de API", env: "Nuevo entorno", custom: "Nueva entrada personalizada" };
 const esField = {
   username: "Usuario", password: "Contraseña", website: "Sitio web", bank: "Banco", number: "Número", expiry: "Vencimiento", securityCode: "Código de seguridad", holder: "Titular", pin: "PIN",
-  key: "Clave", license: "Clave de licencia", passphrase: "Frase de paso", note: "Nota", totp: "Clave del código de un solo uso", name: "Nombre", project: "Proyecto", text: "Texto", provider: "Proveedor", baseUrl: "URL base",
+  key: "Clave", license: "Clave de licencia", passphrase: "Frase de paso", note: "Nota", totp: "Clave del código de un solo uso", name: "Nombre", project: "Proyecto", text: "Texto",
 };
 const esHolder = {
   loginName: "Gimnasio Norte", username: "Correo o nombre de usuario", password: "Escribirla o generarla", website: "https://", cardName: "Tarjeta Atlas", holder: "Nombre que figura en la tarjeta", number: "1234 5678 9012 3456",
   expiry: "MM/AA", securityCode: "CVC", docName: "Contrato de alquiler", optional: "Opcional", noteName: "Wi-Fi de casa", noteText: "Solo se puede leer aquí", keyName: "Servidor de compilación", key: "Pegar la clave privada",
-  passphrase: "Opcional", project: "sprout", customName: "Código del portón", totp: "Opcional", apikeyName: "Cuenta de trabajo", apikey: "Pegar la clave", baseUrl: "Opcional, para un proxy o un servidor compatible",
+  passphrase: "Opcional", project: "sprout", customName: "Código del portón", totp: "Opcional", apikeyName: "Nombre del servicio", apikey: "Pegar la clave",
 };
 export const esEntries: EntriesDictionary = {
   dropFile: "Soltar un archivo aquí o elegir uno", keptEncrypted: "Se guarda cifrado dentro de Vault", downloadFile: name => `Guardar ${name}`, removeFile: name => `Quitar ${name}`, fileSaved: "Archivo guardado", fileTooLarge: "El archivo supera los 20 MB",
@@ -109,7 +105,6 @@ export const esEntries: EntriesDictionary = {
     if (kind === "doc") return detail ? `Documento, ${detail}` : count > 1 ? `Documento, ${count} archivos` : "Documento";
     if (kind === "login") return detail || "Inicio de sesión";
     if (kind === "card") return detail ? `Tarjeta, ${detail}` : "Tarjeta";
-    if (kind === "apikey") return detail ? `Clave de API, ${providerName(detail)}` : "Clave de API";
     return pick(esKind, kind);
   },
   edit: "Editar", addFavourite: "Agregar a favoritas", removeFavourite: "Quitar de favoritas", copyField: label => `Copiar ${low(label)}`, openWebsite: "Abrir el sitio web", oneTimeCode: "Código de un solo uso",

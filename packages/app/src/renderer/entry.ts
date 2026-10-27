@@ -3,7 +3,6 @@ import { div, h } from "./dom.ts";
 import { icon } from "./icons.ts";
 import type { IconName } from "./icons.ts";
 import { fieldTitle, ordered } from "./kinds.ts";
-import { providerName } from "./i18n-entries.ts";
 import { button, iconButton, notice } from "./parts.ts";
 import { codeGroups, initial } from "./text.ts";
 import { bridge } from "./ui.ts";
@@ -53,7 +52,7 @@ export function entryPane({ t }: Context, entry: EntryView, hooks: EntryHooks): 
     paint();
     return div("frow", div("fcopy", h("span", { class: "label" }, spec.label), value), ...actions);
   };
-  const fieldRow = (field: FieldView, mono = false): Row => ({ label: fieldTitle(t, entry.kind, field), part: `f:${field.id}`, secret: field.secret, text: entry.kind === "apikey" && field.id === "provider" ? providerName(field.value ?? "") : field.value ?? "", mono: mono || field.id === "key", block: field.id === "key", site: field.id === "website" });
+  const fieldRow = (field: FieldView, mono = false): Row => ({ label: fieldTitle(t, entry.kind, field), part: `f:${field.id}`, secret: field.secret, text: field.value ?? "", mono: mono || field.id === "key", block: field.id === "key", site: field.id === "website" });
   const rows: HTMLElement[] = [];
   const shownFields = ordered(entry).filter(field => field.filled && !(entry.kind === "apikey" && field.id === "apps"));
   for (const field of shownFields) {

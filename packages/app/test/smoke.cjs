@@ -539,7 +539,7 @@ async function main() {
 
   say("the kinds menu offers the eight kinds, each with what it is for");
   await click("Add an entry");
-  await showing("Login", "A website or app account", "Card", "A payment card", "Document", "A file, kept encrypted", "Note", "Private text", "Key", "An SSH key or a licence", "API key", "A key from an AI provider, for Lyra", "Environment", "Values a project loads in the terminal", "Custom", "Fields you name yourself");
+  await showing("Login", "A website or app account", "Card", "A payment card", "Document", "A file, kept encrypted", "Note", "Private text", "Key", "An SSH key or a licence", "API key", "A key for any service's API", "Environment", "Values a project loads in the terminal", "Custom", "Fields you name yourself");
   check.equal(await count(".popover .menu-item"), 8); await shoot("add-open", true);
 
   say("a login: the generator's length and switches, then Save");
@@ -879,17 +879,19 @@ async function main() {
   await click("Windows Hello"); await poll("Hello off", async () => !fs.existsSync(path.join(home, "secrets", "hello.json")));
   await poll("the switch off", async () => (await evaluate("document.querySelector('[aria-label=\"Windows Hello\"]').getAttribute('aria-checked')")) === "false");
 
-  say("API keys for Lyra: added in the window, Lyra asks once and is approved with the master password, reads the key, and is stopped");
-  await click("Back to the list"); await listShown(); await addKind("API key"); await showing("New API key", "Provider", "Base URL", "Lyra can use this key"); await wait(800); await showing("New API key");
-  const apiKey = `sk-synthetic-${randomBytes(12).toString("hex")}`; await set('input[name="title"]', "Work account"); await set('input[name="key"]', apiKey); await shoot("add-apikey", true);
+  say("API keys for any service: a name and the key, Lyra off until the person allows it, asks once, is approved with the master password, reads the key by entry, and is stopped");
+  await click("Back to the list"); await listShown(); await addKind("API key"); await showing("New API key", "Name", "Key", "Lyra can use this key"); await wait(800); await showing("New API key");
+  check.equal(/Provider|Base URL/.test(await text()), false); plain("Lyra off by default", await evaluate("document.querySelector('label.checkbox input').checked"), false);
+  const apiKey = `synthetic-${randomBytes(12).toString("hex")}`; await set('input[name="title"]', "Synthetic service"); await set('input[name="key"]', apiKey);
+  await evaluate("document.querySelector('label.checkbox').click()"); plain("Lyra allowed", await evaluate("document.querySelector('label.checkbox input').checked"), true); await shoot("add-apikey", true);
   await click("Save"); await showing("Apps that can use it", "Lyra", "Not read yet");
-  const lyra = await as("lyra", "Lyra", "cosmic"); check.deepEqual((await lyra.keys.providers()).map(row => [row.provider, row.label, row.hasBaseUrl]), [["openai", "Work account", false]]);
-  let keyAsked; try { await lyra.keys.read("openai"); } catch (error) { keyAsked = error?.code; } check.equal(keyAsked, "key_approval_required");
-  await showing("Lyra wants to use the OpenAI key"); await shoot("key-request", true);
-  await type("password", changed, "document.querySelector('#overlay')"); await click("Allow", "document.querySelector('#overlay')"); await gone("Lyra wants to use the OpenAI key");
-  check.equal((await lyra.keys.read("openai")).key, apiKey);
-  await choose("Work account"); await showing("Last read just now"); await shoot("apikey-open", true);
-  await click("Stop Lyra"); await showing("No app can use this key."); let keyStopped; try { await lyra.keys.read("openai"); } catch (error) { keyStopped = error?.code; } check.equal(keyStopped, "not_found");
+  const lyra = await as("lyra", "Lyra", "cosmic"), listed = await lyra.keys.list(); check.deepEqual(listed.map(row => row.label), ["Synthetic service"]); const keyId = listed[0].id;
+  let keyAsked; try { await lyra.keys.read(keyId); } catch (error) { keyAsked = error?.code; } check.equal(keyAsked, "key_approval_required");
+  await showing("Lyra wants to use an API key", "Synthetic service"); await shoot("key-request", true);
+  await type("password", changed, "document.querySelector('#overlay')"); await click("Allow", "document.querySelector('#overlay')"); await gone("Lyra wants to use an API key");
+  check.equal((await lyra.keys.read(keyId)).key, apiKey);
+  await choose("Synthetic service"); await showing("Last read just now"); await shoot("apikey-open", true);
+  await click("Stop Lyra"); await showing("No app can use this key."); let keyStopped; try { await lyra.keys.read(keyId); } catch (error) { keyStopped = error?.code; } check.equal(keyStopped, "not_found");
   await lyra.close(); { const row = (await manager.entries.list()).find(item => item.entry.kind === "apikey"); await manager.entries.remove(row.entry.id, row.version); }
   await click("Menu"); await pick("Settings"); await showing("Lock after idle");
   await click("Back to the list"); await listShown(); await showing("Choose an entry to see it.");

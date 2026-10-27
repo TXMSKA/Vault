@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { id } from "vault-core";
-import type { KeyProvider } from "vault-core";
 import type { AppView, Prompt, PromptState, PromptTicket } from "../../client/src/types.ts";
 import { ServiceError } from "./errors.ts";
 import type { Runs } from "./runs.ts";
@@ -8,7 +7,7 @@ export const PROMPT_LIMITS = { total: 50, perApp: 5, expiresMs: 5 * 60 * 1000, k
 export type PromptLimits = typeof PROMPT_LIMITS;
 /** `unlocked` says whether the key is open now; `start` brings up the Vault app when nobody is there to answer. */
 export type PromptHooks = { unlocked(): boolean; start(): void };
-type KeySummary = { entry: string; provider: KeyProvider; label: string };
+type KeySummary = { entry: string; label: string };
 type Asked = { id: string; kind: "unlock" | "permission" | "key"; app: { id: string; name: string }; reason: string | null; key?: KeySummary; createdAt: number; expiresAt: number; state: PromptState; endedAt?: number };
 const iso = (time: number) => new Date(time).toISOString();
 /**

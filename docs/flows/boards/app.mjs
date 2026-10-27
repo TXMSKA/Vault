@@ -35,7 +35,7 @@ const SEARCHED = [
 
 const AFTER_DELETE = ENTRIES.slice(1);
 
-const KEY_ENTRIES = [{ name: "OpenAI, work account", sub: "API key" }, ...ENTRIES.slice(0, 7)];
+const KEY_ENTRIES = [{ name: "Northwind Pay", sub: "API key" }, { name: "Skyline Weather", sub: "API key" }, ...ENTRIES.slice(0, 6)];
 
 const PASSWORD = "tide-Lantern-48-orbit";
 const DOTS = "•".repeat(14);
@@ -68,10 +68,8 @@ function entryView({ revealed = false } = {}) {
 /** An API key, open: who can use it and when it was last read; the key shows dots until revealed. */
 function apiKeyView() {
   return detail(
-    entryHead("OpenAI, work account", "API key", iconButton(d, "star", { name: "favourite", label: "Add to favourites" }), smallButton("pencil", "Edit")),
+    entryHead("Northwind Pay", "API key", iconButton(d, "star", { name: "favourite", label: "Add to favourites" }), smallButton("pencil", "Edit")),
     fieldGroup(
-      entryField(d, t, { label: "Provider", value: "OpenAI" }),
-      divider(),
       entryField(d, t, { label: "Key", value: DOTS, mono: true, actions: ["eye", "copy"] }),
     ),
     col(
@@ -84,7 +82,7 @@ function apiKeyView() {
         button("Stop", { ref: "stop-lyra" }),
       ),
     ),
-    row({ gap: 8 }, icon("info", { size: 14, color: "soft" }), t.ui("Lyra reads the key for each request to the provider; a change here applies to its next request.", { size: 12, color: "soft" })),
+    row({ gap: 8 }, icon("info", { size: 14, color: "soft" }), t.ui("An app reads the key for each request; a change here applies to its next request.", { size: 12, color: "soft" })),
   );
 }
 
@@ -92,10 +90,10 @@ function apiKeyView() {
 function keyRequest({ password = false } = {}) {
   return main({ entries: KEY_ENTRIES, right: apiKeyView() }, [
     dialog(
-      { title: "Lyra wants to use your OpenAI key", w: 480, name: "key-request", lead: password ? link("Use Windows Hello", "key-use-hello") : link("Use master password", "key-use-password") },
+      { title: "Lyra wants to use an API key", w: 480, name: "key-request", lead: password ? link("Use Windows Hello", "key-use-hello") : link("Use master password", "key-use-password") },
       [
-        t.body("Lyra sends requests to OpenAI with this key. It reads the key for each request and keeps no copy; stopping it here takes effect on its next request.", { color: "text" }),
-        row({ pad: [10, 14], gap: 10, radius: d.r.group, fill: "surface-2", name: "key-asked", label: "Key" }, icon("keyRound", { size: 16, color: "soft" }), t.ui("OpenAI, work account", { size: 14, color: "title" })),
+        t.body("Lyra uses this key where you chose it in Lyra. It reads the key for each request and keeps no copy; stopping it here takes effect on its next request.", { color: "text" }),
+        row({ pad: [10, 14], gap: 10, radius: d.r.group, fill: "surface-2", name: "key-asked", label: "Key" }, icon("keyRound", { size: 16, color: "soft" }), t.ui("Northwind Pay", { size: 14, color: "title" })),
         password ? formField("Master password", input("•".repeat(18), { mono: true, focus: true, ref: "key-password", trail: [reveal(false)] })) : null,
       ].filter(Boolean),
       [button("Deny", { ref: "key-deny" }), password ? button("Allow", { primary: true, ref: "key-allow-password" }) : button("Allow", { primary: true, glyph: "fingerprint", ref: "key-allow" })],
@@ -152,7 +150,7 @@ const KINDS = [
   { label: "Document", line: "A file, kept encrypted", glyph: "fileText", ref: "kind-document" },
   { label: "Note", line: "Private text", glyph: "stickyNote", ref: "kind-note" },
   { label: "Key", line: "An SSH key or a licence", glyph: "key", ref: "kind-key" },
-  { label: "API key", line: "A key from an AI provider, for Lyra", glyph: "keyRound", ref: "kind-apikey", head: "New API key" },
+  { label: "API key", line: "A key for any service's API", glyph: "keyRound", ref: "kind-apikey", head: "New API key" },
   { label: "Environment", line: "Values a project loads in the terminal", glyph: "squareTerminal", ref: "kind-env" },
   { label: "Custom", line: "Fields you name yourself", glyph: "listPlus", ref: "kind-custom", head: "New custom entry" },
 ];
@@ -206,11 +204,9 @@ const NEW_FORMS = {
     row({ self: "start" }, smallButton("plus", "Add value", "add-value")),
   ],
   apikey: () => [
-    formField("Provider", select("OpenAI", { ref: "provider", title: "Provider: OpenAI" })),
-    formField("Name", input(null, { placeholder: "Work account", focus: true, ref: "name" }), { hint: "Shown in Lyra beside the provider." }),
+    formField("Name", input(null, { placeholder: "Service name", focus: true, ref: "name" })),
     formField("Key", input(DOTS, { mono: true, ref: "key", trail: [reveal(false)] })),
-    formField("Base URL", input(null, { placeholder: "Optional, for a proxy or a compatible server", mono: true, ref: "base-url" })),
-    col({ gap: 6 }, checkbox(true, "Lyra can use this key", "allow-lyra"), t.ui("Lyra asks once before its first use and keeps no copy.", { size: 12, color: "soft" })),
+    checkbox(false, "Lyra can use this key", "allow-lyra"),
   ],
   custom: () => [
     formField("Name", input(null, { placeholder: "Gate code", focus: true, ref: "name" })),
@@ -831,9 +827,9 @@ const ADD_ENV_NOTE = "Nova reads these. A command gets them only through a run t
 const screens = [
   // API keys for Lyra, this round (2026-10-26): new and changed screens kept apart from the flow; the number is the screen's place in the flow.
   screen("top-keys-add-open", "Changed 21: Add, kinds", 0, -6, () => main({ addOpen: true }, [menu(KINDS, { w: 300, at: { x: 300 - 14 - 36, y: LIST_TOP + CONTROL_H + 6 }, name: "kinds", title: "Add" })]), "API key joins the kinds; Key now says SSH key or licence."),
-  screen("top-keys-new", "New 63: New API key", 1, -6, () => newEntry("apikey"), "Provider from Lyra's list (OpenAI, Anthropic, Gemini, OpenRouter, Mistral, DeepSeek, xAI, Groq). Lyra is allowed by default; no other app reads AI keys."),
-  screen("top-keys-open", "New 64: API key, open", 2, -6, () => main({ entries: KEY_ENTRIES, right: apiKeyView() }), "Who can use the key and when it was last read. Stop removes Lyra; its next request finds no key."),
-  screen("top-keys-request", "New 65: Lyra asks for a key", 3, -6, () => keyRequest(), "The first time Lyra reads this key. Windows Hello or the master password, as for every permission."),
+  screen("top-keys-new", "New 63: New API key", 1, -6, () => newEntry("apikey"), "Any API key, not only AI: a name and the key, nothing else. Lyra is off by default and only the person can turn it on; Lyra still asks once before its first read."),
+  screen("top-keys-open", "New 64: API key, open", 2, -6, () => main({ entries: KEY_ENTRIES, right: apiKeyView() }), "Who can use the key and when it was last read. Stop removes Lyra; its next request finds no key, and Lyra shows it as missing."),
+  screen("top-keys-request", "New 65: Lyra asks for a key", 3, -6, () => keyRequest(), "The first time Lyra reads this key, after the person picked it in Lyra. Windows Hello or the master password, as for every permission."),
   screen("top-keys-request-password", "New 66: Lyra asks, master password", 4, -6, () => keyRequest({ password: true }), "The master password instead of Windows Hello."),
 
   // Sync, this round (2026-10-22): new and changed screens kept apart from the flow; the number is the screen's place in the flow.
@@ -917,7 +913,7 @@ const screens = [
   screen("light-list", "Light: list", 1, 9, () => main({ theme: DIAL_LIGHT })),
   screen("light-settings", "Light: settings", 2, 9, () => appWindow({ theme: DIAL_LIGHT }, settingsView())),
   // API keys
-  screen("keys-new", "New API key", 0, 11, () => newEntry("apikey"), "Provider from Lyra's list. Lyra is allowed by default; no other app reads AI keys."),
+  screen("keys-new", "New API key", 0, 11, () => newEntry("apikey"), "Any API key: a name and the key. Lyra is off by default; only the person turns it on."),
   screen("keys-open", "API key, open", 1, 11, () => main({ entries: KEY_ENTRIES, right: apiKeyView() }), "Who can use the key and when it was last read."),
   screen("keys-request", "Lyra asks for a key", 2, 11, () => keyRequest(), "The first time Lyra reads this key."),
   screen("keys-request-password", "Lyra asks, master password", 3, 11, () => keyRequest({ password: true })),
@@ -1024,7 +1020,7 @@ const links = [
 export default board({
   id: "app",
   title: "Vault app",
-  note: "Vault's own small app, for people without Nebula: view, add, import and export passwords, and choose which apps get in. Drawn in Dial with the keyhole. Each row is one part of the flow: first run, unlock, the list, an entry, adding, import, export, apps, settings, the light theme, sync, and API keys for Lyra at the bottom. Copy ships in English and Spanish; the boards are in English. Click a screen for its note; everything shown is invented.",
+  note: "Vault's own small app, for people without Nebula: view, add, import and export passwords, and choose which apps get in. Drawn in Dial with the keyhole. Each row is one part of the flow: first run, unlock, the list, an entry, adding, import, export, apps, settings, the light theme, sync, and API keys for any service at the bottom. Copy ships in English and Spanish; the boards are in English. Click a screen for its note; everything shown is invented.",
   screens,
   links,
 });

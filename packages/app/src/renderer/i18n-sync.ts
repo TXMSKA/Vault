@@ -10,8 +10,8 @@ export type SyncDictionary = {
   computers: string; thisComputer: string; otherComputer: string; turnOff: string; moveToAccount: string;
   turnOffTitle: string; turnOffBody: string; removeCopies(origin: string): string; signOutToo: string; turnOffYes: string;
   moveTitle: string; moveBody: string; moveYes: string;
-  lyraCanUse: string; lyraHint: string; keyNameHint: string; appsTitle: string; lastRead(ago: string): string; notReadYet: string; stop(app: string): string; keyInfo: string; noApps: string;
-  keyTitle(app: string, provider: string): string; keyBody(app: string, provider: string): string; keyApp: string;
+  lyraCanUse: string; appsTitle: string; lastRead(ago: string): string; notReadYet: string; stop(app: string): string; keyInfo: string; noApps: string;
+  keyTitle(app: string): string; keyBody(app: string): string; keyApp: string;
   problemPlan: string; problemSignIn: string; problemFull: string; problemOther: string; quantumMissing: string; signInFailed: string; signInTimeout: string;
 };
 const bytes = (value: number, comma: boolean) => {
@@ -47,11 +47,11 @@ export const enSync: SyncDictionary = {
   removeCopies: origin => origin === "folder" ? "Also remove this computer's encrypted copies from the folder" : "Also remove this computer's encrypted copies from the account",
   signOutToo: "Sign out of the Cosmic account on this computer", turnOffYes: "Turn off",
   moveTitle: "Move sync to the Cosmic account?", moveBody: "This computer stops using the folder and syncs through the Cosmic account instead. The folder's files are kept. Each other computer moves the same way.", moveYes: "Sign in and move",
-  lyraCanUse: "Lyra can use this key", lyraHint: "Lyra asks once before its first use and keeps no copy.", keyNameHint: "Shown in Lyra beside the provider.", appsTitle: "Apps that can use it",
+  lyraCanUse: "Lyra can use this key", appsTitle: "Apps that can use it",
   lastRead: ago => `Last read ${ago === "Just now" ? "just now" : ago}`, notReadYet: "Not read yet", stop: app => `Stop ${app}`, noApps: "No app can use this key.",
-  keyInfo: "Lyra reads the key for each request to the provider; a change here applies to its next request.",
-  keyTitle: (app, provider) => `${app} wants to use the ${provider} key`, keyApp: "Key",
-  keyBody: (app, provider) => `${app} sends requests to ${provider} with this key. It reads the key for each request and keeps no copy; stopping it here takes effect on its next request.`,
+  keyInfo: "An app reads the key for each request; a change here applies to its next request.",
+  keyTitle: app => `${app} wants to use an API key`, keyApp: "Key",
+  keyBody: app => `${app} uses this key where it was chosen in ${app}. It reads the key for each request and keeps no copy; stopping it here takes effect on its next request.`,
   problemPlan: "This Cosmic account does not include Vault sync. Changes stay on this computer and go out once the account includes it.",
   problemSignIn: "The Cosmic sign-in expired. Changes stay on this computer until it signs in again.", problemFull: "The Cosmic account's storage is full.",
   problemOther: "The last sync did not finish. Vault tries again on its own.", quantumMissing: "Cosmic accounts are not available on this computer yet.",
@@ -85,11 +85,11 @@ export const esSync: SyncDictionary = {
   removeCopies: origin => origin === "folder" ? "Quitar también las copias cifradas de esta computadora de la carpeta" : "Quitar también las copias cifradas de esta computadora de la cuenta",
   signOutToo: "Cerrar la sesión de la cuenta Cosmic en esta computadora", turnOffYes: "Desactivar",
   moveTitle: "¿Pasar la sincronización a la cuenta Cosmic?", moveBody: "Esta computadora deja de usar la carpeta y sincroniza mediante la cuenta Cosmic. Los archivos de la carpeta se conservan. Cada una de las demás computadoras se pasa de la misma forma.", moveYes: "Iniciar sesión y pasar",
-  lyraCanUse: "Lyra puede usar esta clave", lyraHint: "Lyra pide permiso una vez antes del primer uso y no guarda copia.", keyNameHint: "Se muestra en Lyra junto al proveedor.", appsTitle: "Apps que pueden usarla",
+  lyraCanUse: "Lyra puede usar esta clave", appsTitle: "Apps que pueden usarla",
   lastRead: ago => `Última lectura: ${String(ago).toLowerCase()}`, notReadYet: "Todavía no se leyó", stop: app => `Detener ${app}`, noApps: "Ninguna app puede usar esta clave.",
-  keyInfo: "Lyra lee la clave en cada pedido al proveedor; un cambio aquí se aplica a su próximo pedido.",
-  keyTitle: (app, provider) => `${app} quiere usar la clave de ${provider}`, keyApp: "Clave",
-  keyBody: (app, provider) => `${app} envía pedidos a ${provider} con esta clave. La lee en cada pedido y no guarda copia; detenerla aquí tiene efecto en su próximo pedido.`,
+  keyInfo: "Una app lee la clave en cada pedido; un cambio aquí se aplica a su próximo pedido.",
+  keyTitle: app => `${app} quiere usar una clave de API`, keyApp: "Clave",
+  keyBody: app => `${app} usa esta clave donde se eligió en ${app}. La lee en cada pedido y no guarda copia; detenerla aquí tiene efecto en su próximo pedido.`,
   problemPlan: "Esta cuenta Cosmic no incluye la sincronización de Vault. Los cambios quedan en esta computadora y salen cuando la cuenta la incluya.",
   problemSignIn: "La sesión de Cosmic venció. Los cambios quedan en esta computadora hasta que se inicie sesión otra vez.", problemFull: "El almacenamiento de la cuenta Cosmic está lleno.",
   problemOther: "La última sincronización no terminó. Vault vuelve a intentarlo por su cuenta.", quantumMissing: "Las cuentas Cosmic todavía no están disponibles en esta computadora.",

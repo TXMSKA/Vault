@@ -3,8 +3,8 @@ import { mkdtemp, open, readFile, rm, unlink, writeFile } from "node:fs/promises
 import type { FileHandle } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { isAbsolute, join } from "node:path";
-import { FileVaultStore, VaultMemory, createVaultUnlock, createEnvelope, encryptJson, decryptJson, encrypt, decrypt, unlock, newEntry, KINDS, KEY_PROVIDERS, id, version, chunkIds, stateInput, sealed as sealedInput, VaultError } from "vault-core";
-import type { Entry, KeyProvider, VaultLogger } from "vault-core";
+import { FileVaultStore, VaultMemory, createVaultUnlock, createEnvelope, encryptJson, decryptJson, encrypt, decrypt, unlock, newEntry, KINDS, id, version, chunkIds, stateInput, sealed as sealedInput, VaultError } from "vault-core";
+import type { Entry, VaultLogger } from "vault-core";
 import type { AppView, Backup, EntryRow, EnvImportCount, ImportCount, LoginSummary } from "../../client/src/types.ts";
 import { ServiceError, object, text } from "./errors.ts";
 import { duplicateKey, MAX_ENTRIES } from "./imports.ts";
@@ -23,10 +23,9 @@ export function validateEntry(value: unknown): Entry {
     if (v.kind === "env" && (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(fieldId) || f.secret !== true)) throw new ServiceError("invalid");
   }
   if (v.kind === "apikey") {
-    const entry = value as Entry, fields = ["provider", "key", "baseUrl", "apps"];
-    if (entry.fields.length !== fields.length || fields.some(name => !entry.fields.some(field => field.id === name && field.secret === (name === "key"))) || !KEY_PROVIDERS.includes(fieldValue(entry, "provider") as KeyProvider)) throw new ServiceError("invalid");
+    const entry = value as Entry, fields = ["key", "apps"];
+    if (entry.fields.length !== fields.length || fields.some(name => !entry.fields.some(field => field.id === name && field.secret === (name === "key")))) throw new ServiceError("invalid");
     const apps = keyApps(entry); if (apps.some(app => !appIdPattern.test(app)) || new Set(apps).size !== apps.length) throw new ServiceError("invalid");
-    const baseUrl = fieldValue(entry, "baseUrl"); if (baseUrl) origin(baseUrl);
   }
   for (const recovery of v.recovery) { const r = object(recovery, "used,value"); text(r.value, 8192); if (typeof r.used !== "boolean") throw new ServiceError("invalid"); }
   for (const file of v.files) {
@@ -106,18 +105,18 @@ export class Vault {
     if (app.id !== "lyra" || app.kind !== "cosmic") throw new ServiceError("forbidden", 403);
     return (await this.rows()).filter(({ entry }) => entry.kind === "apikey" && keyApps(entry).includes(app.id) && fieldValue(entry, "key").length > 0);
   }
-  /** Lists labels and routing metadata without returning key values. */
-  async keyProviders(app: AppView) { return (await this.keyRows(app)).map(({ entry }) => ({ id: entry.id, provider: fieldValue(entry, "provider") as KeyProvider, label: entry.title, hasBaseUrl: !!fieldValue(entry, "baseUrl") })); }
-  /** Reads the newest allowed entry on every request. */
-  async keyRead(app: AppView, provider: string, prompts: Prompts) {
-    const row = (await this.keyRows(app)).filter(({ entry }) => fieldValue(entry, "provider") === provider).sort((a, b) => Date.parse(b.entry.updatedAt) - Date.parse(a.entry.updatedAt) || b.entry.id.localeCompare(a.entry.id))[0];
+  /** Lists the keys the person allowed for the app, by name, without their values. */
+  async keyList(app: AppView) { return (await this.keyRows(app)).map(({ entry }) => ({ id: entry.id, label: entry.title })); }
+  /** Reads the entry the person chose in the app, on every request. */
+  async keyRead(app: AppView, entryId: string, prompts: Prompts) {
+    const row = (await this.keyRows(app)).find(({ entry }) => entry.id.toLowerCase() === entryId.toLowerCase());
     if (!row) throw new ServiceError("not_found", 404);
     const { entry } = row;
-    if (!app.permissions.includes(`key:${entry.id.toLowerCase()}`)) { const prompt = prompts.key(app, { entry: entry.id, provider: fieldValue(entry, "provider") as KeyProvider, label: entry.title }); throw new ServiceError("key_approval_required", 403, { prompt: prompt.id }); }
+    if (!app.permissions.includes(`key:${entry.id.toLowerCase()}`)) { const prompt = prompts.key(app, { entry: entry.id, label: entry.title }); throw new ServiceError("key_approval_required", 403, { prompt: prompt.id }); }
     let usage = this.lastRead.get(entry.id); if (!usage) { usage = new Map(); this.lastRead.set(entry.id, usage); } usage.set(app.id, new Date(this.now()).toISOString());
-    return { key: fieldValue(entry, "key"), baseUrl: fieldValue(entry, "baseUrl") || null };
+    return { key: fieldValue(entry, "key") };
   }
-  async keyApproval(app: AppView, entry: string, provider: KeyProvider) { if (!(await this.keyRows(app)).some(row => row.entry.id.toLowerCase() === entry.toLowerCase() && fieldValue(row.entry, "provider") === provider)) throw new ServiceError("not_found", 404); }
+  async keyApproval(app: AppView, entry: string) { if (!(await this.keyRows(app)).some(row => row.entry.id.toLowerCase() === entry.toLowerCase())) throw new ServiceError("not_found", 404); }
   async keyRevoke(app: AppView, target: string, entryId: string) {
     const row = await this.get(app, entryId); if (row.entry.kind !== "apikey") throw new ServiceError("not_found", 404);
     const entry = structuredClone(row.entry); entry.fields.find(field => field.id === "apps")!.value = keyApps(entry).filter(app => app !== target).join(","); entry.updatedAt = new Date(this.now()).toISOString();

@@ -10,9 +10,8 @@ export type LoginSummary = { id: string; version: number; title: string; usernam
 export type AppIdentity = { id: string; name: string; kind: "cosmic" | "app" | "agent" };
 export type Permission = "import" | `key:${string}`;
 export type AppView = AppIdentity & { status: "granted" | "pending" | "revoked"; kinds: Kind[]; permissions: Permission[] };
-export type ProviderId = "openai" | "anthropic" | "gemini" | "openrouter" | "mistral" | "deepseek" | "xai" | "groq";
-export type ApiKeyProvider = { id: string; provider: ProviderId; label: string; hasBaseUrl: boolean };
-export type ApiKeyValue = { key: string; baseUrl: string | null };
+export type ApiKey = { id: string; label: string };
+export type ApiKeyValue = { key: string };
 export type ApiKeyUsage = { entry: string; app: string; lastRead: string };
 /** In the answer to vault-app and vault-cli only: whether Windows Hello can be used here, and whether it is set up for this vault (its wrapped key exists). */
 export type HelloStatus = { available: boolean; enabled: boolean };
@@ -25,7 +24,7 @@ export type Prompt =
   | PromptBase & { kind: "unlock"; summary: { reason: string | null } }
   | PromptBase & { kind: "run"; summary: { project: string; cwd: string; commands: string[][] } }
   | PromptBase & { kind: "permission"; summary: { permission: "import" } }
-  | PromptBase & { kind: "key"; summary: { entry: string; provider: ProviderId; label: string } };
+  | PromptBase & { kind: "key"; summary: { entry: string; label: string } };
 export type PromptState = "pending" | "done" | "cancelled" | "expired";
 export type PromptTicket = { id: string; expiresAt: string };
 export type ServiceRecord = { version: 1; pid: number; port: number; serviceVersion: string; startedAt: string };
@@ -70,7 +69,7 @@ export interface Client {
   getLogin(id: string): Promise<EntryRow>;
   entries: { list(): Promise<EntryRow[]>; get(id: string): Promise<EntryRow>; save(entry: Entry, expected: number): Promise<{ version: number }>; remove(id: string, expected: number): Promise<{ ok: true }> };
   keys: {
-    providers(): Promise<ApiKeyProvider[]>; read(provider: ProviderId): Promise<ApiKeyValue>;
+    list(): Promise<ApiKey[]>; read(id: string): Promise<ApiKeyValue>;
     approve(id: string, password: string): Promise<{ ok: true }>; approveWithHello(id: string, hwnd: string): Promise<{ ok: true }>;
     revoke(app: string, entry: string): Promise<{ ok: true }>; usage(): Promise<ApiKeyUsage[]>;
   };

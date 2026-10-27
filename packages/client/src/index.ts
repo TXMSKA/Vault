@@ -10,7 +10,7 @@ import { isSettings } from "./settings.ts";
 import { isPromptId, isReason } from "./prompts.ts";
 import { installedApp } from "./app.ts";
 import { recoveryKit } from "./kit.ts";
-import type { ApiKeyProvider, ApiKeyUsage, ApiKeyValue, AppView, Backup, Client, ConnectOptions, EntryRow, EnvImportCount, ImportCount, InstallRecord, LoginSummary, Prompt, PromptState, PromptTicket, RunProgress, RunSummary, ServiceRecord, Settings, Status, SyncStatus, SyncConflict, TokenStore } from "./types.ts";
+import type { ApiKey, ApiKeyUsage, ApiKeyValue, AppView, Backup, Client, ConnectOptions, EntryRow, EnvImportCount, ImportCount, InstallRecord, LoginSummary, Prompt, PromptState, PromptTicket, RunProgress, RunSummary, ServiceRecord, Settings, Status, SyncStatus, SyncConflict, TokenStore } from "./types.ts";
 export type * from "./types.ts";
 export { VaultClientError, resolveHome, readCapped, readFirstLine, FILE_CAP, installedApp, recoveryKit };
 const pause = (ms: number) => new Promise<void>(done => setTimeout(done, ms));
@@ -124,7 +124,7 @@ export async function connect(options: ConnectOptions): Promise<Client> {
     listLogins: () => call<LoginSummary[]>("GET", "/v1/logins/all"), getLogin: id => call<EntryRow>("GET", `/v1/logins/get?id=${encodeURIComponent(id)}`),
     entries: { list: () => call<EntryRow[]>("GET", "/v1/entries"), get: id => call<EntryRow>("GET", `/v1/entries/get?id=${encodeURIComponent(id)}`), save: (entry, expected) => call("POST", "/v1/entries", { entry, expected }), remove: (id, expected) => call("POST", "/v1/entries/remove", { id, expected }) },
     keys: {
-      providers: () => call<ApiKeyProvider[]>("GET", "/v1/keys/providers"), read: provider => call<ApiKeyValue>("POST", "/v1/keys/read", { provider }),
+      list: () => call<ApiKey[]>("GET", "/v1/keys"), read: id => call<ApiKeyValue>("POST", "/v1/keys/read", { id }),
       approve: async (id, password) => call("POST", "/v1/keys/approve", { id: promptId(id), password }),
       // Windows Hello waits for the person, up to two minutes.
       approveWithHello: async (id, hwnd) => call("POST", "/v1/keys/approve/hello", { hwnd, id: promptId(id) }, 130000),

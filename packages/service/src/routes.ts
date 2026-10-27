@@ -49,7 +49,7 @@ async function permit(c: Context, proof: () => Promise<unknown>) {
 async function approveKey(c: Context, proof: () => Promise<unknown>) {
   const prompt = c.prompts.keyPending(c.body.id); await proof(); c.prompts.keyPending(prompt.id);
   const app = c.apps.list().find(app => app.id === prompt.app.id); if (!app || app.status !== "granted") throw new ServiceError("not_found", 404);
-  await c.vault.keyApproval(app, prompt.key!.entry, prompt.key!.provider); c.prompts.keyPending(prompt.id);
+  await c.vault.keyApproval(app, prompt.key!.entry); c.prompts.keyPending(prompt.id);
   const permission = `key:${prompt.key!.entry.toLowerCase()}` as const; await c.apps.grant(app.id, permission);
   try { c.prompts.keyGranted(prompt.id); } catch (error) { await c.apps.revoke(app.id, permission); throw error; } return { ok: true };
 }
@@ -82,8 +82,8 @@ export const routes: Route[] = [
   { method: "POST", path: "/v1/unlock/hello", access: "granted", keys: "hwnd", handle: async c => { active(c); await c.hello.unlock(windowHandle(c.body.hwnd)); return { ok: true }; } },
   { method: "POST", path: "/v1/unlock/hello/disable", access: "manage", keys: "", handle: async c => { await c.hello.disable(); return { ok: true }; } },
   { method: "POST", path: "/v1/lock", access: "granted", keys: "", handle: c => { c.vault.auth.lock(); return { ok: true }; } },
-  { method: "GET", path: "/v1/keys/providers", access: "granted", keys: "", handle: c => c.vault.keyProviders(c.app!) },
-  { method: "POST", path: "/v1/keys/read", access: "granted", keys: "provider", handle: c => c.vault.keyRead(c.app!, text(c.body.provider, 40), c.prompts) },
+  { method: "GET", path: "/v1/keys", access: "granted", keys: "", handle: c => c.vault.keyList(c.app!) },
+  { method: "POST", path: "/v1/keys/read", access: "granted", keys: "id", handle: c => c.vault.keyRead(c.app!, id(c.body.id), c.prompts) },
   { method: "POST", path: "/v1/keys/approve", access: "manage", keys: "id,password", handle: c => { active(c); return approveKey(c, () => c.vault.auth.unlock(text(c.body.password, 128))); } },
   { method: "POST", path: "/v1/keys/approve/hello", access: "manage", keys: "hwnd,id", handle: c => { active(c); const hwnd = windowHandle(c.body.hwnd); return approveKey(c, () => c.hello.unlock(hwnd)); } },
   { method: "POST", path: "/v1/keys/revoke", access: "manage", keys: "app,entry", handle: async c => { const app = text(c.body.app, 40), entry = id(c.body.entry); if (!appIdPattern.test(app)) throw new ServiceError("invalid"); await c.vault.keyRevoke(c.app!, app, entry); await c.apps.revoke(app, `key:${entry.toLowerCase()}`); c.prompts.keyRevoked(app, entry); return { ok: true }; } },

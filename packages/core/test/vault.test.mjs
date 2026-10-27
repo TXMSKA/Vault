@@ -24,11 +24,11 @@ await assert.rejects(crypto.decryptJson(opened.key, encrypted, `entry:${randomUU
 const bad = { ...encrypted, data: crypto.base64(Buffer.from(encrypted.data, "base64").map((byte, i) => i === 0 ? byte ^ 1 : byte)) };
 await assert.rejects(crypto.decryptJson(opened.key, bad, `entry:${entry.id}`)); checks += 5;
 
-const apiKey = model.newEntry("apikey"); apiKey.title = "Synthetic provider"; apiKey.fields.find(field => field.id === "provider").value = "openai"; apiKey.fields.find(field => field.id === "key").value = canary;
+const apiKey = model.newEntry("apikey"); apiKey.title = "Synthetic service"; apiKey.fields.find(field => field.id === "key").value = canary;
 assert.equal(model.KINDS.includes(apiKey.kind), true);
-assert.deepEqual(model.KEY_PROVIDERS, ["openai", "anthropic", "gemini", "openrouter", "mistral", "deepseek", "xai", "groq"]);
-assert.deepEqual(apiKey.fields.map(field => [field.id, field.secret]), [["provider", false], ["key", true], ["baseUrl", false], ["apps", false]]);
-assert.equal(apiKey.fields.find(field => field.id === "apps").value, "lyra"); assert.equal(apiKey.fields.find(field => field.id === "baseUrl").value, "");
+assert.equal("KEY_PROVIDERS" in model, false);
+assert.deepEqual(apiKey.fields.map(field => [field.id, field.secret]), [["key", true], ["apps", false]]);
+assert.equal(model.newEntry("apikey").fields.find(field => field.id === "apps").value, "");
 const apiSeal = await crypto.encryptJson(opened.key, apiKey, `entry:${apiKey.id}`);
 assert.equal(JSON.stringify(apiSeal).includes(canary), false); assert.deepEqual(await crypto.decryptJson(opened.key, apiSeal, `entry:${apiKey.id}`), apiKey); checks += 7;
 

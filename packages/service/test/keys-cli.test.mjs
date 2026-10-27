@@ -8,21 +8,21 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { connect, findService, VaultClientError } from "../../client/src/index.ts";
 import { main } from "../../cli/src/main.ts";
 const parent = resolve(tmpdir()), scratch = await mkdtemp(join(parent, "service-keys-cli-")), calls = [], lines = [], timeouts = [], previous = { VAULT_HOME: process.env.VAULT_HOME, LC_ALL: process.env.LC_ALL }, originalTimeout = AbortSignal.timeout;
-const entry = "bb9c8dba-b09f-48bd-adba-c49970774c3d", id = "f6aeb6d1-730a-4a01-aa1c-a955bb05671b", password = "synthetic-master-password", synthetic = ["synthetic-provider-key-one", "synthetic-provider-key-two", "synthetic-base-url", "synthetic-other-secret"], provider = { id: entry, provider: "openai", label: "Work", hasBaseUrl: true }, usage = [{ entry, app: "lyra", lastRead: new Date().toISOString() }];
-const prompt = { id, kind: "key", app: { id: "lyra", name: "Lyra" }, summary: { entry, provider: "openai", label: "Work" }, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60000).toISOString() };
-const keyEntry = (title, apps) => ({ version: 1, entry: { id: entry, kind: "apikey", title, fields: [{ id: "provider", value: "openai", secret: false }, { id: "key", value: synthetic[0], secret: true }, { id: "baseUrl", value: synthetic[2], secret: false }, ...apps === undefined ? [] : [{ id: "apps", value: apps, secret: false }]], note: synthetic[3] } });
-let entries = [keyEntry("Work\nLabel", " lyra, local-app "), keyEntry("Default", undefined), keyEntry("Stopped", ""), { version: 1, entry: { id: "other", kind: "note", title: synthetic[3], fields: [] } }], value = synthetic[0], failure, locked = false, checks = 0, stage = "arguments", client;
+const entry = "bb9c8dba-b09f-48bd-adba-c49970774c3d", id = "f6aeb6d1-730a-4a01-aa1c-a955bb05671b", password = "synthetic-master-password", synthetic = ["synthetic-service-key-one", "synthetic-service-key-two", "synthetic-other-secret"], listed = { id: entry, label: "Work" }, usage = [{ entry, app: "lyra", lastRead: new Date().toISOString() }];
+const prompt = { id, kind: "key", app: { id: "lyra", name: "Lyra" }, summary: { entry, label: "Work" }, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60000).toISOString() };
+const keyEntry = (title, apps) => ({ version: 1, entry: { id: entry, kind: "apikey", title, fields: [{ id: "key", value: synthetic[0], secret: true }, ...apps === undefined ? [] : [{ id: "apps", value: apps, secret: false }]], note: synthetic[2] } });
+let entries = [keyEntry("Work\nLabel", " lyra, local-app "), keyEntry("Default", undefined), keyEntry("Stopped", ""), { version: 1, entry: { id: "other", kind: "note", title: synthetic[2], fields: [] } }], value = synthetic[0], failure, locked = false, checks = 0, stage = "arguments", client;
 const io = { isTTY: () => false, async ask() { throw new Error("unexpected_test_input"); }, write(value) { lines.push(value); }, error(value) { lines.push(value); }, out(value) { lines.push(value); }, err(value) { lines.push(value); } };
 const server = createServer(async (request, response) => {
   const parts = []; for await (const bytes of request) parts.push(bytes); const body = parts.length ? JSON.parse(Buffer.concat(parts).toString("utf8")) : undefined;
   calls.push({ method: request.method, path: request.url, body }); let result = { ok: true };
   if (request.url === "/v1/health") result = { ok: true, pid: process.pid };
   else if (request.url === "/v1/entries") result = entries;
-  else if (request.url === "/v1/keys/providers") result = [provider];
-  else if (request.url === "/v1/keys/read") result = { key: value, baseUrl: synthetic[2] };
+  else if (request.url === "/v1/keys") result = [listed];
+  else if (request.url === "/v1/keys/read") result = { key: value };
   else if (request.url === "/v1/keys/usage") result = usage;
   else if (request.url === "/v1/prompts") result = [prompt];
-  if (failure && request.url === "/v1/keys/read") { response.statusCode = 403; result = { error: { code: failure.code, fields: { prompt: failure.prompt }, message: synthetic[3] } }; }
+  if (failure && request.url === "/v1/keys/read") { response.statusCode = 403; result = { error: { code: failure.code, fields: { prompt: failure.prompt }, message: synthetic[2] } }; }
   if (locked && request.url === "/v1/entries") { response.statusCode = 403; result = { error: { code: "locked" } }; }
   response.setHeader("Content-Type", "application/json"); response.end(JSON.stringify(result));
 });
@@ -36,8 +36,8 @@ try {
   stage = "discovery and client routes";
   assert.equal((await findService(scratch)).serviceVersion, "0.1.0"); assert.deepEqual(calls.map(call => call.path), ["/v1/health"]); checks += 2;
   client = await connect({ home: scratch, app: { id: "lyra", name: "Lyra", kind: "cosmic" }, tokens: { async get() { return "s".repeat(43); }, async set() { throw new Error("unexpected_registration"); } } });
-  assert.deepEqual(await client.keys.providers(), [provider]); assert.equal(calls.at(-1).method, "GET"); assert.equal(calls.at(-1).body, undefined); checks += 3;
-  for (const next of synthetic.slice(0, 2)) { value = next; assert.deepEqual(await client.keys.read("openai"), { key: next, baseUrl: synthetic[2] }); assert.deepEqual(calls.at(-1), { method: "POST", path: "/v1/keys/read", body: { provider: "openai" } }); checks += 2; }
+  assert.deepEqual(await client.keys.list(), [listed]); assert.equal(calls.at(-1).method, "GET"); assert.equal(calls.at(-1).body, undefined); checks += 3;
+  for (const next of synthetic.slice(0, 2)) { value = next; assert.deepEqual(await client.keys.read(entry), { key: next }); assert.deepEqual(calls.at(-1), { method: "POST", path: "/v1/keys/read", body: { id: entry } }); checks += 2; }
   assert.deepEqual(await client.keys.usage(), usage); assert.deepEqual(await client.prompts.list(), [prompt]); checks += 2;
   await client.keys.approve(id, password); assert.deepEqual(calls.at(-1), { method: "POST", path: "/v1/keys/approve", body: { id, password } }); checks++;
   AbortSignal.timeout = milliseconds => { timeouts.push(milliseconds); return originalTimeout(milliseconds); };
@@ -47,14 +47,14 @@ try {
   await assert.rejects(() => client.keys.approve("invalid", password), error => error instanceof VaultClientError && error.code === "invalid"); await assert.rejects(() => client.keys.approveWithHello("invalid", "123"), error => error.code === "invalid"); await assert.rejects(() => client.keys.revoke("invalid app", entry), error => error.code === "invalid"); assert.equal(calls.length, before); checks += 4;
   stage = "approval error metadata";
   failure = { code: "key_approval_required", prompt: id };
-  await assert.rejects(() => client.keys.read("openai"), error => error instanceof VaultClientError && error.code === "key_approval_required" && error.prompt === id && error.message === "key_approval_required" && !JSON.stringify(error).includes(synthetic[3])); checks++;
-  failure.prompt = synthetic[3]; await assert.rejects(() => client.keys.read("openai"), error => error.code === "key_approval_required" && error.prompt === undefined); checks++;
-  for (const code of ["locked", "not_found", "forbidden"]) { failure = { code, prompt: id }; await assert.rejects(() => client.keys.read("openai"), error => error.code === code && error.prompt === undefined); checks++; }
+  await assert.rejects(() => client.keys.read(entry), error => error instanceof VaultClientError && error.code === "key_approval_required" && error.prompt === id && error.message === "key_approval_required" && !JSON.stringify(error).includes(synthetic[2])); checks++;
+  failure.prompt = synthetic[2]; await assert.rejects(() => client.keys.read(entry), error => error.code === "key_approval_required" && error.prompt === undefined); checks++;
+  for (const code of ["locked", "not_found", "forbidden"]) { failure = { code, prompt: id }; await assert.rejects(() => client.keys.read(entry), error => error.code === code && error.prompt === undefined); checks++; }
   failure = undefined;
   stage = "CLI metadata only";
-  const start = calls.length; assert.equal(await command(["keys"]), 0); assert.deepEqual(lines, ["openai | Work\\u000aLabel | lyra, local-app", "openai | Default | lyra", "openai | Stopped | -"]); assert.equal(synthetic.some(secret => lines.join("\n").includes(secret)), false); assert.equal(calls.slice(start).some(call => call.path.startsWith("/v1/keys/read") || call.path === "/v1/keys/providers"), false); checks += 4;
+  const start = calls.length; assert.equal(await command(["keys"]), 0); assert.deepEqual(lines, ["Work\\u000aLabel | lyra, local-app", "Default | -", "Stopped | -"]); assert.equal(synthetic.some(secret => lines.join("\n").includes(secret)), false); assert.equal(calls.slice(start).some(call => call.path.startsWith("/v1/keys/read") || call.path === "/v1/keys"), false); checks += 4;
   entries = []; assert.equal(await command(["keys"]), 0); assert.deepEqual(lines, ["No API keys."]); checks += 2;
-  process.env.LC_ALL = "es"; assert.equal(await command(["keys"]), 0); assert.deepEqual(lines, ["No hay claves de API."]); assert.equal(await command(["help"]), 0); assert.equal(lines[0].includes("vault keys: listar proveedores, nombres y apps autorizadas"), true); checks += 4;
+  process.env.LC_ALL = "es"; assert.equal(await command(["keys"]), 0); assert.deepEqual(lines, ["No hay claves de API."]); assert.equal(await command(["help"]), 0); assert.equal(lines[0].includes("vault keys: listar los nombres y las apps autorizadas"), true); checks += 4;
   locked = true; assert.equal(await command(["keys"]), 1); assert.equal(lines.length, 1); assert.equal(lines[0].includes("vault unlock"), true); checks += 3;
   console.log(`Keys client and CLI: ${checks} checks passed.`);
 } catch { console.error(`Keys client and CLI failed at ${stage}.`); throw new Error("keys client and CLI check failed"); }

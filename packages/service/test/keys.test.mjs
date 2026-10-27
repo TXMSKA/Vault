@@ -24,9 +24,9 @@ const noSecrets = value => check.equal(secrets.some(secret => JSON.stringify(val
 const tokens = () => { let value; return { async get() { return value; }, async set(token) { value = token; }, token: () => value }; };
 const as = async (id, kind = "cosmic") => { const store = tokens(), api = await connect({ home, app: { id, name: `Synthetic ${id}`, kind }, tokens: store }); clients.push(api); return Object.assign(api, { token: () => store.token() }); };
 const auth = api => `Bearer ${api.token()}`;
-const apiKey = (provider, title, key = firstKey, apps = "lyra", baseUrl = "", updatedAt = new Date(now).toISOString()) => {
+const apiKey = (title, key = firstKey, apps = "lyra", updatedAt = new Date(now).toISOString()) => {
   const entry = newEntry("apikey"); entry.title = title; entry.updatedAt = updatedAt;
-  for (const field of entry.fields) field.value = ({ provider, key, apps, baseUrl })[field.id]; return entry;
+  for (const field of entry.fields) field.value = ({ key, apps })[field.id]; return entry;
 };
 async function probe(service, path, { method = "GET", api, body } = {}) {
   return new Promise((done, fail) => {
@@ -58,8 +58,8 @@ try {
   const login = newEntry("login"); login.title = "Synthetic login"; login.fields.find(field => field.id === "password").value = firstKey; login.fields.find(field => field.id === "website").value = "https://synthetic.example";
   const environment = newEntry("env"); environment.title = "synthetic-project"; environment.fields = [{ id: "SYNTHETIC_API_VALUE", name: "Synthetic", value: firstKey, secret: true }];
   await ui.entries.save(login, 0); await ui.entries.save(environment, 0);
-  const original = apiKey("openai", "Synthetic OpenAI", firstKey, "lyra", "https://synthetic.example/api"), withoutUrl = apiKey("anthropic", "Synthetic Anthropic"), hidden = apiKey("gemini", "Synthetic hidden", firstKey, "nova"), empty = apiKey("groq", "Synthetic empty", ""), noApps = apiKey("mistral", "Synthetic unlinked", firstKey, "");
-  for (const entry of [original, withoutUrl, hidden, empty, noApps]) await ui.entries.save(entry, 0);
+  const original = apiKey("Synthetic payments"), other = apiKey("Synthetic weather", latestKey), hidden = apiKey("Synthetic hidden", firstKey, "nova"), empty = apiKey("Synthetic empty", ""), noApps = apiKey("Synthetic unlinked", firstKey, "");
+  for (const entry of [original, other, hidden, empty, noApps]) await ui.entries.save(entry, 0);
 
   stage = "Lyra route isolation";
   const ask = { project: environment.title, commands: [[process.execPath, "-e", ""]], cwd: scratch, env: {} };
@@ -74,72 +74,74 @@ try {
   for (const [method, path, body] of refused) { const result = await probe(service, path, { api: lyra, method, body }); errorShape(result, 403, "forbidden"); }
   await rejects(() => ui.permissions.importWithPassword(password, "lyra"), "forbidden");
   for (const api of [agent, nova, nebula, horizon, ui, cli]) {
-    errorShape(await probe(service, "/v1/keys/providers", { api }), 403, "forbidden");
-    errorShape(await probe(service, "/v1/keys/read", { api, method: "POST", body: { provider: "openai" } }), 403, "forbidden");
+    errorShape(await probe(service, "/v1/keys", { api }), 403, "forbidden");
+    errorShape(await probe(service, "/v1/keys/read", { api, method: "POST", body: { id: original.id } }), 403, "forbidden");
   }
   for (const api of [nova, nebula, horizon]) await rejects(() => api.entries.get(original.id), "not_found");
   check.equal((await nebula.entries.list()).some(row => row.entry.kind === "apikey"), false);
 
-  stage = "provider metadata and request validation";
-  const expected = [original, withoutUrl].map(entry => ({ id: entry.id, provider: entry.fields.find(field => field.id === "provider").value, label: entry.title, hasBaseUrl: !!entry.fields.find(field => field.id === "baseUrl").value }));
-  const providers = await lyra.keys.providers(); check.deepEqual(providers.sort((a, b) => a.id.localeCompare(b.id)), expected.sort((a, b) => a.id.localeCompare(b.id))); noSecrets(providers);
-  for (const row of providers) check.deepEqual(Object.keys(row).sort(), ["hasBaseUrl", "id", "label", "provider"]);
-  errorShape(await probe(service, "/v1/keys/providers"), 401, "unauthenticated");
-  errorShape(await probe(service, "/v1/keys/read", { method: "POST", body: { provider: "openai" } }), 401, "unauthenticated");
-  errorShape(await probe(service, "/v1/keys/providers?provider=openai", { api: lyra }), 400, "invalid");
-  for (const body of [{}, { provider: "openai", extra: true }, { provider: 3 }]) errorShape(await probe(service, "/v1/keys/read", { api: lyra, method: "POST", body }), 400, "invalid");
-  for (const provider of ["gemini", "groq", "mistral", "deepseek", "unknown", "OpenAI", ""]) errorShape(await probe(service, "/v1/keys/read", { api: lyra, method: "POST", body: { provider } }), 404, "not_found");
+  stage = "key list and request validation";
+  const byId = rows => rows.sort((a, b) => a.id.localeCompare(b.id)), expected = [original, other].map(entry => ({ id: entry.id, label: entry.title }));
+  const listed = await lyra.keys.list(); check.deepEqual(byId(listed), byId(expected)); noSecrets(listed);
+  for (const row of listed) check.deepEqual(Object.keys(row).sort(), ["id", "label"]);
+  errorShape(await probe(service, "/v1/keys"), 401, "unauthenticated");
+  errorShape(await probe(service, "/v1/keys/read", { method: "POST", body: { id: original.id } }), 401, "unauthenticated");
+  errorShape(await probe(service, `/v1/keys?id=${original.id}`, { api: lyra }), 400, "invalid");
+  for (const body of [{}, { id: original.id, extra: true }, { id: 3 }, { id: "synthetic" }, { provider: "openai" }]) errorShape(await probe(service, "/v1/keys/read", { api: lyra, method: "POST", body }), 400, "invalid");
+  for (const entry of [hidden.id, empty.id, noApps.id, login.id, environment.id, randomUUID()]) errorShape(await probe(service, "/v1/keys/read", { api: lyra, method: "POST", body: { id: entry } }), 404, "not_found");
   check.deepEqual(await ui.keys.usage(), []); check.deepEqual(service.prompts.pending(), []);
 
   stage = "first read and password approval";
-  const first = await probe(service, "/v1/keys/read", { api: lyra, method: "POST", body: { provider: "openai" } }), promptId = first.value.error.fields.prompt;
+  const first = await probe(service, "/v1/keys/read", { api: lyra, method: "POST", body: { id: original.id } }), promptId = first.value.error.fields.prompt;
   check.match(promptId, uuid); errorShape(first, 403, "key_approval_required", { prompt: promptId });
   let clientPrompt;
-  await check.rejects(() => lyra.keys.read("openai"), error => { clientPrompt = error.prompt; return error instanceof VaultClientError && error.code === "key_approval_required"; }); check.equal(clientPrompt, promptId);
-  const prompts = await ui.prompts.list(); check.equal(prompts.length, 1); check.deepEqual(prompts[0], { id: promptId, kind: "key", app: { id: "lyra", name: "Synthetic lyra" }, summary: { entry: original.id, provider: "openai", label: original.title }, createdAt: new Date(now).toISOString(), expiresAt: new Date(now + PROMPT_LIMITS.expiresMs).toISOString() }); noSecrets(prompts);
+  await check.rejects(() => lyra.keys.read(original.id), error => { clientPrompt = error.prompt; return error instanceof VaultClientError && error.code === "key_approval_required"; }); check.equal(clientPrompt, promptId);
+  const prompts = await ui.prompts.list(); check.equal(prompts.length, 1); check.deepEqual(prompts[0], { id: promptId, kind: "key", app: { id: "lyra", name: "Synthetic lyra" }, summary: { entry: original.id, label: original.title }, createdAt: new Date(now).toISOString(), expiresAt: new Date(now + PROMPT_LIMITS.expiresMs).toISOString() }); noSecrets(prompts);
   await rejects(() => lyra.keys.approve(promptId, password), "forbidden"); await rejects(() => agent.keys.approve(promptId, password), "forbidden"); await rejects(() => nova.keys.usage(), "forbidden");
   await rejects(() => ui.keys.approve(promptId, wrongPassword), "locked"); check.deepEqual((await lyra.apps.self()).permissions, []); check.equal(service.prompts.pending().length, 1); check.deepEqual(await ui.keys.usage(), []);
   now += 31000; check.deepEqual(await ui.keys.approve(promptId, password), { ok: true }); check.deepEqual((await lyra.apps.self()).permissions, [`key:${original.id}`]); check.deepEqual(await lyra.prompts.wait(promptId), { state: "done" }); check.deepEqual(service.prompts.pending(), []);
   await rejects(() => ui.keys.approve(promptId, password), "not_pending");
-  const read = await lyra.keys.read("openai"); check.deepEqual(Object.keys(read).sort(), ["baseUrl", "key"]); check.equal(read.key === firstKey, true); check.equal(read.baseUrl === "https://synthetic.example/api", true);
+  const read = await lyra.keys.read(original.id); check.deepEqual(Object.keys(read), ["key"]); check.equal(read.key === firstKey, true);
   check.deepEqual(await ui.keys.usage(), [{ entry: original.id, app: "lyra", lastRead: new Date(now).toISOString() }]); check.deepEqual(await cli.keys.usage(), await ui.keys.usage());
   const persisted = new Apps(home); await persisted.load(); check.deepEqual(persisted.list().find(row => row.id === "lyra").permissions, [`key:${original.id}`]);
 
-  stage = "rotation and newest matching entry";
-  const rotated = structuredClone(original); rotated.fields.find(field => field.id === "key").value = rotatedKey; rotated.fields.find(field => field.id === "baseUrl").value = ""; rotated.updatedAt = new Date(++now).toISOString(); await ui.entries.save(rotated, 1);
-  const fresh = await lyra.keys.read("openai"); check.equal(fresh.key === rotatedKey, true); check.equal(fresh.baseUrl, null); check.deepEqual(service.prompts.pending(), []); check.deepEqual(await ui.keys.usage(), [{ entry: original.id, app: "lyra", lastRead: new Date(now).toISOString() }]);
-  const newest = apiKey("openai", "Synthetic latest", latestKey, "lyra", "", new Date(now += 2).toISOString()); await ui.entries.save(newest, 0);
-  let latestPrompt; await check.rejects(() => lyra.keys.read("openai"), error => { latestPrompt = error.prompt; return error.code === "key_approval_required"; }); check.equal(latestPrompt !== promptId, true); check.deepEqual(service.prompts.pending()[0].summary, { entry: newest.id, provider: "openai", label: newest.title });
-  const older = apiKey("openai", "Synthetic older", firstKey, "lyra", "", new Date(now - 1).toISOString()); await ui.entries.save(older, 0);
-  await check.rejects(() => lyra.keys.read("openai"), error => error.code === "key_approval_required" && error.prompt === latestPrompt);
+  stage = "rotation and a second key";
+  const rotated = structuredClone(original); rotated.fields.find(field => field.id === "key").value = rotatedKey; rotated.updatedAt = new Date(++now).toISOString(); await ui.entries.save(rotated, 1);
+  const fresh = await lyra.keys.read(original.id); check.equal(fresh.key === rotatedKey, true); check.deepEqual(service.prompts.pending(), []); check.deepEqual(await ui.keys.usage(), [{ entry: original.id, app: "lyra", lastRead: new Date(now).toISOString() }]);
+  // Each key the person chose in Lyra is approved on its own; an approved key never stands in for another.
+  let latestPrompt; await check.rejects(() => lyra.keys.read(other.id), error => { latestPrompt = error.prompt; return error.code === "key_approval_required"; }); check.equal(latestPrompt !== promptId, true); check.deepEqual(service.prompts.pending()[0].summary, { entry: other.id, label: other.title });
+  await check.rejects(() => lyra.keys.read(other.id), error => error.code === "key_approval_required" && error.prompt === latestPrompt);
 
-  stage = "Hello proof and null base URL";
-  helloRefused = true; await rejects(() => cli.keys.approveWithHello(latestPrompt, "42"), "cancelled"); check.equal(helloCalls, 1); check.equal(helloWindow, 42n); check.equal((await lyra.apps.self()).permissions.includes(`key:${newest.id}`), false); check.equal(service.prompts.pending().length, 1);
-  helloRefused = false; check.deepEqual(await cli.keys.approveWithHello(latestPrompt, "42"), { ok: true }); check.equal(helloCalls, 2); check.equal((await lyra.keys.read("openai")).key === latestKey, true); check.equal((await lyra.keys.read("openai")).baseUrl, null);
-  check.deepEqual((await ui.keys.usage()).find(row => row.entry === newest.id), { entry: newest.id, app: "lyra", lastRead: new Date(now).toISOString() });
+  stage = "Hello proof";
+  helloRefused = true; await rejects(() => cli.keys.approveWithHello(latestPrompt, "42"), "cancelled"); check.equal(helloCalls, 1); check.equal(helloWindow, 42n); check.equal((await lyra.apps.self()).permissions.includes(`key:${other.id}`), false); check.equal(service.prompts.pending().length, 1);
+  helloRefused = false; check.deepEqual(await cli.keys.approveWithHello(latestPrompt, "42"), { ok: true }); check.equal(helloCalls, 2); check.equal((await lyra.keys.read(other.id)).key === latestKey, true); check.equal((await lyra.keys.read(original.id)).key === rotatedKey, true);
+  check.deepEqual((await ui.keys.usage()).find(row => row.entry === other.id), { entry: other.id, app: "lyra", lastRead: new Date(now).toISOString() });
 
   stage = "revocation";
-  await rejects(() => lyra.keys.revoke("lyra", newest.id), "forbidden"); check.deepEqual(await cli.keys.revoke("lyra", newest.id), { ok: true });
-  check.equal((await lyra.apps.self()).permissions.includes(`key:${newest.id}`), false); check.equal((await ui.entries.get(newest.id)).entry.fields.find(field => field.id === "apps").value.includes("lyra"), false); check.equal((await lyra.keys.providers()).some(row => row.id === newest.id), false);
-  // Older entries still need their own approval; a revoked latest entry never supplies its value.
-  let olderPrompt; await check.rejects(() => lyra.keys.read("openai"), error => { olderPrompt = error.prompt; return error.code === "key_approval_required"; }); check.equal(service.prompts.pending()[0].summary.entry, older.id);
+  await rejects(() => lyra.keys.revoke("lyra", other.id), "forbidden"); check.deepEqual(await cli.keys.revoke("lyra", other.id), { ok: true });
+  check.equal((await lyra.apps.self()).permissions.includes(`key:${other.id}`), false); check.equal((await ui.entries.get(other.id)).entry.fields.find(field => field.id === "apps").value.includes("lyra"), false); check.equal((await lyra.keys.list()).some(row => row.id === other.id), false);
+  await rejects(() => lyra.keys.read(other.id), "not_found");
+  // Stopping a key cancels the request still waiting for it.
+  const older = apiKey("Synthetic older"); await ui.entries.save(older, 0);
+  let olderPrompt; await check.rejects(() => lyra.keys.read(older.id), error => { olderPrompt = error.prompt; return error.code === "key_approval_required"; }); check.equal(service.prompts.pending()[0].summary.entry, older.id);
   check.deepEqual(await ui.keys.revoke("lyra", older.id), { ok: true }); check.deepEqual(await lyra.prompts.wait(olderPrompt), { state: "cancelled" }); await rejects(() => ui.keys.approve(olderPrompt, password), "not_pending");
-  await ui.keys.revoke("lyra", original.id); await rejects(() => lyra.keys.read("openai"), "not_found"); check.equal((await ui.entries.get(original.id)).entry.fields.find(field => field.id === "apps").value, ""); check.equal((await lyra.apps.self()).permissions.includes(`key:${original.id}`), false);
+  await ui.keys.revoke("lyra", original.id); await rejects(() => lyra.keys.read(original.id), "not_found"); check.equal((await ui.entries.get(original.id)).entry.fields.find(field => field.id === "apps").value, ""); check.equal((await lyra.apps.self()).permissions.includes(`key:${original.id}`), false);
   check.deepEqual(await ui.keys.revoke("nova", hidden.id), { ok: true }); check.equal((await ui.entries.get(hidden.id)).entry.fields.find(field => field.id === "apps").value, "");
 
   stage = "refused, expired and stale prompts";
-  let declined; await check.rejects(() => lyra.keys.read("anthropic"), error => { declined = error.prompt; return error.code === "key_approval_required"; }); await ui.prompts.dismiss(declined); check.deepEqual(await lyra.prompts.wait(declined), { state: "cancelled" }); await rejects(() => ui.keys.approve(declined, password), "not_pending");
-  let expired; await check.rejects(() => lyra.keys.read("anthropic"), error => { expired = error.prompt; return error.code === "key_approval_required"; }); now += PROMPT_LIMITS.expiresMs; check.deepEqual(await lyra.prompts.wait(expired), { state: "expired" }); await rejects(() => cli.keys.approve(expired, password), "not_pending");
-  let stale; await check.rejects(() => lyra.keys.read("anthropic"), error => { stale = error.prompt; return error.code === "key_approval_required"; }); await ui.entries.remove(withoutUrl.id, 1); await rejects(() => ui.keys.approve(stale, password), "not_found"); check.equal((await lyra.apps.self()).permissions.includes(`key:${withoutUrl.id}`), false); await ui.prompts.dismiss(stale);
+  const declinedKey = apiKey("Synthetic declined"); await ui.entries.save(declinedKey, 0);
+  let declined; await check.rejects(() => lyra.keys.read(declinedKey.id), error => { declined = error.prompt; return error.code === "key_approval_required"; }); await ui.prompts.dismiss(declined); check.deepEqual(await lyra.prompts.wait(declined), { state: "cancelled" }); await rejects(() => ui.keys.approve(declined, password), "not_pending");
+  let expired; await check.rejects(() => lyra.keys.read(declinedKey.id), error => { expired = error.prompt; return error.code === "key_approval_required"; }); now += PROMPT_LIMITS.expiresMs; check.deepEqual(await lyra.prompts.wait(expired), { state: "expired" }); await rejects(() => cli.keys.approve(expired, password), "not_pending");
+  let stale; await check.rejects(() => lyra.keys.read(declinedKey.id), error => { stale = error.prompt; return error.code === "key_approval_required"; }); await ui.entries.remove(declinedKey.id, 1); await rejects(() => ui.keys.approve(stale, password), "not_found"); check.equal((await lyra.apps.self()).permissions.includes(`key:${declinedKey.id}`), false); await ui.prompts.dismiss(stale);
 
   stage = "UUIDv7 entry approval";
-  const seventh = apiKey("xai", "Synthetic UUIDv7"); seventh.id = seventh.id.slice(0, 14) + "7" + seventh.id.slice(15); await ui.entries.save(seventh, 0);
-  let seventhPrompt; await check.rejects(() => lyra.keys.read("xai"), error => { seventhPrompt = error.prompt; return error.code === "key_approval_required"; }); check.deepEqual(await cli.keys.approve(seventhPrompt, password), { ok: true }); check.equal((await lyra.keys.read("xai")).key === firstKey, true); check.equal((await lyra.apps.self()).permissions.includes(`key:${seventh.id}`), true);
+  const seventh = apiKey("Synthetic UUIDv7"); seventh.id = seventh.id.slice(0, 14) + "7" + seventh.id.slice(15); await ui.entries.save(seventh, 0);
+  let seventhPrompt; await check.rejects(() => lyra.keys.read(seventh.id), error => { seventhPrompt = error.prompt; return error.code === "key_approval_required"; }); check.deepEqual(await cli.keys.approve(seventhPrompt, password), { ok: true }); check.equal((await lyra.keys.read(seventh.id)).key === firstKey, true); check.equal((await lyra.apps.self()).permissions.includes(`key:${seventh.id}`), true);
 
   stage = "locked responses and usage lifetime";
   await ui.lock();
-  errorShape(await probe(service, "/v1/keys/providers", { api: lyra }), 423, "locked");
-  for (const provider of ["openai", "gemini", "deepseek"]) errorShape(await probe(service, "/v1/keys/read", { api: lyra, method: "POST", body: { provider } }), 423, "locked");
+  errorShape(await probe(service, "/v1/keys", { api: lyra }), 423, "locked");
+  for (const entry of [original.id, seventh.id, randomUUID()]) errorShape(await probe(service, "/v1/keys/read", { api: lyra, method: "POST", body: { id: entry } }), 423, "locked");
   check.equal((await ui.status()).unlocked, false); await ui.unlock(password);
   const logs = await readFile(join(home, "logs", "events.jsonl"), "utf8"); noSecrets(logs); noSecrets(await tree(join(home, "store"))); noSecrets(await readFile(join(home, "secrets", "apps.json"), "utf8"));
   check.equal(logs.includes("key_approval_required"), true); check.equal((await ui.keys.usage()).every(row => Object.keys(row).sort().join() === "app,entry,lastRead"), true);

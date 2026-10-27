@@ -360,7 +360,6 @@ form.card { margin: 0; }
 .syncwait .lead { max-width: 420px; }
 .waiticon { display: flex; align-items: center; justify-content: center; width: 48px; height: 48px; border-radius: 8px; background: var(--surface-3); color: var(--text); }
 /* API keys: the provider select spans the form; the apps that may read a key sit under its fields. */
-.select.wide { width: 100%; }
 .keyapps { display: flex; flex-direction: column; gap: 0; }
 .keyapps > .label { padding-bottom: 4px; }
 .keyapps > .notice { padding-top: 12px; }
