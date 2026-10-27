@@ -16,6 +16,8 @@ const restart = () => { progress.via = "quantum"; progress.folder = undefined; p
 
 const failureText = (t: Dictionary, code: string) =>
   code === "quantum_url_required" ? t.quantumMissing : code === "sync_signin_timeout" ? t.signInTimeout : code === "sync_signin_failed" ? t.signInFailed : code === "no_folder" ? t.folderFirst : reason(t, code);
+/** Failures the sync page already explains in its banner; repeating them under it as "could not be reached" would be wrong. */
+const BANNERED = new Set(["sync_plan_required", "sync_signin_required", "sync_storage_full"]);
 const minutesSince = (iso: string | null) => iso ? Math.max(0, (Date.now() - Date.parse(iso)) / 60000) : 0;
 
 /** The Sync row of the settings page: Set up while sync is off; where it goes and Manage while it is on. */
@@ -54,7 +56,7 @@ export function syncScreen(context: Context): HTMLElement {
     if (!result.ok) { progress.moving = false; progress.step = "choose"; draw(); fail(result.code); return; }
     progress.account = result.account; progress.datasets = result.datasets;
     if (progress.moving) { const moved = await bridge.syncMove(); progress.moving = false; if (!moved.ok) { await load(); fail(moved.code); return; } current = moved.status; progress.step = "choose"; draw(); return; }
-    if (current?.configured) { const synced = await bridge.syncNow(); await load(); if (!synced.ok) fail(synced.code); return; }
+    if (current?.configured) { progress.step = "choose"; const synced = await bridge.syncNow(); await load(); if (!synced.ok) fail(synced.code); return; }
     progress.step = "signed"; draw();
   }
   function chooseView(): HTMLElement {
@@ -100,7 +102,7 @@ export function syncScreen(context: Context): HTMLElement {
         } })]);
       view.modal(root);
     };
-    const now = button(t.syncNow, { glyph: "refreshCw", onclick: async () => { status.replaceChildren(); const result = await busy(content, () => bridge.syncNow()); if (result.ok) { current = result.status; draw(); } else { await load(); fail(result.code); } } });
+    const now = button(t.syncNow, { glyph: "refreshCw", onclick: async () => { status.replaceChildren(); const result = await busy(content, () => bridge.syncNow()); if (result.ok) { current = result.status; draw(); } else { await load(); if (!BANNERED.has(result.code)) fail(result.code); } } });
     const computer = (glyph: IconName, name: string) => div("computer", icon(glyph, 18), h("strong", { class: "strong" }, name));
     return div("syncstep",
       problem && div("alert", icon("triangleAlert", 18), h("span", { class: "grow" }, problem.text), problem.action ? button(problem.action, { onclick: () => { void signIn(); } }) : null),
@@ -162,7 +164,7 @@ export function joinScreen({ t }: Context): HTMLElement {
     const secret = progress.recovery
       ? field({ label: t.joinRecovery, name: "recovery", mono: true, secret: true, reveal: true, autocomplete: "off", t })
       : field({ label: t.masterPassword, name: "password", mono: true, secret: true, reveal: true, placeholder: t.joinPlaceholder, autocomplete: "current-password", t });
-    const swap = link(progress.recovery ? t.usePassword : t.useRecovery, () => { progress.recovery = !progress.recovery; status.replaceChildren(); draw(); });
+    const swap = link(progress.recovery ? t.joinUsePassword : t.joinUseRecovery, () => { progress.recovery = !progress.recovery; status.replaceChildren(); draw(); });
     const form = h("form", { class: "syncstep", novalidate: true, onsubmit: (event: Event) => event.preventDefault() },
       account ? accountCard(t, () => { void signIn(); }) : null, h("p", { class: "lead" }, account ? t.joinBody : t.joinFolderBody), secret.root, div("pick", swap), status, div("fill"),
       div("actions", div("fill"), button(t.join, { primary: true, type: "submit" })));

@@ -4,7 +4,7 @@ export type SyncDictionary = {
   viaAccount: string; viaAccountLine: string; viaFolder: string; viaFolderLine: string; folderLabel: string; noFolder: string; folderFirst: string;
   signIn: string; startSync: string; signingTitle: string; signingBody: string; openAgain: string;
   signedIn: string; otherAccount: string; startBody: string; startNotice: string; takenAlert: string; takenBody: string; signOut: string;
-  joinTitle: string; joinChoiceLine: string; joinBody: string; joinFolderBody: string; joinPlaceholder: string; joinRecovery: string; useRecovery: string; usePassword: string;
+  joinTitle: string; joinChoiceLine: string; joinBody: string; joinFolderBody: string; joinPlaceholder: string; joinRecovery: string; joinUseRecovery: string; joinUsePassword: string;
   join: string; joinWrong: string; joinWrongRecovery: string; joinEmpty: string;
   lastSynced: string; lastSyncedLine(ago: string): string; notYet: string; ago(minutes: number): string; syncNow: string; storage: string; storageLine(used: number, pool: number | null): string;
   computers: string; thisComputer: string; otherComputer: string; turnOff: string; moveToAccount: string;
@@ -35,7 +35,7 @@ export const enSync: SyncDictionary = {
   signOut: "Sign out",
   joinTitle: "Join a synced vault", joinChoiceLine: "Use the vault another computer already syncs, through the Cosmic account or a folder.",
   joinBody: "This account holds a vault from another computer. Its master password opens it here.", joinFolderBody: "The master password of the vault in this folder opens it here.",
-  joinPlaceholder: "The master password of that vault", joinRecovery: "Recovery key", useRecovery: "Use the recovery key instead", usePassword: "Use the master password instead",
+  joinPlaceholder: "The master password of that vault", joinRecovery: "Recovery key", joinUseRecovery: "Use the recovery key instead", joinUsePassword: "Use the master password instead",
   join: "Join", joinWrong: "That is not the master password of that vault.", joinWrongRecovery: "That recovery key does not open that vault.",
   joinEmpty: "This account holds no vault yet. Start sync on the computer that has the entries, then join from here.",
   lastSynced: "Last synced", lastSyncedLine: ago => `${ago}. Changes go out within seconds while Vault is unlocked.`, notYet: "Not yet",
@@ -73,7 +73,7 @@ export const esSync: SyncDictionary = {
   signOut: "Cerrar sesión",
   joinTitle: "Unirse a una bóveda sincronizada", joinChoiceLine: "Usar la bóveda que otra computadora ya sincroniza, mediante la cuenta Cosmic o una carpeta.",
   joinBody: "Esta cuenta tiene una bóveda de otra computadora. Su contraseña maestra la abre en esta computadora.", joinFolderBody: "La contraseña maestra de la bóveda de esta carpeta la abre en esta computadora.",
-  joinPlaceholder: "La contraseña maestra de esa bóveda", joinRecovery: "Clave de recuperación", useRecovery: "Usar la clave de recuperación", usePassword: "Usar la contraseña maestra",
+  joinPlaceholder: "La contraseña maestra de esa bóveda", joinRecovery: "Clave de recuperación", joinUseRecovery: "Usar la clave de recuperación", joinUsePassword: "Usar la contraseña maestra",
   join: "Unirse", joinWrong: "No es la contraseña maestra de esa bóveda.", joinWrongRecovery: "Esa clave de recuperación no abre esa bóveda.",
   joinEmpty: "Esta cuenta todavía no tiene una bóveda. Se inicia la sincronización en la computadora que tiene las entradas y después se une esta.",
   lastSynced: "Última sincronización", lastSyncedLine: ago => `${ago}. Los cambios salen en segundos mientras Vault está desbloqueado.`, notYet: "Todavía no",
