@@ -190,11 +190,15 @@ export class Vault {
     }
     const { key, ticket } = this.key(), ids: string[] = [];
     try {
+      // Sealed first, then written under one store lock: a lock and a folder listing per chunk made a 20 MiB file take minutes.
+      const sealed: { id: string; value: Awaited<ReturnType<typeof encrypt>> }[] = [];
       for (const value of data) {
         const bytes = Buffer.from(value, "base64"), next = crypto.randomUUID();
-        try { const sealed = await encrypt(key, bytes, `chunk:${next}`); this.check(ticket); await this.store.putChunk(next, sealed); ids.push(next); this.check(ticket); } finally { bytes.fill(0); }
+        try { sealed.push({ id: next, value: await encrypt(key, bytes, `chunk:${next}`) }); } finally { bytes.fill(0); }
       }
-      return { ids };
+      this.check(ticket);
+      await this.store.staged(async store => { for (const chunk of sealed) { await store.putChunk(chunk.id, chunk.value); ids.push(chunk.id); } });
+      this.check(ticket); return { ids };
     } catch (error) { for (const chunk of ids) await this.store.removeChunk(chunk).catch(() => undefined); throw error; }
   }
   async getChunks(app: AppView, entryId: unknown, ids: unknown) {

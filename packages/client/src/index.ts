@@ -130,7 +130,8 @@ export async function connect(options: ConnectOptions): Promise<Client> {
       approveWithHello: async (id, hwnd) => call("POST", "/v1/keys/approve/hello", { hwnd, id: promptId(id) }, 130000),
       revoke: async (app, entry) => call("POST", "/v1/keys/revoke", { app: appId(app), entry }), usage: () => call<ApiKeyUsage[]>("GET", "/v1/keys/usage"),
     },
-    chunks: { put: data => call("POST", "/v1/chunks", { data }), get: (entry, ids) => call("POST", "/v1/chunks/get", { entry, ids }), remove: ids => call("POST", "/v1/chunks/remove", { ids }) },
+    // A batch is up to 64 sealed chunks written and synced one by one; on a busy disk that outlasts the usual 15 seconds.
+    chunks: { put: data => call("POST", "/v1/chunks", { data }, 120000), get: (entry, ids) => call("POST", "/v1/chunks/get", { entry, ids }, 120000), remove: ids => call("POST", "/v1/chunks/remove", { ids }, 120000) },
     environment: project => call("GET", `/v1/env?project=${encodeURIComponent(project)}`),
     import: (format, text) => call<ImportCount>("POST", "/v1/import", { format, text }), importEnv: (project, text) => call<EnvImportCount>("POST", "/v1/import/env", { project, text }), export: password => call<Backup>("POST", "/v1/export", { password }), restore: (backup, password) => call<ImportCount>("POST", "/v1/restore", { backup, password }),
     exportToFile: (password, path) => call("POST", "/v1/export/file", { password, path }, 600000), restoreFromFile: (path, password) => call<ImportCount>("POST", "/v1/restore/file", { password, path }, 600000),
