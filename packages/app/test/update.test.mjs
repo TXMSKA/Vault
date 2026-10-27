@@ -107,6 +107,6 @@ for (const text of Object.values(english)) check.doesNotMatch(text, /\b(you|your
 const config = await readFile(new URL("../electron-builder.yml", import.meta.url), "utf8"), main = await readFile(new URL("../src/main/main.ts", import.meta.url), "utf8"), app = await readFile(new URL("../src/main/app.ts", import.meta.url), "utf8");
 check.match(config, /^publish:\r?\n  provider: github\r?\n  owner: TXMSKA\r?\n  repo: Vault\r?$/m); check.equal(FEED.owner, "TXMSKA"); check.equal(FEED.repo, "Vault");
 check.match(config, /^appId: com\.txmska\.vault$/m); check.match(app, /setAppUserModelId\("com\.txmska\.vault"\)/);
-for (const line of ["oneClick: false", "perMachine: false", "allowElevation: false", "createDesktopShortcut: false", "createStartMenuShortcut: true", "deleteAppDataOnUninstall: false", "artifactName: Vault-Setup-x64.exe", "asar: true", "productName: Vault"]) check.match(config, new RegExp(`^\\s*${line}\\r?$`, "m"), line);
+for (const line of ["oneClick: false", "perMachine: false", "allowElevation: false", "createDesktopShortcut: false", "createStartMenuShortcut: true", "menuCategory: Cosmic", "deleteAppDataOnUninstall: false", "artifactName: Vault-Setup-x64.exe", "asar: true", "productName: Vault"]) check.match(config, new RegExp(`^\\s*${line}\\r?$`, "m"), line);
 check.doesNotMatch(main, /noUpdates/); check.match(main, /start\(\)\.catch/); // production never turns the update check off
 check.doesNotMatch(app, /noUpdates: true|noUpdates = true/); // the app itself sets it nowhere

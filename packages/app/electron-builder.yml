@@ -36,6 +36,8 @@ nsis:
   createDesktopShortcut: false
   createStartMenuShortcut: true
   shortcutName: Vault
+  # Every Cosmic app's Start-menu shortcut sits in one Cosmic folder; an update moves the loose one from earlier versions there.
+  menuCategory: Cosmic
   deleteAppDataOnUninstall: false
   installerLanguages:
     - en_US

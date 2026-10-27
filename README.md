@@ -171,8 +171,8 @@ The release is these files, and `SHA256SUMS.txt` has the SHA-256 of each:
 
 - `Vault-Setup-x64.exe`: the installer, for one user and 64-bit Windows. It needs no
   administrator rights and puts Vault in `%LOCALAPPDATA%\Programs\Vault`, the folder
-  `install.ps1` uses, so there is one Vault per computer. It adds a Start-menu shortcut and no
-  desktop one. `/S` installs silently. Beside `Vault.exe` it copies the console layout
+  `install.ps1` uses, so there is one Vault per computer. It adds a Start-menu shortcut in the Cosmic
+  folder and no desktop one. `/S` installs silently. Beside `Vault.exe` it copies the console layout
   (`node.exe`, `lib`, `LICENSE`, `README.md`). Before files are replaced it runs the installed
   copy's `vault uninstall`, which stops the service and keeps the vault; after they are copied it
   runs `vault install --app` on `Vault.exe`, and the install fails with a message if that

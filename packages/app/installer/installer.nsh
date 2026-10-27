@@ -59,6 +59,10 @@ Var pid
     SetErrorLevel 2
     Abort
   ${endIf}
+  ; Earlier versions put the shortcut loose in the Start menu; once the one in the Cosmic folder is there, no loose one is left behind.
+  ${if} ${FileExists} "$SMPROGRAMS\Cosmic\${SHORTCUT_NAME}.lnk"
+    Delete "$SMPROGRAMS\${SHORTCUT_NAME}.lnk"
+  ${endIf}
 !macroend
 
 !macro customUnInstall
