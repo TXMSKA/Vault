@@ -4,7 +4,7 @@
 // every kind (added, searched, filtered, opened, revealed, copied, edited, deleted and put back), the menu and the settings, asserting the screens and the
 // service state and saving a screenshot of each screen in the dark and the light theme under build/screens.
 //
-// Run it with the Electron binary, after `npm run build`:
+// Run it with the Electron binary, after `npm run build` (set VAULT_SMOKE=join for the second scenario: joining from the welcome screen, moving sync to an account, its banners):
 //   $env:ELECTRON_OVERRIDE_DIST_PATH = "<folder of Electron 44.9.3>"; & "$env:ELECTRON_OVERRIDE_DIST_PATH\electron.exe" packages\app\test\smoke.cjs
 //
 // Everything is synthetic and lives in one temporary folder: the vault home (the browser's data is inside it) and the files the app saves. The home is created
@@ -12,6 +12,9 @@
 // (nobody is there to touch a sensor), the system dialogs, the clipboard and the browser are replaced by stand-ins that answer in memory, and the 30 seconds
 // a copied value stays on the clipboard are shortened through the main process's test-only option, so that no test touches the person's own clipboard.
 const { app, BrowserWindow } = require("electron");
+// MOTHERSHIP runs unattended with its display off at times; a window Windows reports as hidden or occluded then stops painting, and every frame wait hangs.
+// These switches keep this test window painting; the app itself sets neither.
+app.commandLine.appendSwitch("disable-renderer-backgrounding"); app.commandLine.appendSwitch("disable-backgrounding-occluded-windows"); app.commandLine.appendSwitch("disable-background-timer-throttling");
 const assert = require("node:assert/strict");
 const childProcess = require("node:child_process");
 const { EventEmitter } = require("node:events");
@@ -184,6 +187,60 @@ const expectRow = async (state, extra = {}) => {
   return now;
 };
 
+/**
+ * The second scenario (VAULT_SMOKE=join): a new computer joins a vault another computer already syncs through a folder, from the welcome screen, after a wrong
+ * password and a wrong recovery key; then it moves sync to a Cosmic account, shows the plan and sign-in banners, and meets an account that holds another vault.
+ */
+async function joinScenario({ connect, startService, core, tokens, as }) {
+  const { fakeQuantum } = await import(pathToFileURL(path.join(root, "packages", "service", "test", "fake-quantum.mjs")).href), cosmic = await fakeQuantum();
+  process.env.VAULT_QUANTUM_API = cosmic.api; process.env.VAULT_QUANTUM_SITE = cosmic.api;
+  const signInFor = async email => { await poll("the sign-in page", async () => opened.some(url => url.startsWith(`${cosmic.api}/authorize`))); const url = opened.findLast(item => item.startsWith(`${cosmic.api}/authorize`)); opened.length = 0; check.equal((await fetch(cosmic.issue(url, email).callback)).ok, true); };
+  try {
+    say("join: another computer made a vault and syncs it through a folder");
+    const peerHome = path.join(scratch, "peer"), peerService = await startService({ home: peerHome });
+    const peer = await connect({ home: peerHome, app: { id: "vault-cli", name: "Vault CLI", kind: "cosmic" }, tokens: tokens(), heartbeatMs: 2000 });
+    const peerPassword = randomBytes(24).toString("base64"); await peer.create(peerPassword);
+    const note = core.newEntry("note"); note.title = "Peer note"; note.note = `peer-${randomBytes(6).toString("hex")}`; await peer.entries.save(note, 0);
+    fs.mkdirSync(saved.folder, { recursive: true }); await peer.sync.setup(saved.folder);
+    service = await startService({ home }); manager = await as("vault-cli", "Vault CLI", "cosmic"); await manager.settings.set(settings);
+    running = await launch(); running.window.show(); await wait(500); for (const type of ["mouseDown", "mouseUp"]) page().sendInputEvent({ type, x: 100, y: 400, button: "left", clickCount: 1 });
+    await showing("Welcome to Vault", "Join a synced vault");
+
+    say("join from the welcome screen: the folder, a wrong password, a wrong recovery key, then the master password");
+    await poll("the join choice", () => evaluate("(() => { const radio = document.querySelector('input[type=radio][value=join]'); if (!radio) return false; radio.click(); return true; })()"));
+    await click("Continue"); await showing("Join a synced vault", "Cosmic account", "Folder");
+    await poll("the folder choice", () => evaluate("(() => { const radio = document.querySelector('input[type=radio][value=folder]'); if (!radio) return false; radio.click(); return true; })()"));
+    await click("Choose"); await poll("the folder in the field", async () => (await evaluate("document.querySelector('input[name=folder]').value")) === saved.folder); await shoot("join-folder", true);
+    await click("Continue"); await showing("The master password of the vault in this folder opens it here.");
+    await type("password", wrong); await click("Join"); await showing("That is not the master password of that vault."); await shoot("join-wrong", true);
+    await wait(1500); await click("Use the recovery key instead"); await type("recovery", "AAAA-BBBB-CCCC-DDDD-EEEE-FFFF-GGGG-HHHH"); await click("Join"); await showing("That recovery key does not open that vault.");
+    await wait(2500); await click("Use the master password instead"); await type("password", peerPassword); await click("Join");
+    await poll("the joined list", async () => JSON.stringify(await rowsText()).includes("Peer note")); plain("joined", [(await manager.status()).created, (await manager.status()).unlocked, (await manager.sync.status()).origin], [true, true, "folder"]);
+
+    say("move the folder sync to a Cosmic account");
+    await click("Menu"); await pick("Settings"); await showing("Sync", "On, folder"); await click("Manage"); await showing("Folder", "Move to Cosmic account");
+    await click("Move to Cosmic account"); await showing("Move sync to the Cosmic account?"); await click("Sign in and move", "document.querySelector('#modal')");
+    await signInFor("first@cosmic.invalid"); await showing("Cosmic account", "first@cosmic.invalid", "Storage"); plain("moved", (await manager.sync.status()).origin, "quantum"); await shoot("sync-moved", true);
+
+    say("the plan and sign-in banners");
+    cosmic.account("first@cosmic.invalid").plan = false; await click("Sync now"); await showing("This Cosmic account does not include Vault sync."); await wait(300); check.equal((await text()).includes("could not be reached"), false); await shoot("sync-plan-banner", true);
+    cosmic.account("first@cosmic.invalid").plan = true; cosmic.account("first@cosmic.invalid").refuseRefresh = true; cosmic.expire("first@cosmic.invalid");
+    await click("Sync now"); await showing("The Cosmic sign-in expired."); await shoot("sync-signin-banner", true);
+    cosmic.account("first@cosmic.invalid").refuseRefresh = false; await click("Sign in"); await signInFor("first@cosmic.invalid"); await gone("The Cosmic sign-in expired.");
+
+    say("turn off with sign-out, then an account that holds another vault is refused plainly");
+    await click("Turn off sync"); await showing("Sign out of the Cosmic account on this computer"); await click("Turn off", "document.querySelector('#modal')"); await showing("Cosmic account", "Folder");
+    const otherHome = path.join(scratch, "other"), otherService = await startService({ home: otherHome });
+    const other = await connect({ home: otherHome, app: { id: "vault-cli", name: "Vault CLI", kind: "cosmic" }, tokens: tokens(), heartbeatMs: 2000 }); await other.create(randomBytes(24).toString("base64"));
+    const started = await other.sync.quantum.signIn(cosmic.api, cosmic.api); await fetch(cosmic.issue(started.url, "taken@cosmic.invalid").callback); await other.sync.quantum.wait(started.id); await other.sync.setupQuantum();
+    await click("Sign in"); await signInFor("taken@cosmic.invalid"); await showing("This account already holds a vault from another computer", "Sign out"); await shoot("sync-taken", true);
+    check.equal((await manager.sync.status()).configured, false); await click("Sign out"); await showing("Cosmic account", "Folder");
+    for (const client of [peer, other]) await client.close(); await peerService.shutdown(); await otherService.shutdown();
+    console.log(`Vault app join smoke: ${checks} checks passed, ${shots} screenshots in build\\screens.`);
+    await service.shutdown();
+  } finally { delete process.env.VAULT_QUANTUM_API; delete process.env.VAULT_QUANTUM_SITE; await cosmic.close(); }
+}
+
 async function main() {
   const { connect } = await import(pathToFileURL(path.join(root, "packages", "client", "dist", "index.js")).href);
   const { startService } = await import(pathToFileURL(path.join(root, "packages", "service", "dist", "service", "src", "server.js")).href);
@@ -198,6 +255,7 @@ async function main() {
     }
   };
   fs.mkdirSync(scratch, { recursive: true });
+  if (process.env.VAULT_SMOKE === "join") return joinScenario({ connect, startService, core, tokens, as });
 
   say("starting the service and the app");
   service = await startService({ home, prompts: { waitMs: 4000 } });
@@ -528,6 +586,30 @@ async function main() {
   const downloadedFile = fs.readFileSync(saved.download); check.equal(createHash("sha256").update(downloadedFile).digest("hex") === createHash("sha256").update(attachmentBytes).digest("hex"), true); attachmentBytes.fill(0); downloadedFile.fill(0);
   await click("Edit"); await click("Remove synthetic.keystore"); check.equal(await count(".filelist .frow"), 0); await click("Save"); await poll("the document without files", async () => (await entryNow()) === "Lease contract" && (await rowOf("Lease contract")).entry.files.length === 0);
   plain("the document", [(await rowOf("Lease contract")).entry.kind, (await rowOf("Lease contract")).entry.note, (await rowOf("Lease contract")).entry.fields, (await rowOf("Lease contract")).entry.files], ["doc", leaseNote, [], []]);
+
+  say("attachments dropped for real: disk-backed files at chunk boundaries and the 20 MB limit, saved back unchanged");
+  // A drop carries files from disk; DOM.setFileInputFiles gives the page such files, and the drop goes through the preload's path lookup like a real one.
+  const dropFile = async file => {
+    await evaluate("(() => { const input = document.createElement('input'); input.type = 'file'; input.id = 'smoke-drop'; input.style.display = 'none'; document.body.append(input); return true; })()");
+    const inspector = page().debugger; inspector.attach("1.3");
+    try { const { root } = await inspector.sendCommand("DOM.getDocument", {}); const { nodeId } = await inspector.sendCommand("DOM.querySelector", { nodeId: root.nodeId, selector: "#smoke-drop" }); await inspector.sendCommand("DOM.setFileInputFiles", { nodeId, files: [file] }); }
+    finally { inspector.detach(); }
+    await evaluate("(() => { const input = document.getElementById('smoke-drop'), data = new DataTransfer(); data.items.add(input.files[0]); const zone = document.querySelector('.dropzone'); zone.dispatchEvent(new DragEvent('dragover', { dataTransfer: data, bubbles: true, cancelable: true })); zone.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true })); input.remove(); return true; })()");
+  };
+  const limit = 20 * 1024 * 1024, drops = [[32768, "32 KB"], [32769, "32 KB"], [limit, "20.0 MB"]].map(([size, shown]) => ({ size, shown, name: `drop-${size}.bin`, bytes: randomBytes(size) }));
+  await click("Edit");
+  for (const drop of drops) { const file = path.join(scratch, drop.name); fs.writeFileSync(file, drop.bytes); await dropFile(file); await showing(drop.name, drop.shown); }
+  { const tooLarge = path.join(scratch, "drop-too-large.bin"); fs.writeFileSync(tooLarge, Buffer.alloc(limit + 1)); await dropFile(tooLarge); await showing("The file is larger than 20 MB"); fs.rmSync(tooLarge); }
+  check.equal(await count(".filelist .frow"), 3); await click("Save");
+  await poll("the three dropped files", async () => (await rowOf("Lease contract")).entry.files.length === 3, 90000);
+  plain("the stored sizes", (await rowOf("Lease contract")).entry.files.map(file => [file.name, file.size, file.chunks.length]), drops.map(drop => [drop.name, drop.size, Math.ceil(drop.size / 32768)]));
+  await choose("Lease contract");
+  for (const drop of drops) {
+    fs.rmSync(saved.download, { force: true }); await click(`Save ${drop.name}`); await poll(`${drop.name} saved`, () => fs.existsSync(saved.download));
+    const back = fs.readFileSync(saved.download); check.equal(createHash("sha256").update(back).digest("hex") === createHash("sha256").update(drop.bytes).digest("hex"), true); back.fill(0); drop.bytes.fill(0);
+  }
+  await click("Edit"); for (const drop of drops) await click(`Remove ${drop.name}`); await click("Save");
+  await poll("the document emptied again", async () => (await rowOf("Lease contract")).entry.files.length === 0); await gone("Kept encrypted inside Vault");
 
   await addKind("Note"); await showing("New note", "Text"); await set('input[name="title"]', "Home Wi-Fi"); await set('textarea[name="note"]', wifiText);
   await shoot("add-note", true); await click("Save"); await poll("the note", async () => (await entryNow()) === "Home Wi-Fi");
