@@ -187,6 +187,77 @@ const expectRow = async (state, extra = {}) => {
   return now;
 };
 
+// The words of the window in each language, from the built page, so that a pass in Spanish presses what a person reads there; and the English that must not
+// be left in Spanish (the words both languages share, such as Apps, are not counted).
+let words, english = [];
+const learn = async () => {
+  const { dictionary } = await import(pathToFileURL(path.join(root, "packages", "app", "dist", "renderer", "i18n.js")).href);
+  words = { en: dictionary("en"), es: dictionary("es") }; const spanish = new Set(Object.values(words.es).filter(value => typeof value === "string"));
+  english = Object.entries(words.en).filter(([key, value]) => typeof value === "string" && value.length >= 5 && value !== words.es[key] && !spanish.has(value)).map(([, value]) => value);
+};
+// English words standing on their own, so that Cancel is not found inside Cancelar.
+const alone = value => new RegExp(`(?<!\\p{L})${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?!\\p{L})`, "u");
+// The window is never given the keyboard, so the page is told to act as if it had the focus while `work` runs: a focus ring only shows on a page that does.
+const focused = async work => {
+  const inspector = page().debugger; inspector.attach("1.3");
+  try { await inspector.sendCommand("Emulation.setFocusEmulationEnabled", { enabled: true }); return await work(); } finally { inspector.detach(); }
+};
+// The layer a person can reach: an open dialog alone, a request with the title bar, or the whole window.
+const LAYER = `(() => { const modal = document.getElementById("modal"), overlay = document.getElementById("overlay");
+  return modal.childElementCount ? [modal] : overlay.childElementCount ? [overlay, document.getElementById("bar")] : [document.body]; })()`;
+/**
+ * A sync or API-key screen as a person meets it at the smallest window, by keyboard and in either language: Tab alone reaches every control of the layer in
+ * front, each with its ring and inside the window, and never leaves an open dialog; no text runs out of the window or is cut without its ellipsis; and in
+ * Spanish no English is left. Run inside `focused`.
+ */
+const passes = async (name, language) => {
+  const tag = `${name} (${language})`;
+  plain(`${tag}: the window`, await evaluate("innerWidth + 'x' + innerHeight"), "920x640");
+  // Controls are known by what they say, not by their node: the list draws its rows again while the keys are pressed. A group of radio buttons is one stop,
+  // whichever of them Tab lands on. How each looks at rest is taken with nothing focused.
+  await evaluate("document.activeElement?.blur()");
+  const labels = await evaluate(`(() => {
+    const parts = ${LAYER};
+    const known = node => node.type === "radio" ? "radio:" + node.name : (node.getAttribute("aria-label") || node.closest("label")?.textContent.trim() || node.textContent.trim() || node.name || node.tagName).slice(0, 40);
+    const look = node => [node, node.nextElementSibling, node.closest(".choice, .input, .search")].map(part => { if (!part) return ""; const style = getComputedStyle(part); return style.outlineStyle + style.outlineWidth + style.boxShadow; }).join("|");
+    const controls = parts.flatMap(part => [...part.querySelectorAll("button, input, select, textarea, a[href], [tabindex]")]).filter(node =>
+      !node.disabled && node.tabIndex >= 0 && node.type !== "hidden" && !node.closest("[inert]") && node.getClientRects().length && getComputedStyle(node).visibility !== "hidden");
+    window.__pass = { known, look, rest: new Map(controls.map(node => [known(node), look(node)])) };
+    return [...new Set(controls.map(known))];
+  })()`);
+  const stops = [];
+  for (let press = 0; press < labels.length + 3; press++) {
+    for (const type of ["keyDown", "keyUp"]) page().sendInputEvent({ type, keyCode: "Tab" }); await frame();
+    stops.push(await evaluate(`(() => {
+      const { known, look, rest } = window.__pass, parts = ${LAYER}, node = document.activeElement; if (!node || node === document.body) return null;
+      // The ring is drawn on the control, the box beside it or the field around it, and the whole of it has to be inside the window, outline and offset included.
+      const drawn = [node, node.nextElementSibling, node.closest(".choice, .input, .search")].find(part => { if (!part) return false; const style = getComputedStyle(part); return style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0 || style.boxShadow !== "none"; });
+      const style = drawn ? getComputedStyle(drawn) : null, spread = style && style.outlineStyle !== "none" ? Math.max(0, parseFloat(style.outlineWidth) + parseFloat(style.outlineOffset)) : 0;
+      const box = (drawn ?? node.closest(".checkbox, .choice") ?? node).getBoundingClientRect(), ring = Boolean(drawn) && look(node) !== rest.get(known(node));
+      const seen = { left: box.left - spread, top: box.top - spread, right: box.right + spread, bottom: box.bottom + spread };
+      return { label: known(node), held: parts.some(part => part.contains(node)),
+        ring, seen: [seen.left, seen.top, seen.right, seen.bottom].map(Math.round).join(","), inside: seen.left >= 0 && seen.top >= 0 && seen.right <= innerWidth && seen.bottom <= innerHeight };
+    })()`));
+  }
+  const real = stops.filter(Boolean), reached = new Set(real.map(stop => stop.label));
+  plain(`${tag}: controls Tab does not reach (after ${stops.map(stop => stop?.label ?? "-").join(" > ")})`, labels.filter(label => !reached.has(label)), []);
+  plain(`${tag}: focus out of the layer or on no control`, real.filter(stop => !stop.held || !labels.includes(stop.label)).map(stop => stop.label), []);
+  plain(`${tag}: focus without its ring or out of the window`, real.filter(stop => !stop.ring || !stop.inside).map(stop => `${stop.label}${stop.ring ? "" : " (no ring)"}${stop.inside ? "" : ` (cut ${stop.seen})`}`), []);
+  await evaluate("document.activeElement?.blur()");
+  plain(`${tag}: text cut or out of the window`, await evaluate(`(() => {
+    const out = [];
+    for (const part of ${LAYER}) for (const node of part.querySelectorAll("*")) {
+      if (!node.getClientRects().length || node.closest("[inert]") || ![...node.childNodes].some(child => child.nodeType === 3 && child.textContent.trim())) continue;
+      const style = getComputedStyle(node), box = node.getBoundingClientRect();
+      if (node.scrollWidth > node.clientWidth + 1 && style.overflowX !== "visible" && style.textOverflow !== "ellipsis" || box.right > innerWidth + 0.5 || box.left < -0.5) out.push(node.textContent.trim().slice(0, 40));
+    }
+    return out;
+  })()`), []);
+  if (language === "es") { const now = await evaluate(`${LAYER}.map(part => part.innerText).join("\\n")`); plain(`${tag}: English left`, english.filter(value => alone(value).test(now)), []); }
+};
+// The checks above, then the screen in both themes; the Spanish screens are kept beside the English ones.
+const look = async (name, language) => { await passes(name, language); await shoot(language === "en" ? name : `${name}-es`, true); };
+
 /**
  * The second scenario (VAULT_SMOKE=join): a new computer joins a vault another computer already syncs through a folder, from the welcome screen, after a wrong
  * password and a wrong recovery key; then it moves sync to a Cosmic account, shows the plan and sign-in banners, and meets an account that holds another vault.
@@ -255,6 +326,7 @@ async function main() {
     }
   };
   fs.mkdirSync(scratch, { recursive: true });
+  await learn();
   if (process.env.VAULT_SMOKE === "join") return joinScenario({ connect, startService, core, tokens, as });
 
   say("starting the service and the app");
@@ -837,33 +909,37 @@ async function main() {
   plain("the settings kept", await manager.settings.get(), { idleMinutes: 30, lockWithLastApp: true, language: "en", theme: "dark" });
   await click("Lock when the last app closes"); await settle("the last-app rule off", async () => (await manager.settings.get()).lockWithLastApp === false); await resync();
 
-  say("sync: a folder starts sync, shows it on and turns it off; no storage provider is named");
-  fs.mkdirSync(saved.folder, { recursive: true });
-  await click("Set up"); await showing("Sync", "Cosmic account", "Folder", "Sign in"); check.equal(/OneDrive|cloud folder|Nebula\+ Dawn/i.test(await text()), false); await shoot("sync-choose", true);
-  await poll("the folder choice", () => evaluate("(() => { const radio = document.querySelector('input[type=radio][value=folder]'); if (!radio) return false; radio.click(); return true; })()")); await showing("Folder", "Choose", "Start sync"); await click("Start sync"); await showing("Choose a folder first.");
-  await click("Choose"); await poll("the folder in the field", async () => (await evaluate("document.querySelector('input[name=folder]').value")) === saved.folder);
-  await click("Start sync"); await showing("Last synced", "Computers", "This computer", "Move to Cosmic account", "Turn off sync");
-  plain("folder sync", [(await manager.sync.status()).configured, (await manager.sync.status()).origin], [true, "folder"]); await shoot("sync-on-folder", true);
-  await click("Sync now"); await showing("Just now");
-  await click("Turn off sync"); await showing("Turn off sync on this computer?", "Also remove this computer's encrypted copies from the folder"); check.equal(await count("#modal .checkbox"), 1);
-  await click("Turn off", "document.querySelector('#modal')"); await showing("Cosmic account", "Folder"); check.equal((await manager.sync.status()).configured, false);
+  const { fakeQuantum } = await import(pathToFileURL(path.join(root, "packages", "service", "test", "fake-quantum.mjs")).href), modalScope = "document.querySelector('#modal')";
+  await focused(async () => { for (const language of ["en", "es"]) {
+    const w = words[language], spoken = language === "en" ? "English" : "Spanish";
+    say(`sync in ${spoken}, by keyboard at the smallest window: a folder starts sync, shows it on and turns it off; no storage provider is named`);
+    await setting({ language }); await showing(w.idleTitle, w.setUp); saved.folder = path.join(scratch, `sync-folder-${language}`); fs.mkdirSync(saved.folder, { recursive: true });
+    await click(w.setUp); await showing(w.syncPageTitle, w.viaAccount, w.viaFolder, w.signIn); check.equal(/OneDrive|cloud folder|nube|Nebula\+ Dawn/i.test(await text()), false); await look("sync-choose", language);
+    await poll("the folder choice", () => evaluate("(() => { const radio = document.querySelector('input[type=radio][value=folder]'); if (!radio) return false; radio.click(); return true; })()")); await showing(w.folderLabel, w.choose, w.startSync); await click(w.startSync); await showing(w.folderFirst);
+    await click(w.choose); await poll("the folder in the field", async () => (await evaluate("document.querySelector('input[name=folder]').value")) === saved.folder); await look("sync-folder", language);
+    await click(w.startSync); await showing(w.lastSynced, w.computers, w.thisComputer, w.moveToAccount, w.turnOff);
+    plain("folder sync", [(await manager.sync.status()).configured, (await manager.sync.status()).origin], [true, "folder"]); await look("sync-on-folder", language);
+    await click(w.syncNow); await showing(w.ago(0));
+    await click(w.turnOff); await showing(w.turnOffTitle, w.removeCopies("folder")); check.equal(await count("#modal .checkbox"), 1); await look("sync-off-folder", language);
+    await click(w.turnOffYes, modalScope); await showing(w.viaAccount, w.viaFolder); check.equal((await manager.sync.status()).configured, false);
 
-  say("sync through the Cosmic account: the browser signs in, an empty account takes this vault, and turning off signs out");
-  const { fakeQuantum } = await import(require("node:url").pathToFileURL(path.join(root, "packages", "service", "test", "fake-quantum.mjs")).href), cosmic = await fakeQuantum();
-  process.env.VAULT_QUANTUM_API = cosmic.api; process.env.VAULT_QUANTUM_SITE = cosmic.api;
-  try {
-    await poll("the quantum choice", () => evaluate("(() => { const radio = document.querySelector('input[type=radio][value=quantum]'); if (!radio) return false; radio.click(); return true; })()")); await click("Sign in");
-    await showing("Continue in the browser", "Open the page again"); await shoot("sync-signing", true);
-    await poll("the sign-in page", async () => opened.some(url => url.startsWith(`${cosmic.api}/authorize`)));
-    const issued = cosmic.issue(opened.findLast(url => url.startsWith(`${cosmic.api}/authorize`)), "synthetic@cosmic.invalid"); check.equal((await fetch(issued.callback)).ok, true);
-    await showing("Signed in", "synthetic@cosmic.invalid", "Use another account", "Start sync"); await shoot("sync-signed", true);
-    await click("Start sync"); await showing("Cosmic account", "synthetic@cosmic.invalid", "Storage", "Last synced", "Turn off sync");
-    plain("account sync", [(await manager.sync.status()).configured, (await manager.sync.status()).origin], [true, "quantum"]); await shoot("sync-on-account", true);
-    await click("Turn off sync"); await showing("Sign out of the Cosmic account on this computer"); check.equal(await count("#modal .checkbox"), 2);
-    await click("Turn off", "document.querySelector('#modal')"); await showing("Cosmic account", "Folder"); check.equal((await manager.sync.status()).configured, false);
-    await poll("the account signed out", async () => !fs.existsSync(path.join(home, "secrets", "quantum.json")));
-  } finally { delete process.env.VAULT_QUANTUM_API; delete process.env.VAULT_QUANTUM_SITE; await cosmic.close(); }
-  await click("Back to the list"); await showing("Lock after idle", "Set up");
+    say(`sync through the Cosmic account in ${spoken}: the browser signs in, an empty account takes this vault, and turning off signs out`);
+    const cosmic = await fakeQuantum(); process.env.VAULT_QUANTUM_API = cosmic.api; process.env.VAULT_QUANTUM_SITE = cosmic.api;
+    try {
+      await poll("the quantum choice", () => evaluate("(() => { const radio = document.querySelector('input[type=radio][value=quantum]'); if (!radio) return false; radio.click(); return true; })()")); await click(w.signIn);
+      await showing(w.signingTitle, w.openAgain); await look("sync-signing", language);
+      await poll("the sign-in page", async () => opened.some(url => url.startsWith(`${cosmic.api}/authorize`)));
+      const issued = cosmic.issue(opened.findLast(url => url.startsWith(`${cosmic.api}/authorize`)), "synthetic@cosmic.invalid"); check.equal((await fetch(issued.callback)).ok, true);
+      await showing(w.signedIn, "synthetic@cosmic.invalid", w.otherAccount, w.startSync); await look("sync-signed", language);
+      await click(w.startSync); await showing(w.viaAccount, "synthetic@cosmic.invalid", w.storage, w.lastSynced, w.turnOff);
+      plain("account sync", [(await manager.sync.status()).configured, (await manager.sync.status()).origin], [true, "quantum"]); await look("sync-on-account", language);
+      await click(w.turnOff); await showing(w.signOutToo); check.equal(await count("#modal .checkbox"), 2); await look("sync-off-account", language);
+      await click(w.turnOffYes, modalScope); await showing(w.viaAccount, w.viaFolder); check.equal((await manager.sync.status()).configured, false);
+      await poll("the account signed out", async () => !fs.existsSync(path.join(home, "secrets", "quantum.json")));
+    } finally { delete process.env.VAULT_QUANTUM_API; delete process.env.VAULT_QUANTUM_SITE; await cosmic.close(); }
+    await click(w.backToList); await showing(w.idleTitle, w.setUp);
+  } });
+  await setting({ language: "en" }); await showing("Lock after idle", "Set up");
 
   say("Windows Hello is turned on with the master password, in the board's dialog, and off with one press");
   await poll("Hello to be available", async () => evaluate("window.vault.state().then(state => state.helloAvailable)"));
@@ -879,21 +955,27 @@ async function main() {
   await click("Windows Hello"); await poll("Hello off", async () => !fs.existsSync(path.join(home, "secrets", "hello.json")));
   await poll("the switch off", async () => (await evaluate("document.querySelector('[aria-label=\"Windows Hello\"]').getAttribute('aria-checked')")) === "false");
 
-  say("API keys for any service: a name and the key, Lyra off until the person allows it, asks once, is approved with the master password, reads the key by entry, and is stopped");
-  await click("Back to the list"); await listShown(); await addKind("API key"); await showing("New API key", "Name", "Key", "Lyra can use this key"); await wait(800); await showing("New API key");
-  check.equal(/Provider|Base URL/.test(await text()), false); plain("Lyra off by default", await evaluate("document.querySelector('label.checkbox input').checked"), false);
-  const apiKey = `synthetic-${randomBytes(12).toString("hex")}`; await set('input[name="title"]', "Synthetic service"); await set('input[name="key"]', apiKey);
-  await evaluate("document.querySelector('label.checkbox').click()"); plain("Lyra allowed", await evaluate("document.querySelector('label.checkbox input').checked"), true); await shoot("add-apikey", true);
-  await click("Save"); await showing("Apps that can use it", "Lyra", "Not read yet");
-  const lyra = await as("lyra", "Lyra", "cosmic"), listed = await lyra.keys.list(); check.deepEqual(listed.map(row => row.label), ["Synthetic service"]); const keyId = listed[0].id;
-  let keyAsked; try { await lyra.keys.read(keyId); } catch (error) { keyAsked = error?.code; } check.equal(keyAsked, "key_approval_required");
-  await showing("Lyra wants to use an API key", "Synthetic service"); await shoot("key-request", true);
-  await type("password", changed, "document.querySelector('#overlay')"); await click("Allow", "document.querySelector('#overlay')"); await gone("Lyra wants to use an API key");
-  check.equal((await lyra.keys.read(keyId)).key, apiKey);
-  await choose("Synthetic service"); await showing("Last read just now"); await shoot("apikey-open", true);
-  await click("Stop Lyra"); await showing("No app can use this key."); let keyStopped; try { await lyra.keys.read(keyId); } catch (error) { keyStopped = error?.code; } check.equal(keyStopped, "not_found");
-  await lyra.close(); { const row = (await manager.entries.list()).find(item => item.entry.kind === "apikey"); await manager.entries.remove(row.entry.id, row.version); }
-  await click("Menu"); await pick("Settings"); await showing("Lock after idle");
+  await focused(async () => { for (const language of ["en", "es"]) {
+    const w = words[language], title = language === "en" ? "Synthetic service" : "Servicio sintético", overlayScope = "document.querySelector('#overlay')";
+    say(`API keys in ${language === "en" ? "English" : "Spanish"}, by keyboard at the smallest window: a name and the key, Lyra off until the person allows it, asks once, is approved with the master password, reads the key by entry, and is stopped`);
+    await setting({ language }); await showing(w.idleTitle);
+    await click(w.backToList); await listShown(); await click(w.addEntry); await pick(w.kindName("apikey"));
+    await showing(w.newTitle("apikey"), w.formName, w.fieldLabel("key"), w.lyraCanUse); await wait(800); await showing(w.newTitle("apikey"));
+    check.equal(/Provider|Base URL|Proveedor|URL base/.test(await text()), false); plain("Lyra off by default", await evaluate("document.querySelector('label.checkbox input').checked"), false);
+    const apiKey = `synthetic-${randomBytes(12).toString("hex")}`; await set('input[name="title"]', title); await set('input[name="key"]', apiKey);
+    await evaluate("document.querySelector('label.checkbox').click()"); plain("Lyra allowed", await evaluate("document.querySelector('label.checkbox input').checked"), true); await look("add-apikey", language);
+    await click(w.save); await showing(w.appsTitle, "Lyra", w.notReadYet);
+    const lyra = await as("lyra", "Lyra", "cosmic"), listed = await lyra.keys.list(); check.deepEqual(listed.map(row => row.label), [title]); const keyId = listed[0].id;
+    let keyAsked; try { await lyra.keys.read(keyId); } catch (error) { keyAsked = error?.code; } check.equal(keyAsked, "key_approval_required");
+    await showing(w.keyTitle("Lyra"), title); await look("key-request", language);
+    await type("password", changed, overlayScope); await click(w.allow, overlayScope); await gone(w.keyTitle("Lyra"));
+    check.equal((await lyra.keys.read(keyId)).key, apiKey);
+    await choose(title); await showing(w.lastRead(w.ago(0))); await look("apikey-open", language);
+    await click(w.stop("Lyra")); await showing(w.noApps); let keyStopped; try { await lyra.keys.read(keyId); } catch (error) { keyStopped = error?.code; } check.equal(keyStopped, "not_found");
+    await lyra.close(); { const row = (await manager.entries.list()).find(item => item.entry.kind === "apikey"); await manager.entries.remove(row.entry.id, row.version); }
+    await click(w.menu); await pick(w.menuSettings); await showing(w.idleTitle);
+  } });
+  await setting({ language: "en" }); await showing("Lock after idle");
   await click("Back to the list"); await listShown(); await showing("Choose an entry to see it.");
   await wait(CLIPBOARD_MS + 300);
 
