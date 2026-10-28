@@ -57,6 +57,8 @@ p, h1 { margin: 0; }
 
 .titlebar { display: flex; align-items: center; gap: 8px; height: 36px; padding-left: 12px; background: var(--chrome); border-bottom: 1px solid var(--line); -webkit-app-region: drag; }
 .titlebar button { -webkit-app-region: no-drag; }
+/* The title bar's controls touch the window's top edge (and Close its right one), so their focus ring is drawn inside them, where none of it is cut. */
+.titlebar button:focus-visible { outline-offset: -2px; }
 .titlebar .name { font: 600 13px/18px var(--sans); color: var(--title); }
 .tools { display: flex; align-items: center; gap: 4px; margin-right: 8px; }
 .tool { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 8px; font: 500 13px/18px var(--sans); color: var(--title); }
@@ -64,8 +66,9 @@ p, h1 { margin: 0; }
 .tool.icon-only { width: 28px; padding: 0; justify-content: center; }
 .tool:hover:not(:disabled) { background: var(--hover); }
 .tool:disabled { opacity: 0.5; }
-.controls { display: flex; height: 36px; margin-left: 8px; }
-.wc { display: grid; place-items: center; width: 44px; height: 36px; color: var(--soft); }
+/* The window controls fill the bar above its bottom line; at 36 px they stood half a pixel out of the window and over the line. */
+.controls { display: flex; align-self: stretch; margin-left: 8px; }
+.wc { display: grid; place-items: center; width: 44px; height: 100%; color: var(--soft); }
 .wc:hover { background: var(--hover); color: var(--title); }
 .wc.close:hover { background: var(--error-wash); color: var(--error); }
 .app-icon .tile { fill: var(--tile); }
