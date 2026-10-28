@@ -28,5 +28,24 @@ jobs:
       - run: npm run build
       - run: npm run typecheck
       - run: npm test
+      # The app smoke drives the real window with Vault's own Electron on synthetic data, both scenarios. npm ci skips the Electron download, so it is fetched
+      # here and checked against the hashes the locked electron package ships. Git Bash waits for electron.exe, which is a window program.
+      - run: node node_modules/electron/install.js
+      - run: node_modules/electron/dist/electron.exe packages/app/test/smoke.cjs
+        shell: bash
+        timeout-minutes: 20
+      - run: node_modules/electron/dist/electron.exe packages/app/test/smoke.cjs
+        shell: bash
+        timeout-minutes: 10
+        env:
+          VAULT_SMOKE: join
+      # The screens hold synthetic data only; on a failure they show where the app stopped.
+      - name: Upload the smoke screens
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: smoke-screens
+          path: build/screens
+          if-no-files-found: ignore
       # Builds the installer and the console zip and writes SHA256SUMS.txt. It publishes nothing.
       - run: npm run dist
