@@ -15,6 +15,9 @@ const { app, BrowserWindow } = require("electron");
 // MOTHERSHIP runs unattended with its display off at times; a window Windows reports as hidden or occluded then stops painting, and every frame wait hangs.
 // These switches keep this test window painting; the app itself sets neither.
 app.commandLine.appendSwitch("disable-renderer-backgrounding"); app.commandLine.appendSwitch("disable-backgrounding-occluded-windows"); app.commandLine.appendSwitch("disable-background-timer-throttling");
+// The window opens on a second display when there is one (below), and that display may be scaled: at 175 % no window is exactly 920 by 640. One pixel per
+// point everywhere keeps the sizes and the screens the same on every display and in CI.
+app.commandLine.appendSwitch("force-device-scale-factor", "1");
 const assert = require("node:assert/strict");
 const childProcess = require("node:child_process");
 const { EventEmitter } = require("node:events");
@@ -68,8 +71,17 @@ childProcess.spawnSync = (file, args = [], options = {}) => {
   return { pid: 0, status: 0, signal: null, output: [null, stdout, null], stdout, stderr: Buffer.alloc(0) };
 };
 require("node:module").syncBuiltinESMExports();
-// The window is shown but fully transparent, out of the way of the mouse and the taskbar, and it never takes the keyboard while it is looked at.
-BrowserWindow.prototype.show = function show() { this.setOpacity(0); this.setIgnoreMouseEvents(true); this.setSkipTaskbar(true); this.showInactive(); };
+// The window is shown but fully transparent, out of the way of the mouse and the taskbar, and it never takes the keyboard while it is looked at. When the
+// machine has a second display it opens there, so that nothing appears on the main one where the person works.
+const aside = window => {
+  const { screen } = require("electron"), primary = screen.getPrimaryDisplay(), other = screen.getAllDisplays().find(display => display.id !== primary.id);
+  if (!other) return;
+  const [width, height] = window.getSize(), [inner, tall] = window.getContentSize(), area = other.workArea;
+  window.setPosition(area.x + Math.max(0, Math.floor((area.width - width) / 2)), area.y + Math.max(0, Math.floor((area.height - height) / 2)));
+  // Moving to a display with another scale factor rescales the window; it is given back the size it had.
+  window.setContentSize(inner, tall);
+};
+BrowserWindow.prototype.show = function show() { aside(this); this.setOpacity(0); this.setIgnoreMouseEvents(true); this.setSkipTaskbar(true); this.showInactive(); };
 BrowserWindow.prototype.focus = function focus() {};
 // The title bar's controls are checked by what they ask of the window, not by moving the user's screen.
 const controls = [];
@@ -356,6 +368,7 @@ async function main() {
   say("the window and the page are locked down");
   const win = running.window, wc = page();
   plain("the content size", win.getContentSize(), [920, 640]); plain("the minimum size", win.getMinimumSize(), [920, 640]); plain("the menu bar", win.isMenuBarVisible(), false);
+  { const { screen } = require("electron"), displays = screen.getAllDisplays(); plain("the display the window is on", displays.length > 1 && screen.getDisplayMatching(win.getBounds()).id === screen.getPrimaryDisplay().id, false); }
   check.equal(wc.getURL(), "app://vault/"); check.equal(win.getTitle(), "Vault");
   check.deepEqual(await evaluate("[typeof require, typeof process, typeof module, typeof Buffer, typeof ipcRenderer, typeof window.electron]"), ["undefined", "undefined", "undefined", "undefined", "undefined", "undefined"]);
   check.deepEqual(await evaluate("Object.keys(window.vault).sort()"), ["allowImport", "allowImportWithHello", "approveRun", "approveRunWithHello", "cancelClose", "chooseBackup", "close", "confirmClose", "create", "disableHello", "dismissPrompt", "dismissTour", "enableHello", "entries", "entryAttach", "entryAttachDropped", "entryCode", "entryCopy", "entryCopyCode", "entryDiscard", "entryDownload", "entryFavorite", "entryOpen", "entryOpenSite", "entryRemove", "entryReveal", "entrySave", "entryUndo", "finishSetup", "interact", "keyApprove", "keyApproveWithHello", "keyRevoke", "keyUsage", "lock", "minimize", "onState", "printRecoverySheet", "recover", "restoreBackup", "retry", "saveRecoverySheet", "saveSettings", "state", "syncCancel", "syncChooseFolder", "syncJoin", "syncLeave", "syncMove", "syncNow", "syncSetup", "syncSignIn", "syncSignOut", "syncStatus", "syncWait", "toggleMaximize", "unlock", "unlockWithHello"]);
