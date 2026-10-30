@@ -50,7 +50,11 @@ try {
   status.storage.pool = null; assert.equal(await command(["status"]), 0); assert.equal(lines.some(line => line.includes("sin límite")), true); checks += 2;
   for (const language of ["en", "es"]) { process.env.LC_ALL = language; assert.equal(await command(["setup", "--quantum"], ["no"]), 1); assert.equal(lines.some(line => line.includes(language === "en" ? "Quantum cannot read them" : "Quantum no puede leerlas")), true); checks += 2; }
   process.env.LC_ALL = "en";
-  for (const code of ["sync_signin_required", "sync_plan_required", "sync_storage_full", "sync_dataset_exists", "sync_signin_failed", "sync_signin_timeout"]) { failure = code; assert.equal(await command(["signout"]), 1); assert.equal(lines.some(line => line.includes("could not complete the operation")), false); checks += 2; }
+  for (const code of ["sync_signin_required", "sync_acceptance_required", "sync_plan_required", "sync_storage_full", "sync_dataset_exists", "sync_signin_failed", "sync_signin_timeout"]) { failure = code; assert.equal(await command(["signout"]), 1); assert.equal(lines.some(line => line.includes("could not complete the operation")), false); checks += 2; }
+  stage = "contract status notices";
+  const policyUrl = "https://site.example.invalid/terms"; status.missingPolicies = [{ id: "terms", version: "2026-10-09", path: "/terms", url: policyUrl }];
+  for (const language of ["en", "es"]) { process.env.LC_ALL = language; for (const allowed of [true, false]) { status.managedSync = allowed; await command(["status"]); assert.equal(lines.some(line => line.includes(language === "en" ? allowed ? "Managed sync: allowed." : "Managed sync: plan required." : allowed ? "permitida" : "requiere un plan")), true); assert.equal(lines.some(line => line.includes(policyUrl)), true); checks += 2; } for (const code of ["sync_acceptance_required", "sync_signin_required"]) { status.failure = { writer: null, cause: code }; await command(["status"]); assert.equal(lines.some(line => line.includes(code === "sync_signin_required" ? "vault sync signin" : language === "en" ? "Accept the current account policies" : "aceptar las")), true); checks++; } }
+  status.failure = null; status.missingPolicies = []; process.env.LC_ALL = "en";
   failure = undefined; assert.equal(await command(["signout"]), 0); assert.equal(lines.includes("Signed out of Quantum."), true); checks += 2;
   console.log(`Quantum CLI: ${checks} checks passed.`);
 } catch { console.error(`Quantum CLI failed at ${stage}.`); throw new Error("quantum CLI check failed"); }

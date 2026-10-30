@@ -6,13 +6,15 @@ const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 
 // Tokens and codes remain inside this fixture; only fixed test locations reach output.
 export async function fakeQuantum() {
-  const accounts = new Map(), codes = new Map(), access = new Map(), refresh = new Map(), requests = [], credentials = [];
-  const counters = { signin: 0, refresh: 0, revoke: 0, pages: 0, usage: 0, foreign: 0, busy: 0 }, controls = { busy: 0, unavailable: false, badHash: false, lostDatasetResponse: 0, postCreateListingFailure: 0, objectWriteFailure: 0 };
-  const account = email => { if (!accounts.has(email)) accounts.set(email, { email, datasets: new Map(), plan: true, full: false, refuseRefresh: false }); return accounts.get(email); };
+  const accounts = new Map(), codes = new Map(), access = new Map(), refresh = new Map(), requests = [], credentials = [], held = new Set();
+  const counters = { signin: 0, refresh: 0, revoke: 0, pages: 0, usage: 0, foreign: 0, busy: 0, bootstrap: 0, me: 0, changes: 0, held: 0, maxHeld: 0 }, controls = { busy: 0, unavailable: false, badHash: false, lostDatasetResponse: 0, postCreateListingFailure: 0, objectWriteFailure: 0, feedHoldMs: 25000, feedRetryAfter: 0, feedFailure: 0, bootstrapFailure: 0, deviceRevoked: false, accountMismatch: false };
+  const account = email => { if (!accounts.has(email)) accounts.set(email, { email, accountId: randomUUID(), datasets: new Map(), plan: true, full: false, refuseRefresh: false, missingPolicies: [], deviceRevoked: false, sequences: new Map() }); return accounts.get(email); };
+  const wake = () => { for (const pending of [...held]) pending.wake(); };
+  const used = owner => [...owner.datasets.values()].reduce((sum, dataset) => sum + [...dataset.values()].reduce((size, row) => size + Math.max(1, row.bytes.length), 0), 0);
   const opaque = () => { const value = randomBytes(32).toString("base64url"); credentials.push(value); return value; };
-  const pair = chain => { const accessToken = opaque(), refreshToken = opaque(); access.set(accessToken, { chain, expired: false }); refresh.set(refreshToken, { chain, used: false }); return { accessToken, refreshToken, tokenType: "Bearer", expiresIn: 900, deviceId: chain.registration }; };
+  const pair = chain => { const accessToken = opaque(), refreshToken = opaque(); access.set(accessToken, { chain, expired: false }); refresh.set(refreshToken, { chain, used: false }); return { accessToken, refreshToken, tokenType: "Bearer", expiresIn: 900, deviceId: chain.registration, account_id: chain.account.accountId }; };
   const json = (res, code, value) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
-  const error = (res, status, code) => json(res, status, { error: { code, message: "Synthetic Quantum failure", fields: {}, requestId: randomUUID() } });
+  const error = (res, status, code, fields = {}) => json(res, status, { error: { code, message: "Synthetic Quantum failure", fields, requestId: randomUUID() } });
   const body = async req => { const parts = []; for await (const part of req) parts.push(part); return Buffer.concat(parts); };
   const server = createServer((req, res) => { void (async () => {
     const url = new URL(req.url, "http://127.0.0.1"), path = url.pathname, method = req.method;
@@ -27,24 +29,42 @@ export async function fakeQuantum() {
       if (input.grantType === "refresh_token") {
         counters.refresh++; const previous = refresh.get(input.refreshToken);
         if (!previous) return error(res, 400, "invalid_grant");
-        if (previous.used) previous.chain.revoked = true;
-        if (previous.used || previous.chain.revoked || previous.chain.account.refuseRefresh) return error(res, 400, "invalid_grant");
+        if (previous.used) { previous.chain.revoked = true; wake(); }
+        if (previous.used || previous.chain.revoked || previous.chain.deviceRevoked || previous.chain.account.deviceRevoked || controls.deviceRevoked || previous.chain.account.refuseRefresh) return error(res, 400, "invalid_grant");
         previous.used = true; return json(res, 200, pair(previous.chain));
       }
       return error(res, 400, "invalid_request");
     }
     const raw = String(req.headers.authorization ?? "").replace(/^Bearer /, ""), token = access.get(raw);
     if (!token || token.expired || token.chain.revoked) return error(res, 401, "unauthorized");
-    const chain = token.chain, owner = chain.account; requests.push({ method, path, computer: chain.computer });
-    if (path === "/v1/oauth/revoke" && method === "POST") { chain.revoked = true; counters.revoke++; return json(res, 200, { success: true }); }
-    if (path === "/v1/me" && method === "GET") return json(res, 200, { email: owner.email });
-    if (path === "/v1/usage" && method === "GET") { counters.usage++; return json(res, 200, { poolBytes: 100000000, usedBytes: [...owner.datasets.values()].reduce((sum, dataset) => sum + [...dataset.values()].reduce((size, row) => size + row.bytes.length, 0), 0) }); }
+    const chain = token.chain, owner = chain.account; requests.push({ method, path, url: `${path}${url.search}`, computer: chain.computer });
+    if (chain.deviceRevoked || owner.deviceRevoked || controls.deviceRevoked) return error(res, 403, "device_revoked");
+    if (path === "/v1/oauth/revoke" && method === "POST") { chain.revoked = true; counters.revoke++; wake(); return json(res, 200, { success: true }); }
+    if (path === "/v1/me" && method === "GET") { counters.me++; return json(res, 200, { accountId: controls.accountMismatch ? randomUUID() : owner.accountId, email: owner.email, displayName: null, plans: [], devices: [], twoFactorEnabled: false, createdAt: new Date(0).toISOString(), consentRequired: owner.missingPolicies.some(policy => policy.id !== "beta"), deleteAt: null }); }
+    if (path === "/v1/bootstrap" && method === "GET") { counters.bootstrap++; if (controls.bootstrapFailure > 0) { controls.bootstrapFailure--; return error(res, 503, "identity_unavailable"); } return json(res, 200, { accountId: owner.accountId, app: "vault", device: { id: chain.registration, name: "Synthetic computer" }, capabilities: { managedSync: { vault: owner.plan } }, plans: [], pool: { poolBytes: owner.poolBytes === undefined ? 100000000 : owner.poolBytes, usedBytes: used(owner) }, legal: { missing: owner.missingPolicies }, spaces: [], after: null, cursors: { spaces: null } }); }
+    if (owner.missingPolicies.some(policy => policy.id !== "beta")) return error(res, 403, "acceptance_required", { policies: owner.missingPolicies.filter(policy => policy.id !== "beta") });
+    if (path === "/v1/usage" && method === "GET") { counters.usage++; return json(res, 200, { poolBytes: 100000000, usedBytes: used(owner) }); }
     if (controls.unavailable) return error(res, 503, "storage_unavailable");
-    if (controls.busy > 0) { controls.busy--; counters.busy++; res.setHeader("Retry-After", "0.01"); return error(res, 429, "rate_limited"); }
-    if (!owner.plan) return error(res, 403, "sync_plan_required");
+    if (controls.busy > 0 && (!controls.busyPath || controls.busyPath === path)) { controls.busy--; counters.busy++; res.setHeader("Retry-After", "0.01"); return error(res, 429, "rate_limited"); }
+    if (!owner.plan && method === "PUT" && /^\/v1\/datasets\//.test(path)) return error(res, 403, "sync_plan_required");
     if (path === "/v1/datasets" && method === "GET") {
       const all = [...owner.datasets.keys()].sort().filter(id => !url.searchParams.get("after") || id > url.searchParams.get("after")), page = all.slice(0, Math.min(2, Number(url.searchParams.get("limit") ?? 1000)));
       return json(res, 200, { datasets: page.map(id => ({ id, appId: "vault", createdAt: new Date(0).toISOString() })), after: all.length > page.length ? page.at(-1) : null });
+    }
+    const feed = /^\/v1\/datasets\/([^/]+)\/changes$/.exec(path);
+    if (feed && method === "GET") {
+      counters.changes++; const datasetId = decodeURIComponent(feed[1]), dataset = owner.datasets.get(datasetId), cursor = url.searchParams.get("after") ?? "0", limit = Number(url.searchParams.get("limit") ?? 100);
+      if (!dataset) return error(res, 404, "not_found"); if (!/^(0|[1-9][0-9]{0,14})$/.test(cursor) || !Number.isInteger(limit) || limit < 1 || limit > 1000) return error(res, 400, "invalid_request");
+      if (controls.feedFailure > 0) { controls.feedFailure--; res.setHeader("Retry-After", String(controls.feedRetryAfter || 1)); return error(res, 503, "storage_unavailable"); }
+      const reply = () => {
+        if (token.expired || chain.revoked || chain.deviceRevoked || owner.deviceRevoked || controls.deviceRevoked) { error(res, 401, "unauthorized"); return true; }
+        if (owner.missingPolicies.some(policy => policy.id !== "beta")) { error(res, 403, "acceptance_required", { policies: owner.missingPolicies.filter(policy => policy.id !== "beta") }); return true; }
+        const changes = [...dataset].filter(([, row]) => row.seq > Number(cursor)).sort((a, b) => a[1].seq - b[1].seq).slice(0, limit).map(([path, row]) => ({ seq: row.seq, path, size: row.bytes.length, sha256: digest(row.bytes), createdAt: row.createdAt }));
+        if (!changes.length) return false; json(res, 200, { changes, cursor: String(changes.at(-1).seq) }); return true;
+      };
+      if (reply()) return; if (controls.feedRetryAfter > 0 || held.size >= 16 || [...held].filter(pending => pending.owner === owner).length >= 2) { res.setHeader("Retry-After", String(controls.feedRetryAfter || 1)); return json(res, 200, { changes: [], cursor }); }
+      let timer; const pending = { owner, computer: chain.computer, wake() { if (reply()) finish(); } }, finish = () => { clearTimeout(timer); held.delete(pending); counters.held = held.size; };
+      held.add(pending); counters.held = held.size; counters.maxHeld = Math.max(counters.maxHeld, held.size); timer = setTimeout(() => { if (!reply()) json(res, 200, { changes: [], cursor }); finish(); }, controls.feedHoldMs); timer.unref(); res.once("close", finish); return;
     }
     const match = /^\/v1\/datasets\/([^/]+)(?:\/objects(?:\/(.*))?)?$/.exec(path);
     if (!match) return error(res, 404, "not_found"); const id = decodeURIComponent(match[1]);
@@ -65,7 +85,7 @@ export async function fakeQuantum() {
       if (previous) return previous.bytes.equals(bytes) ? json(res, 200, { success: true }) : error(res, 409, "object_conflict");
       if (owner.full) return error(res, 409, "pool_exceeded");
       const own = [...dataset.keys()].filter(path => path.startsWith(`writers/${chain.computer}/`)).map(path => path.split("/")[2]); if (name.startsWith("writers/") && !own.includes(name.split("/")[2]) && new Set(own).size >= 64) return error(res, 409, "writer_limit_exceeded");
-      dataset.set(name, { bytes: Buffer.from(bytes) }); return json(res, 201, { success: true });
+      const seq = (owner.sequences.get(id) ?? 0) + 1; owner.sequences.set(id, seq); dataset.set(name, { bytes: Buffer.from(bytes), seq, createdAt: Date.now() }); wake(); return json(res, 201, { success: true });
     }
     if (method === "DELETE") { if (!previous) return error(res, 404, "not_found"); dataset.delete(name); return json(res, 200, { success: true }); }
     return error(res, 404, "not_found");
@@ -73,9 +93,12 @@ export async function fakeQuantum() {
   await new Promise((done, fail) => { server.once("error", fail); server.listen(0, "127.0.0.1", done); });
   const api = `http://127.0.0.1:${server.address().port}`;
   return {
-    api, account, counters, controls, requests, credentials,
+    api, account, counters, controls, requests, credentials, wake,
+    pending(computer) { return [...held].filter(row => row.computer === computer).length; },
     issue(url, email) { counters.signin++; const authorize = new URL(url), redirect = authorize.searchParams.get("redirectUri"), challenge = authorize.searchParams.get("codeChallenge"), computer = authorize.searchParams.get("computerId"), code = opaque(); assert.equal(authorize.origin, api); assert.equal(authorize.pathname, "/authorize"); assert.equal(authorize.searchParams.get("appId"), "vault"); assert.equal(/^http:\/\/127\.0\.0\.1:[1-9][0-9]*\/callback$/.test(redirect), true); assert.equal(/^[A-Za-z0-9_-]{43}$/.test(challenge), true); assert.equal(Boolean(computer), true); assert.equal((authorize.searchParams.get("deviceName") ?? "").length <= 128, true); codes.set(code, { email, redirect, challenge, computer, until: Date.now() + 60000 }); const callback = new URL(redirect); callback.searchParams.set("code", code); return { callback, computer }; },
-    expire(email) { for (const token of access.values()) if (token.chain.account.email === email) token.expired = true; },
+    expire(email, computer) { for (const token of access.values()) if (token.chain.account === account(email) && (!computer || token.chain.computer === computer)) token.expired = true; wake(); },
+    rename(email, nextEmail) { const owner = account(email); owner.email = nextEmail; accounts.set(nextEmail, owner); return owner; },
+    revoke(computer) { for (const token of access.values()) if (token.chain.computer === computer) token.chain.deviceRevoked = true; wake(); },
     bearer(computer) { return [...access].findLast(([, token]) => token.chain.computer === computer && !token.expired && !token.chain.revoked)?.[0]; },
     async close() { server.closeAllConnections(); await new Promise(done => server.close(done)); },
   };

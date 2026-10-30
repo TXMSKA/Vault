@@ -55,14 +55,22 @@ export async function startService(options: ServiceOptions = {}) {
   lifecycle.lockWithLastApp = settings.get().lockWithLastApp; vault.memory.onOpen = () => prompts.opened();
   try { await sync.load(); } catch (error) { vault.memory.lock(); release(); throw error; }
   const limits = new Map<string, { start: number; count: number }>(); let port = 0, pending = 0, stopping: Promise<void> | undefined, queue: Promise<unknown> = Promise.resolve();
-  let syncDue = now() + SYNC_PULSE_MS, syncQueued = false;
+  let syncDue = now() + SYNC_PULSE_MS, syncQueued = 0, feedDue = 0, feedErrors = 0, reconciled = 0, quantumMode = false, feed: AbortController | null = null;
   const scheduleSync = (delay: number) => { syncDue = Math.min(syncDue, now() + delay); };
   const checkSync = () => {
-    if (stopping || syncQueued || pending >= 20 || now() < syncDue) return;
-    try { vault.memory.get(vault.memory.ticket()); } catch { return; }
-    syncDue = now() + SYNC_PULSE_MS; syncQueued = true;
-    const run = queue.catch(() => undefined).then(async () => { if (!stopping && (await sync.status()).configured) await sync.pulse(); }); queue = run;
-    void run.catch(() => undefined).finally(() => { syncQueued = false; });
+    if (stopping) return;
+    try { vault.memory.get(vault.memory.ticket()); } catch { feed?.abort(); return; }
+    const watching = sync.watch(); if (!watching) { feed?.abort(); if (quantumMode) scheduleSync(SYNC_PULSE_MS); } quantumMode = !!watching;
+    if (syncQueued || pending >= 20) return;
+    const pull = (changed?: { datasetId: string; cursor: number }) => {
+      syncQueued++; syncDue = sync.watch() ? Infinity : now() + SYNC_PULSE_MS;
+      const run = queue.catch(() => undefined).then(async () => { if (stopping || !unlocked()) return; if ((await sync.status()).configured) { try { await sync.pulse(); } catch (error) { if (!["sync_plan_required", "sync_storage_full"].includes((error as ServiceError).code)) throw error; } reconciled = now(); if (changed) sync.acknowledge(changed.datasetId, changed.cursor); } }); queue = run;
+      void run.catch(() => undefined).finally(() => { syncQueued--; }); return run;
+    };
+    if (now() >= syncDue) { void pull(); return; }
+    if (!watching || feed || now() < feedDue) return;
+    const controller = new AbortController(); feed = controller;
+    void sync.changes(controller.signal).then(async result => { if (controller.signal.aborted || stopping || !unlocked() || sync.watch()?.datasetId !== result.datasetId) return; feedDue = now() + Math.max(0, result.retryAfter); if (result.changed || now() - reconciled >= SYNC_PULSE_MS) await pull(result); else { const run = queue.catch(() => undefined).then(() => { if (!controller.signal.aborted && !stopping && unlocked()) sync.acknowledge(result.datasetId, result.cursor); }); queue = run; await run; } feedErrors = 0; }).catch(error => { if (!controller.signal.aborted && !stopping) { sync.feedFailure(error); feedDue = now() + Math.max(Number((error as { retryAfter?: number }).retryAfter) || 0, Math.min(SYNC_PULSE_MS, 1000 * 2 ** Math.min(feedErrors++, 6))); } }).finally(() => { if (feed === controller) feed = null; });
   };
   const take = (actor: string, max: number) => {
     let bucket = limits.get(actor); if (!bucket || now() - bucket.start >= 60000) { bucket = { start: now(), count: 0 }; limits.set(actor, bucket); }
@@ -127,7 +135,7 @@ export async function startService(options: ServiceOptions = {}) {
   const timer = setInterval(() => { checkSync(); void checkLifecycle().catch(() => { process.exitCode = 1; }); }, 1000); timer.unref();
   async function shutdown() {
     if (stopping) return stopping;
-    vault.memory.lock(); clearInterval(timer); runs.stopAll(); prompts.stop(); sync.quantum.stop();
+    vault.memory.lock(); feed?.abort(); clearInterval(timer); runs.stopAll(); prompts.stop(); sync.quantum.stop();
     stopping = (async () => {
       try { server.closeAllConnections(); await new Promise<void>(done => server.close(() => done())); await queue.catch(() => undefined); }
       finally { await rm(recordPath, { force: true }); release(); process.off("SIGINT", signal); process.off("SIGTERM", signal); }
