@@ -15,9 +15,15 @@ const progress = { via: "quantum" as Via, folder: undefined as string | undefine
 const restart = () => { progress.via = "quantum"; progress.folder = undefined; progress.step = "choose"; progress.account = ""; progress.datasets = 0; progress.moving = false; progress.recovery = false; };
 
 const failureText = (t: Dictionary, code: string) =>
-  code === "quantum_url_required" ? t.quantumMissing : code === "sync_signin_timeout" ? t.signInTimeout : code === "sync_signin_failed" ? t.signInFailed : code === "no_folder" ? t.folderFirst : reason(t, code);
+  code === "quantum_url_required" ? t.quantumMissing : code === "sync_signin_timeout" ? t.signInTimeout : code === "sync_signin_failed" ? t.signInFailed : code === "no_folder" ? t.folderFirst : code === "sync_acceptance_required" ? t.problemAcceptance : code === "sync_plan_required" ? t.problemPlan : code === "sync_signin_required" ? t.problemSignIn : code === "sync_storage_full" ? t.problemFull : reason(t, code);
 /** Failures the sync page already explains in its banner; repeating them under it as "could not be reached" would be wrong. */
-const BANNERED = new Set(["sync_plan_required", "sync_signin_required", "sync_storage_full"]);
+const BANNERED = new Set(["sync_acceptance_required", "sync_plan_required", "sync_signin_required", "sync_storage_full"]);
+// The Beta agreement gates only private builds, so Vault never asks for it.
+const policyLinks = (t: Dictionary, policies: SyncView["missingPolicies"], fail: (code: string) => void) => (policies ?? []).filter(policy => policy.id !== "beta").map(policy => link(t.reviewPolicy(policy.id), () => { void bridge.syncAcceptance({ id: policy.id }).then(result => { if (!result.ok) fail(result.code); }); }));
+const failureNotice = (slot: HTMLElement, t: Dictionary, code: string) => {
+  slot.replaceChildren(notice("circleAlert", failureText(t, code), "error"));
+  if (code === "sync_acceptance_required") void bridge.syncStatus().then(result => { if (result.ok && slot.isConnected) slot.append(...policyLinks(t, result.status.missingPolicies, next => failureNotice(slot, t, next))); });
+};
 const minutesSince = (iso: string | null) => iso ? Math.max(0, (Date.now() - Date.parse(iso)) / 60000) : 0;
 
 /** The Sync row of the settings page: Set up while sync is off; where it goes and Manage while it is on. */
@@ -46,7 +52,7 @@ export function syncScreen(context: Context): HTMLElement {
   let current: SyncView | undefined, disposed = false;
   view.leave(() => { disposed = true; if (progress.step === "signing") void bridge.syncCancel(); });
   const show = (...nodes: (HTMLElement | false | null | undefined)[]) => { if (!disposed) content.replaceChildren(...nodes.filter((node): node is HTMLElement => !!node)); };
-  const fail = (code: string) => status.replaceChildren(notice("circleAlert", failureText(t, code), "error"));
+  const fail = (code: string) => failureNotice(status, t, code);
 
   async function signIn() {
     status.replaceChildren(); const opened = await bridge.syncSignIn();
@@ -83,7 +89,8 @@ export function syncScreen(context: Context): HTMLElement {
     return div("syncstep", accountCard(t, again), h("p", { class: "lead" }, t.startBody), notice("info", t.startNotice), status, div("fill"), div("actions", div("fill"), start));
   }
   function onView(s: SyncView): HTMLElement {
-    const problem = s.problem === "sync_plan_required" ? { text: t.problemPlan } : s.problem === "sync_signin_required" ? { text: t.problemSignIn, action: t.signIn } : s.problem === "sync_storage_full" ? { text: t.problemFull } : s.problem ? { text: t.problemOther } : undefined;
+    const cause = s.problem === "sync_signin_required" ? s.problem : s.missingPolicies?.some(policy => policy.id === "terms" || policy.id === "privacy") ? "sync_acceptance_required" : s.managedSync === false ? "sync_plan_required" : s.problem;
+    const problem = cause === "sync_plan_required" ? { text: t.problemPlan } : cause === "sync_acceptance_required" ? { text: t.problemAcceptance } : cause === "sync_signin_required" ? { text: t.problemSignIn, action: t.signIn } : cause === "sync_storage_full" ? { text: t.problemFull } : cause ? { text: t.problemOther } : undefined;
     const row = (title: string, line: string, control?: HTMLElement | null) => div("setting", div("scopy", h("strong", { class: "strong" }, title), h("span", { class: "line" }, line)), control ?? null);
     const move = () => {
       const close = () => view.modal(undefined);
@@ -106,6 +113,7 @@ export function syncScreen(context: Context): HTMLElement {
     const computer = (glyph: IconName, name: string) => div("computer", icon(glyph, 18), h("strong", { class: "strong" }, name));
     return div("syncstep",
       problem && div("alert", icon("triangleAlert", 18), h("span", { class: "grow" }, problem.text), problem.action ? button(problem.action, { onclick: () => { void signIn(); } }) : null),
+      !!s.missingPolicies?.some(policy => policy.id !== "beta") && div("pick", ...policyLinks(t, s.missingPolicies, fail)),
       div("syncrows",
         s.origin === "folder" ? row(t.viaFolder, s.folder ?? "", button(t.moveToAccount, { onclick: move })) : row(t.viaAccount, s.account ?? ""),
         row(t.lastSynced, t.lastSyncedLine(s.lastSynced ? t.ago(minutesSince(s.lastSynced)) : t.notYet), now),
@@ -135,7 +143,7 @@ export function joinScreen({ t }: Context): HTMLElement {
   let disposed = false;
   view.leave(() => { disposed = true; if (progress.step === "signing") void bridge.syncCancel(); });
   const show = (node: HTMLElement) => { if (!disposed) content.replaceChildren(node); };
-  const fail = (code: string) => status.replaceChildren(notice("circleAlert", failureText(t, code), "error"));
+  const fail = (code: string) => failureNotice(status, t, code);
   async function signIn() {
     status.replaceChildren(); const opened = await bridge.syncSignIn();
     if (!opened.ok) { progress.step = "choose"; draw(); fail(opened.code); return; }

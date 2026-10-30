@@ -12,7 +12,7 @@ export type SyncDictionary = {
   moveTitle: string; moveBody: string; moveYes: string;
   lyraCanUse: string; appsTitle: string; lastRead(ago: string): string; notReadYet: string; stop(app: string): string; keyInfo: string; noApps: string;
   keyTitle(app: string): string; keyBody(app: string): string; keyApp: string;
-  problemPlan: string; problemSignIn: string; problemFull: string; problemOther: string; quantumMissing: string; signInFailed: string; signInTimeout: string;
+  problemAcceptance: string; reviewPolicy(id: string): string; problemPlan: string; problemSignIn: string; problemFull: string; problemOther: string; quantumMissing: string; signInFailed: string; signInTimeout: string;
 };
 const bytes = (value: number, comma: boolean) => {
   const n = Number(value) || 0, [size, unit] = n >= 1e9 ? [n / 1e9, "GB"] : n >= 1e6 ? [n / 1e6, "MB"] : n >= 1e3 ? [n / 1e3, "KB"] : [n, "B"];
@@ -52,8 +52,9 @@ export const enSync: SyncDictionary = {
   keyInfo: "An app reads the key for each request; a change here applies to its next request.",
   keyTitle: app => `${app} wants to use an API key`, keyApp: "Key",
   keyBody: app => `${app} uses this key where it was chosen in ${app}. It reads the key for each request and keeps no copy; stopping it here takes effect on its next request.`,
+  problemAcceptance: "The current account policies require acceptance before sync can publish changes. Local changes stay on this computer.", reviewPolicy: id => id === "terms" ? "Review the Terms" : id === "privacy" ? "Review the Privacy Policy" : id === "beta" ? "Review the Beta agreement" : "Review the account policy",
   problemPlan: "This Cosmic account does not include Vault sync. Changes stay on this computer and go out once the account includes it.",
-  problemSignIn: "The Cosmic sign-in expired. Changes stay on this computer until it signs in again.", problemFull: "The Cosmic account's storage is full.",
+  problemSignIn: "Sign in to the Cosmic account again to continue sync. Local data stays on this computer.", problemFull: "The Cosmic account's storage is full.",
   problemOther: "The last sync did not finish. Vault tries again on its own.", quantumMissing: "Cosmic accounts are not available on this computer yet.",
   signInFailed: "The sign-in did not finish. It can be tried again.", signInTimeout: "The sign-in took too long. Open the page again to retry.",
 };
@@ -90,8 +91,9 @@ export const esSync: SyncDictionary = {
   keyInfo: "Una app lee la clave en cada pedido; un cambio aquí se aplica a su próximo pedido.",
   keyTitle: app => `${app} quiere usar una clave de API`, keyApp: "Clave",
   keyBody: app => `${app} usa esta clave donde se eligió en ${app}. La lee en cada pedido y no guarda copia; detenerla aquí tiene efecto en su próximo pedido.`,
+  problemAcceptance: "Se requiere aceptar las políticas vigentes de la cuenta para publicar cambios. Los cambios locales quedan en esta computadora.", reviewPolicy: id => id === "terms" ? "Revisar los Términos" : id === "privacy" ? "Revisar la Política de privacidad" : id === "beta" ? "Revisar el acuerdo de la Beta" : "Revisar la política de la cuenta",
   problemPlan: "Esta cuenta Cosmic no incluye la sincronización de Vault. Los cambios quedan en esta computadora y salen cuando la cuenta la incluya.",
-  problemSignIn: "La sesión de Cosmic venció. Los cambios quedan en esta computadora hasta que se inicie sesión otra vez.", problemFull: "El almacenamiento de la cuenta Cosmic está lleno.",
+  problemSignIn: "Se requiere volver a iniciar sesión en Cosmic para continuar la sincronización. Los datos locales quedan en esta computadora.", problemFull: "El almacenamiento de la cuenta Cosmic está lleno.",
   problemOther: "La última sincronización no terminó. Vault vuelve a intentarlo por su cuenta.", quantumMissing: "Las cuentas Cosmic todavía no están disponibles en esta computadora.",
   signInFailed: "El inicio de sesión no terminó. Se puede intentar de nuevo.", signInTimeout: "El inicio de sesión tardó demasiado. Abrir la página otra vez para reintentar.",
 };

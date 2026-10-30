@@ -24,6 +24,7 @@ const messages: Record<string, [string, string]> = {
   sync_unconfigured: ["Set up sync first.", "Primero hay que configurar la sincronización."],
   sync_configured: ["Leave sync before signing out: vault sync leave.", "Para cerrar la sesión, primero dejar la sincronización: vault sync leave."],
   sync_signin_required: ["Sign in to Quantum again: vault sync signin.", "Volver a iniciar sesión en Quantum: vault sync signin."],
+  sync_acceptance_required: ["Accept the current account policies to resume publishing. Local changes are kept. See vault sync status for the acceptance link.", "Para reanudar la publicación, aceptar las políticas vigentes de la cuenta. Se conservan los cambios locales. El enlace está en vault sync status."],
   sync_plan_required: ["This Cosmic account does not include Vault sync.", "Esta cuenta Cosmic no incluye la sincronización de Vault."],
   sync_storage_full: ["The Cosmic account's storage is full.", "El almacenamiento de la cuenta Cosmic está lleno."],
   quantum_url_required: ["Set --api and --site, or VAULT_QUANTUM_API and VAULT_QUANTUM_SITE, to sign in to Quantum.", "Para iniciar sesión en Quantum, indicar --api y --site, o VAULT_QUANTUM_API y VAULT_QUANTUM_SITE."],
@@ -139,6 +140,8 @@ export async function main(args = process.argv.slice(2), io: CliIO = terminal): 
         io.write(copy(`Origin: ${status.origin ?? "-"}`, `Origen: ${status.origin ?? "-"}`));
         io.write(copy(`Account: ${visible(status.account ?? "-")}`, `Cuenta: ${visible(status.account ?? "-")}`));
         io.write(copy(`Storage: ${status.storage ? `${status.storage.used} / ${status.storage.pool ?? copy("unlimited", "sin límite")} bytes` : "-"}`, `Almacenamiento: ${status.storage ? `${status.storage.used} / ${status.storage.pool ?? copy("unlimited", "sin límite")} bytes` : "-"}`));
+        if (status.origin === "quantum") io.write(copy(`Managed sync: ${status.managedSync === true ? "allowed" : status.managedSync === false ? "plan required" : "unknown"}.`, `Sincronización administrada: ${status.managedSync === true ? "permitida" : status.managedSync === false ? "requiere un plan" : "sin confirmar"}.`));
+        for (const policy of status.missingPolicies ?? []) io.write(copy(`Acceptance required: ${visible(policy.id)} (${visible(policy.version)}). Review: ${visible(policy.url)}`, `Aceptación requerida: ${visible(policy.id)} (${visible(policy.version)}). Revisar: ${visible(policy.url)}`));
         io.write(copy(`Folder: ${visible(status.folder ?? "-")}`, `Carpeta: ${visible(status.folder ?? "-")}`));
         io.write(copy(`Last synced: ${status.lastSynced ?? "-"}`, `Última sincronización: ${status.lastSynced ?? "-"}`));
         io.write(copy(`Computers: ${status.computers.join(", ") || "-"}; pending changes: ${status.pending}; conflicts: ${status.conflicts}.`, `Computadoras: ${status.computers.join(", ") || "-"}; cambios pendientes: ${status.pending}; conflictos: ${status.conflicts}.`));

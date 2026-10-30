@@ -206,6 +206,7 @@ async function run(promptsOnly: boolean, home: string, platform: Platform, clipb
     syncNow: () => read(sync.now()),
     syncLeave: ({ remove, signOut }) => read(sync.leave(remove, signOut)),
     syncSignOut: () => read(sync.signOut()),
+    syncAcceptance: ({ id }) => read(sync.acceptance(id)),
     saveSettings: next => link.saveSettings(next),
     enableHello: ({ password }) => link.enableHello(password),
     disableHello: () => link.disableHello(),

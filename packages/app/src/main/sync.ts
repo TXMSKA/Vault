@@ -14,6 +14,7 @@ export function syncView(status: SyncStatus): SyncView {
   return {
     configured: status.configured, origin: status.origin, account: status.account, folder: status.folder, storage: status.storage, lastSynced: status.lastSynced,
     others: Math.max(0, status.computers.length - 1), pending: status.pending, conflicts: status.conflicts, problem: status.failure?.cause ?? null,
+    managedSync: status.managedSync ?? null, missingPolicies: status.missingPolicies ?? [],
   };
 }
 /**
@@ -29,6 +30,11 @@ export function createSync(options: SyncOptions) {
   const status = (service: Client) => service.sync.status().then(value => ({ status: syncView(value) }));
   return {
     status: () => run(status),
+    acceptance: (id: string) => run(async service => {
+      const policy = (await service.sync.status()).missingPolicies?.find(policy => policy.id === id); if (!policy) throw { code: "not_found" };
+      const url = new URL(policy.url); if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) throw { code: "invalid" };
+      await options.openUrl(url.href); return {};
+    }),
     /** Opens the sign-in page; a second call opens a fresh one and the first wait ends. */
     signIn: () => run(async service => {
       const quantum = options.quantum(); if (!quantum) throw { code: "quantum_url_required" };

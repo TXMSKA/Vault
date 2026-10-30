@@ -81,6 +81,7 @@ export const SHAPES = {
   syncNow: null,
   syncLeave: { remove: yes, signOut: yes },
   syncSignOut: null,
+  syncAcceptance: { id: text(1, 100) },
   saveSettings: settings,
   enableHello: { password: text(1, 128) },
   disableHello: null,

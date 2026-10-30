@@ -7,7 +7,7 @@ import { quitWhenIdle } from "../dist/main/quit.js";
 import { SHAPES, accepts } from "../dist/main/validate.js";
 import { CSP, ORIGIN, resolveRequest, serve } from "../dist/main/protocol.js";
 import { route, toView } from "../dist/main/prompts.js";
-import { quantumConfig } from "../dist/main/sync.js";
+import { createSync, quantumConfig, syncView } from "../dist/main/sync.js";
 import { readBackup, writeKit, kitName } from "../dist/main/files.js";
 import { resolveLanguage, resolveTheme } from "../dist/main/theme.js";
 import { parseArgs } from "../dist/main/args.js";
@@ -34,7 +34,7 @@ try {
   for (const files of [[], [other], Array(50).fill(other)]) check.equal(accepts("entrySave", { entry: { ...document, files }, expected: 0 }), true);
   for (const files of [null, "x", ["x"], Array(51).fill(other)]) check.equal(accepts("entrySave", { entry: { ...document, files }, expected: 0 }), false);
   // ---- the bridge's arguments: exactly the keys of the call, each one within its cap -------------------------------------------------------
-  const bridge = ["state", "onState", "create", "chooseBackup", "restoreBackup", "unlock", "unlockWithHello", "recover", "lock", "saveRecoverySheet", "printRecoverySheet", "finishSetup", "approveRun", "approveRunWithHello", "allowImport", "allowImportWithHello", "dismissPrompt", "entries", "entryOpen", "entryReveal", "entryCopy", "entryCode", "entryCopyCode", "entryOpenSite", "entryFavorite", "entrySave", "entryRemove", "entryUndo", "saveSettings", "enableHello", "disableHello", "dismissTour", "cancelClose", "confirmClose", "interact", "retry", "minimize", "toggleMaximize", "close", "syncStatus", "syncSignIn", "syncWait", "syncCancel", "syncChooseFolder", "syncSetup", "syncJoin", "syncMove", "syncNow", "syncLeave", "syncSignOut", "keyApprove", "keyApproveWithHello", "keyRevoke", "keyUsage"];
+  const bridge = ["state", "onState", "create", "chooseBackup", "restoreBackup", "unlock", "unlockWithHello", "recover", "lock", "saveRecoverySheet", "printRecoverySheet", "finishSetup", "approveRun", "approveRunWithHello", "allowImport", "allowImportWithHello", "dismissPrompt", "entries", "entryOpen", "entryReveal", "entryCopy", "entryCode", "entryCopyCode", "entryOpenSite", "entryFavorite", "entrySave", "entryRemove", "entryUndo", "saveSettings", "enableHello", "disableHello", "dismissTour", "cancelClose", "confirmClose", "interact", "retry", "minimize", "toggleMaximize", "close", "syncStatus", "syncSignIn", "syncWait", "syncCancel", "syncChooseFolder", "syncSetup", "syncJoin", "syncMove", "syncNow", "syncLeave", "syncSignOut", "syncAcceptance", "keyApprove", "keyApproveWithHello", "keyRevoke", "keyUsage"];
   const preload = await readFile(new URL("../dist/preload/preload.cjs", import.meta.url), "utf8");
   let exposed, filePath = "", invoked = [];
   const dropped = {};
@@ -50,6 +50,17 @@ try {
   check.deepEqual(quantumConfig({}), { api: "https://quantum.txmska.com", site: "https://cosmic.txmska.com" }); check.deepEqual(quantumConfig({ VAULT_QUANTUM_API: "http://127.0.0.1:1", VAULT_QUANTUM_SITE: "http://127.0.0.1:2" }), { api: "http://127.0.0.1:1", site: "http://127.0.0.1:2" });
   check.equal(accepts("keyApprove", { id: crypto.randomUUID(), password: "x" }), true); check.equal(accepts("keyApprove", { id: "nope", password: "x" }), false); check.equal(accepts("keyApproveWithHello", { id: crypto.randomUUID() }), true);
   check.equal(accepts("keyRevoke", { app: "lyra", entry: crypto.randomUUID() }), true); check.equal(accepts("keyRevoke", { app: "Lyra!", entry: crypto.randomUUID() }), false); check.equal(accepts("keyRevoke", { app: "lyra" }), false); check.equal(accepts("keyUsage", undefined), true); check.equal(accepts("keyUsage", {}), false);
+  check.equal(accepts("syncAcceptance", { id: "beta" }), true); check.equal(accepts("syncAcceptance", { id: "" }), false); check.equal(accepts("syncAcceptance", { id: "beta", url: "https://other.invalid" }), false);
+  {
+    const policy = { id: "beta", version: "2026-10-26", path: "/beta", url: "https://cosmic.example.invalid/beta" }, opened = [];
+    const source = { configured: true, origin: "quantum", account: "synthetic@example.invalid", folder: null, storage: null, lastSynced: null, computers: ["one", "two"], pending: 2, conflicts: 0, failure: { writer: null, cause: "sync_acceptance_required" }, managedSync: true, missingPolicies: [policy] };
+    const sync = createSync({ service: () => ({ sync: { status: async () => source } }), quantum: () => undefined, openUrl: async url => { opened.push(url); }, chooseFolder: async () => undefined, refresh: async () => {} });
+    const view = syncView(source); check.equal(view.problem, "sync_acceptance_required"); check.equal(view.managedSync, true); check.deepEqual(view.missingPolicies, [policy]); check.equal(view.others, 1);
+    check.equal((await sync.acceptance("other")).code, "not_found"); check.equal(opened.length, 0); check.equal((await sync.acceptance("beta")).ok, true); check.deepEqual(opened, [policy.url]);
+    for (const url of ["file:///C:/synthetic", "javascript:alert(1)", "https://person@example.invalid/beta"]) { source.missingPolicies = [{ ...policy, url }]; check.equal((await sync.acceptance("beta")).code, "invalid"); }
+    check.equal(opened.length, 1); source.missingPolicies = []; source.managedSync = false; source.failure.cause = "sync_plan_required"; check.equal((await sync.status()).status.managedSync, false);
+    source.failure.cause = "sync_signin_required"; check.equal((await sync.status()).status.problem, "sync_signin_required");
+  }
   check.equal(accepts("syncSetup", { via: "quantum" }), true); check.equal(accepts("syncSetup", { via: "cloud" }), false); check.equal(accepts("syncSetup", { via: "folder", folder: "C:/x" }), false);
   check.equal(accepts("syncJoin", { via: "quantum", password: "x" }), true); check.equal(accepts("syncJoin", { via: "folder", recovery: "ABCD" }), true); check.equal(accepts("syncJoin", { via: "quantum", password: "x", recovery: "y" }), false); check.equal(accepts("syncJoin", { via: "quantum", password: "" }), false); check.equal(accepts("syncJoin", { via: "quantum" }), false);
   check.equal(accepts("syncLeave", { remove: false, signOut: true }), true); check.equal(accepts("syncLeave", { remove: "no", signOut: true }), false); check.equal(accepts("syncLeave", { remove: false }), false);

@@ -58,6 +58,7 @@ const bridge = {
   syncNow: () => call("syncNow"),
   syncLeave: input => call("syncLeave", input),
   syncSignOut: () => call("syncSignOut"),
+  syncAcceptance: input => call("syncAcceptance", input),
   saveSettings: input => call("saveSettings", input),
   enableHello: input => call("enableHello", input),
   disableHello: () => call("disableHello"),

@@ -305,11 +305,23 @@ async function joinScenario({ connect, startService, core, tokens, as }) {
     await click("Move to Cosmic account"); await showing("Move sync to the Cosmic account?"); await click("Sign in and move", "document.querySelector('#modal')");
     await signInFor("first@cosmic.invalid"); await showing("Cosmic account", "first@cosmic.invalid", "Storage"); plain("moved", (await manager.sync.status()).origin, "quantum"); await shoot("sync-moved", true);
 
+    say("policy acceptance links, and the Beta agreement, which Vault does not need, is not asked for");
+    const owner = cosmic.account("first@cosmic.invalid"); owner.missingPolicies = [{ id: "terms", version: "2026-10-09", path: "/terms" }]; cosmic.wake();
+    await click("Sync now"); await showing("The current account policies require acceptance", "Review the Terms"); await click("Review the Terms"); await poll("the Terms page", async () => opened.includes(`${cosmic.api}/terms`)); await shoot("sync-acceptance-banner", true);
+    owner.missingPolicies = [{ id: "beta", version: "2026-10-26", path: "/beta" }];
+    const accepted = await manager.sync.quantum.signIn(cosmic.api, cosmic.api); await fetch(cosmic.issue(accepted.url, "first@cosmic.invalid").callback); await manager.sync.quantum.wait(accepted.id);
+    await click("Sync now"); await gone("The current account policies require acceptance"); await wait(300); check.equal((await text()).includes("Beta agreement"), false); await shoot("sync-beta-policy", true);
+    owner.missingPolicies = [];
+
     say("the plan and sign-in banners");
-    cosmic.account("first@cosmic.invalid").plan = false; await click("Sync now"); await showing("This Cosmic account does not include Vault sync."); await wait(300); check.equal((await text()).includes("could not be reached"), false); await shoot("sync-plan-banner", true);
+    cosmic.account("first@cosmic.invalid").plan = false; const queued = core.newEntry("note"); queued.title = "Pending plan renewal"; await manager.entries.save(queued, 0); await click("Sync now"); await showing("This Cosmic account does not include Vault sync."); await wait(300); check.equal((await text()).includes("could not be reached"), false); await shoot("sync-plan-banner", true);
     cosmic.account("first@cosmic.invalid").plan = true; cosmic.account("first@cosmic.invalid").refuseRefresh = true; cosmic.expire("first@cosmic.invalid");
-    await click("Sync now"); await showing("The Cosmic sign-in expired."); await shoot("sync-signin-banner", true);
-    cosmic.account("first@cosmic.invalid").refuseRefresh = false; await click("Sign in"); await signInFor("first@cosmic.invalid"); await gone("The Cosmic sign-in expired.");
+    await click("Sync now"); await showing("Sign in to the Cosmic account again to continue sync."); await shoot("sync-signin-banner", true);
+    cosmic.account("first@cosmic.invalid").refuseRefresh = false; await click("Sign in"); await signInFor("first@cosmic.invalid"); await gone("Sign in to the Cosmic account again to continue sync.");
+
+    say("a revoked device requires sign-in and keeps local data");
+    const beforeRevocation = await manager.entries.list(); owner.deviceRevoked = true; cosmic.wake(); await click("Sync now"); await showing("Sign in to the Cosmic account again to continue sync."); check.equal((await manager.entries.list()).length, beforeRevocation.length); await shoot("sync-revoked-banner", true);
+    owner.deviceRevoked = false; await click("Sign in"); await signInFor("first@cosmic.invalid"); await gone("Sign in to the Cosmic account again to continue sync.");
 
     say("turn off with sign-out, then an account that holds another vault is refused plainly");
     await click("Turn off sync"); await showing("Sign out of the Cosmic account on this computer"); await click("Turn off", "document.querySelector('#modal')"); await showing("Cosmic account", "Folder");
@@ -371,7 +383,7 @@ async function main() {
   { const { screen } = require("electron"), displays = screen.getAllDisplays(); plain("the display the window is on", displays.length > 1 && screen.getDisplayMatching(win.getBounds()).id === screen.getPrimaryDisplay().id, false); }
   check.equal(wc.getURL(), "app://vault/"); check.equal(win.getTitle(), "Vault");
   check.deepEqual(await evaluate("[typeof require, typeof process, typeof module, typeof Buffer, typeof ipcRenderer, typeof window.electron]"), ["undefined", "undefined", "undefined", "undefined", "undefined", "undefined"]);
-  check.deepEqual(await evaluate("Object.keys(window.vault).sort()"), ["allowImport", "allowImportWithHello", "approveRun", "approveRunWithHello", "cancelClose", "chooseBackup", "close", "confirmClose", "create", "disableHello", "dismissPrompt", "dismissTour", "enableHello", "entries", "entryAttach", "entryAttachDropped", "entryCode", "entryCopy", "entryCopyCode", "entryDiscard", "entryDownload", "entryFavorite", "entryOpen", "entryOpenSite", "entryRemove", "entryReveal", "entrySave", "entryUndo", "finishSetup", "interact", "keyApprove", "keyApproveWithHello", "keyRevoke", "keyUsage", "lock", "minimize", "onState", "printRecoverySheet", "recover", "restoreBackup", "retry", "saveRecoverySheet", "saveSettings", "state", "syncCancel", "syncChooseFolder", "syncJoin", "syncLeave", "syncMove", "syncNow", "syncSetup", "syncSignIn", "syncSignOut", "syncStatus", "syncWait", "toggleMaximize", "unlock", "unlockWithHello"]);
+  check.deepEqual(await evaluate("Object.keys(window.vault).sort()"), ["allowImport", "allowImportWithHello", "approveRun", "approveRunWithHello", "cancelClose", "chooseBackup", "close", "confirmClose", "create", "disableHello", "dismissPrompt", "dismissTour", "enableHello", "entries", "entryAttach", "entryAttachDropped", "entryCode", "entryCopy", "entryCopyCode", "entryDiscard", "entryDownload", "entryFavorite", "entryOpen", "entryOpenSite", "entryRemove", "entryReveal", "entrySave", "entryUndo", "finishSetup", "interact", "keyApprove", "keyApproveWithHello", "keyRevoke", "keyUsage", "lock", "minimize", "onState", "printRecoverySheet", "recover", "restoreBackup", "retry", "saveRecoverySheet", "saveSettings", "state", "syncAcceptance", "syncCancel", "syncChooseFolder", "syncJoin", "syncLeave", "syncMove", "syncNow", "syncSetup", "syncSignIn", "syncSignOut", "syncStatus", "syncWait", "toggleMaximize", "unlock", "unlockWithHello"]);
   check.equal(await evaluate("Object.isFrozen(window.vault)"), true);
   check.equal(await evaluate("(() => { try { window.vault.create = () => 0; } catch {} return typeof window.vault.create; })()"), "function");
   check.equal(await evaluate("typeof window.vault.invoke"), "undefined");

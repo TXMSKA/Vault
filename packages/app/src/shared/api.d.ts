@@ -37,6 +37,7 @@ export type EntryInput = { id: string; kind: Kind; title: string; favorite: bool
 export type SyncView = {
   configured: boolean; origin: "folder" | "quantum" | null; account: string | null; folder: string | null; storage: { used: number; pool: number | null } | null;
   lastSynced: string | null; others: number; pending: number; conflicts: number; problem: string | null;
+  managedSync?: boolean | null; missingPolicies?: { id: string; version: string; path: string; url: string }[];
 };
 export type AppState = {
   phase: "starting" | "ready" | "unavailable";
@@ -122,6 +123,7 @@ export interface VaultBridge {
   syncNow(): Promise<Result<{ status: SyncView }>>;
   syncLeave(input: { remove: boolean; signOut: boolean }): Promise<Result<{ status: SyncView }>>;
   syncSignOut(): Promise<Result>;
+  syncAcceptance(input: { id: string }): Promise<Result>;
   saveSettings(input: SettingsView): Promise<Result>;
   enableHello(input: { password: string }): Promise<Result>;
   disableHello(): Promise<Result>;
