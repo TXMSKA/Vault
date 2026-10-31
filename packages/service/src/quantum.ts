@@ -144,7 +144,8 @@ export class QuantumAuth {
     catch { server.close(); throw new ServiceError("sync_signin_failed"); }
     const address = server.address(); if (!address || typeof address === "string") { server.close(); throw new ServiceError("sync_signin_failed"); } redirectUri = `http://127.0.0.1:${address.port}/callback`;
     const timer = setTimeout(() => { server.close(); fail(new ServiceError("sync_signin_timeout")); }, 300000); timer.unref(); this.pending.set(requestId, { server, timer, promise, done, fail, accepted: false });
-    const url = new URL(`${site}/authorize`); for (const [key, value] of Object.entries({ appId: "vault", redirectUri, codeChallenge: challenge, computerId: deviceId, deviceName: hostname().trim().slice(0, 128) || "Vault" })) url.searchParams.set(key, value); return { url: url.href, id: requestId };
+    // Contract beta.2 names the account site's desktop entry /authorize/.
+    const url = new URL(`${site}/authorize/`); for (const [key, value] of Object.entries({ appId: "vault", redirectUri, codeChallenge: challenge, computerId: deviceId, deviceName: hostname().trim().slice(0, 128) || "Vault" })) url.searchParams.set(key, value); return { url: url.href, id: requestId };
   }
   async wait(requestId: string): Promise<{ account: string }> { id(requestId); const pending = this.pending.get(requestId); if (!pending) throw new ServiceError("sync_signin_failed"); return pending.promise; }
   async poll(requestId: string): Promise<{ pending: true } | { account: string }> { let timer: ReturnType<typeof setTimeout> | undefined; try { return await Promise.race([this.wait(requestId), new Promise<{ pending: true }>(done => { timer = setTimeout(() => done({ pending: true }), 20000); timer.unref(); })]); } finally { if (timer) clearTimeout(timer); } }
