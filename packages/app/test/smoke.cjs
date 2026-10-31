@@ -810,7 +810,8 @@ async function main() {
   await shoot("filter-open", true); await pick("Environment"); plain("the environments", (await rowsText()).map(row => row[0]), ["forge", "sprout"]); check.equal(await read(".filter span"), "Environment"); check.equal(await read(".filterrow .count"), "2");
   await click("Show: Environment"); await pick("Logins"); plain("the logins", (await rowsText()).map(row => row[0]), ["Northwind Mail"]);
   await choose("Northwind Mail"); await click("Add to favourites"); await settle("the favourite", async () => (await rowOf("Northwind Mail")).entry.favorite === true);
-  check.equal(await evaluate("document.querySelector('.entry .head .ib').getAttribute('aria-pressed')"), "true"); check.equal(await evaluate("document.querySelector('.entry .head .ib').getAttribute('aria-label')"), "Remove from favourites");
+  // The service saves the favourite before the open entry is drawn again, so the button is waited for.
+  await poll("the favourite button", async () => (await evaluate("document.querySelector('.entry .head .ib').getAttribute('aria-pressed')")) === "true"); check.equal(await evaluate("document.querySelector('.entry .head .ib').getAttribute('aria-label')"), "Remove from favourites");
   await click("Show: Logins"); check.equal(await evaluate("[...document.querySelectorAll('.popover .menu-item')].find(node => node.querySelector('.name').textContent === 'Favourites').querySelector('.hint').textContent"), "1");
   await pick("Favourites"); plain("the favourites", (await rowsText()).map(row => row[0]), ["Northwind Mail"]);
   await click("Show: Favourites"); await pick("All entries"); check.equal(await count(".erow"), 8);
