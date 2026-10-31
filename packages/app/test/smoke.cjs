@@ -946,7 +946,7 @@ async function main() {
     plain("folder sync", [(await manager.sync.status()).configured, (await manager.sync.status()).origin], [true, "folder"]); await look("sync-on-folder", language);
     await click(w.syncNow); await showing(w.ago(0));
     await click(w.turnOff); await showing(w.turnOffTitle, w.removeCopies("folder")); check.equal(await count("#modal .checkbox"), 1); await look("sync-off-folder", language);
-    await click(w.turnOffYes, modalScope); await showing(w.viaAccount, w.viaFolder); check.equal((await manager.sync.status()).configured, false);
+    await click(w.turnOffYes, modalScope); await gone(w.lastSynced); await showing(w.viaAccount, w.viaFolder); check.equal((await manager.sync.status()).configured, false);
 
     say(`sync through the Cosmic account in ${spoken}: the browser signs in, an empty account takes this vault, and turning off signs out`);
     const cosmic = await fakeQuantum(); process.env.VAULT_QUANTUM_API = cosmic.api; process.env.VAULT_QUANTUM_SITE = cosmic.api;
@@ -959,7 +959,7 @@ async function main() {
       await click(w.startSync); await showing(w.viaAccount, "synthetic@cosmic.invalid", w.storage, w.lastSynced, w.turnOff);
       plain("account sync", [(await manager.sync.status()).configured, (await manager.sync.status()).origin], [true, "quantum"]); await look("sync-on-account", language);
       await click(w.turnOff); await showing(w.signOutToo); check.equal(await count("#modal .checkbox"), 2); await look("sync-off-account", language);
-      await click(w.turnOffYes, modalScope); await showing(w.viaAccount, w.viaFolder); check.equal((await manager.sync.status()).configured, false);
+      await click(w.turnOffYes, modalScope); await gone(w.lastSynced); await showing(w.viaAccount, w.viaFolder); check.equal((await manager.sync.status()).configured, false);
       await poll("the account signed out", async () => !fs.existsSync(path.join(home, "secrets", "quantum.json")));
     } finally { delete process.env.VAULT_QUANTUM_API; delete process.env.VAULT_QUANTUM_SITE; await cosmic.close(); }
     await click(w.backToList); await showing(w.idleTitle, w.setUp);
