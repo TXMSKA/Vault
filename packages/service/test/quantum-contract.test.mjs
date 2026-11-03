@@ -42,7 +42,7 @@ try {
   const bootstrapCalls = quantum.counters.bootstrap, usageCalls = quantum.counters.usage; await a.api.sync.status(); await a.api.sync.status(); assert.equal(quantum.counters.bootstrap, bootstrapCalls); assert.equal(quantum.counters.usage, usageCalls); checks += 2;
 
   stage = "0.2.0 Quantum fixture and email adoption";
-  await close(a); const legacyState = await state(a), legacySecret = await secret(a); delete legacyState.quantum.accountId; delete legacyState.cursor; delete legacySecret.accountId;
+  await close(a); const legacyState = await state(a), legacySecret = await secret(a); delete legacyState.quantum.accountId; delete legacyState.cursor; delete legacySecret.accountId; assert.equal(Object.keys(legacyState).sort().join(), "binding,checkpoint,computers,conflicts,datasetId,deviceId,failure,folder,format,generationId,index,lastSynced,operations,origin,quantum,sequence"); assert.equal(Object.keys(legacyState.quantum).sort().join(), "account,api,site"); assert.equal(Object.keys(legacySecret).sort().join(), "account,api,deviceId,refreshToken,site"); checks += 3;
   await writeFile(join(a.home, "sync", "state.json"), JSON.stringify(legacyState)); await writeFile(join(a.home, "secrets", "quantum.json"), JSON.stringify(legacySecret)); await open(a);
   assert.equal((await a.api.sync.status()).origin, "quantum"); assert.equal((await secret(a)).accountId, owner.accountId); await a.api.unlock(password); await sync(a); assert.equal((await state(a)).quantum.accountId, owner.accountId); checks += 3;
   // The profile is read with the account snapshot, once a minute, so a new address shows within that minute and not on every status read.
@@ -80,12 +80,12 @@ try {
   stage = "device revocation preserves local content";
   await edit(a, local, "revoked-local"); quantum.revoke(computer); await reject(() => sync(a), "sync_signin_required"); assert.equal((await a.api.sync.status()).failure.cause, "sync_signin_required"); assert.equal((await a.api.entries.get(local.id)).entry.note, "synthetic-contract-revoked-local"); assert.equal((await a.api.sync.status()).pending > 0, true); await assert.rejects(() => secret(a), error => error.code === "ENOENT"); checks += 5;
   stage = "different canonical account is refused";
-  await signIn(a, "contract-other-account@cosmic.invalid"); await reject(() => sync(a), "sync_signin_required"); assert.equal((await state(a)).quantum.accountId, owner.accountId); assert.equal((await a.api.entries.get(local.id)).entry.note, "synthetic-contract-revoked-local"); checks += 3;
+  await signIn(a, "contract-other-account@cosmic.invalid"); await reject(() => sync(a), "sync_signin_required"); assert.equal((await state(a)).quantum.accountId, owner.accountId); assert.equal((await a.api.entries.get(local.id)).entry.note, "synthetic-contract-revoked-local"); assert.equal(quantum.account("contract-other-account@cosmic.invalid").datasets.size, 0); checks += 4;
   await close(a); await close(b);
 
   stage = "0.2.0 folder fixture and failed switch";
   const folder = join(scratch, "shared"), switched = await make("switch"), peer = await make("folder-peer"); await switched.api.create(password); const kept = await add(switched, "switch-local"); await switched.api.sync.setup(folder); await peer.api.sync.join(folder, { password }); await close(switched);
-  const folderFixture = await state(switched); assert.equal(folderFixture.format, 2); assert.equal(Object.hasOwn(folderFixture, "cursor"), false); await open(switched); const loadedFolder = await switched.api.sync.status(); assert.equal(loadedFolder.configured, true); assert.equal(loadedFolder.folder, folder); assert.deepEqual(await state(switched), folderFixture); checks += 5; await close(switched);
+  const folderFixture = await state(switched); assert.equal(folderFixture.format, 2); assert.equal(Object.keys(folderFixture).sort().join(), "binding,checkpoint,computers,conflicts,datasetId,deviceId,failure,folder,format,generationId,index,lastSynced,operations,origin,quantum,sequence"); checks++; await open(switched); const loadedFolder = await switched.api.sync.status(); assert.equal(loadedFolder.configured, true); assert.equal(loadedFolder.folder, folder); assert.deepEqual(await state(switched), folderFixture); checks += 5; await close(switched);
   const legacyFolder = { ...folderFixture, format: 1 }; delete legacyFolder.origin; delete legacyFolder.quantum; delete legacyFolder.cursor; await writeFile(join(switched.home, "sync", "state.json"), JSON.stringify(legacyFolder)); await open(switched); assert.equal((await switched.api.sync.status()).origin, "folder"); await switched.api.unlock(password); await sync(switched); assert.equal((await state(switched)).format, 2); checks += 2;
   await signIn(switched, "contract-switch@cosmic.invalid"); quantum.controls.objectWriteFailure = 1; await reject(() => switched.api.sync.switchToQuantum(), "sync_unavailable");
   assert.equal((await switched.api.sync.status()).configured, true); assert.equal((await switched.api.sync.status()).origin, "folder"); assert.equal((await state(switched)).folder, folder); checks += 4;
@@ -108,6 +108,22 @@ try {
   const exit = await new Promise((done, fail) => { const child = spawn(process.execPath, ["--input-type=module", "-e", program], { cwd: new URL("../../../", import.meta.url), env: { ...process.env, QUANTUM_SWITCH_HOME: interrupted.home }, stdio: "ignore", windowsHide: true, signal: AbortSignal.timeout(60000) }); child.once("error", fail); child.once("exit", done); });
   assert.equal(exit, 86); await open(interrupted); assert.equal((await interrupted.api.sync.status()).origin, "folder"); await interrupted.api.unlock(password); assert.equal((await interrupted.api.entries.get(interruptedEntry.id)).entry.title, interruptedEntry.title); await interrupted.api.sync.switchToQuantum(); assert.equal((await interrupted.api.sync.status()).origin, "quantum"); assert.equal((await interrupted.api.entries.get(interruptedEntry.id)).entry.title, interruptedEntry.title); await assert.rejects(() => readFile(join(interrupted.home, "sync", "quantum-switch.json"))); checks += 6; await close(interrupted);
 
+  stage = "capability refusal keeps local use";
+  const bareEmail = "contract-no-capability@cosmic.invalid", bare = await make("no-capability"), bareOwner = quantum.account(bareEmail); bareOwner.plan = false; await bare.api.create(password); const bareEntry = await add(bare, "no-capability-local"); await signIn(bare, bareEmail);
+  await reject(() => bare.api.sync.setupQuantum(), "sync_plan_required"); assert.equal((await bare.api.sync.status()).configured, false); assert.equal(bareOwner.datasets.size, 0);
+  await edit(bare, bareEntry, "no-capability-edited"); const bareSecond = await add(bare, "no-capability-second"), bareRow = await bare.api.entries.get(bareSecond.id); await bare.api.entries.remove(bareSecond.id, bareRow.version); await bare.api.lock(); await bare.api.unlock(password);
+  assert.equal((await bare.api.entries.get(bareEntry.id)).entry.note, "synthetic-contract-no-capability-edited"); await reject(() => bare.api.entries.get(bareSecond.id), "not_found"); checks += 5; await close(bare);
+
+  stage = "Dawn, Dawn Lite and Insider share one artifact";
+  const shapes = [];
+  for (const [tier, pool] of [["dawn", 100000000], ["dawn-lite", 5000000], ["insider", null]]) {
+    const tierEmail = `contract-${tier}@cosmic.invalid`, owner = quantum.account(tierEmail), first = await make(`${tier}-a`), second = await make(`${tier}-b`); owner.poolBytes = pool; await first.api.create(password);
+    for (const kind of ["login", "note"]) { const entry = newEntry(kind); entry.title = `synthetic-contract-${tier}-${kind}`; await first.api.entries.save(entry, 0); }
+    await signIn(first, tierEmail); await first.api.sync.setupQuantum(); await signIn(second, tierEmail); await second.api.sync.joinQuantum({ password }); await equal(first, second); assert.equal((await first.api.sync.status()).storage.pool, pool); assert.equal((await second.api.sync.status()).failure, null);
+    shapes.push([...new Set([...[...owner.datasets.values()][0].keys()].map(path => path.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "<id>").replace(/[0-9a-f]{32,}/g, "<hash>").replace(/\d+/g, "#")))].sort()); checks += 3; await close(first); await close(second);
+  }
+  assert.equal(shapes[0].length > 0, true); assert.deepEqual(shapes[1], shapes[0]); assert.deepEqual(shapes[2], shapes[0]); checks += 3;
+
   stage = "feed pull, persisted cursor and queue responsiveness";
   quantum.controls.feedHoldMs = 25000;
   const sender = await make("feed-sender"), receiver = await make("feed-receiver"), feedEmail = "contract-feed@cosmic.invalid"; await sender.api.create(password); const feedEntry = await add(sender, "feed-original"); await signIn(sender, feedEmail); await sender.api.sync.setupQuantum(); const receiverComputer = await signIn(receiver, feedEmail); await receiver.api.sync.joinQuantum({ password });
@@ -118,7 +134,7 @@ try {
   await until(() => { receiver.service.checkSync(); return quantum.pending(receiverComputer) === 1; });
   stage = "held receiver feed queue responsiveness";
   const beforeQueue = performance.now(); assert.equal((await receiver.api.entries.get(feedEntry.id)).entry.title, feedEntry.title); assert.equal(performance.now() - beforeQueue < 1000, true); checks += 2;
-  const feedCount = receiverFeeds().length; for (let i = 0; i < 5; i++) receiver.service.checkSync(); await new Promise(done => setTimeout(done, 30)); assert.equal(receiverFeeds().length, feedCount); checks++;
+  const feedCount = receiverFeeds().length; for (let i = 0; i < 5; i++) receiver.service.checkSync(); await new Promise(done => setTimeout(done, 30)); assert.equal(receiverFeeds().length, feedCount); assert.equal(quantum.pending(receiverComputer), 1); checks += 2;
   const beforeChangeCursor = (await state(receiver)).cursor; await edit(sender, feedEntry, "feed-changed"); await sync(sender); await until(async () => (await receiver.api.entries.get(feedEntry.id)).entry.note === "synthetic-contract-feed-changed"); await until(async () => (await state(receiver)).cursor > beforeChangeCursor); const cursor = (await state(receiver)).cursor; assert.equal(cursor > 0, true); checks++; await close(sender);
   await close(receiver); const requestStart = quantum.requests.length; await open(receiver); await receiver.api.unlock(password); receiver.service.checkSync(); await until(() => quantum.requests.slice(requestStart).some(row => row.computer === receiverComputer && row.path.endsWith("/changes"))); const resumed = quantum.requests.slice(requestStart).find(row => row.computer === receiverComputer && row.path.endsWith("/changes")); assert.equal(new URL(resumed.url ?? resumed.path, quantum.api).searchParams.get("after"), String(cursor)); checks++;
 

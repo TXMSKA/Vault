@@ -68,7 +68,7 @@ try {
 
   stage = "refresh rotation and refusal";
   const beforeRefresh = quantum.counters.refresh, previousRefresh = (await secret(a)).refreshToken; quantum.expire("synthetic@cosmic.invalid", computerA); await sync(a); assert.equal(quantum.counters.refresh, beforeRefresh + 1); assert.equal((await secret(a)).refreshToken !== previousRefresh, true); checks += 2;
-  quantum.account("synthetic@cosmic.invalid").refuseRefresh = true; quantum.expire("synthetic@cosmic.invalid", computerA); await reject(() => sync(a), "sync_signin_required"); assert.equal((await a.api.sync.status()).failure.cause, "sync_signin_required"); let refusedState; try { refusedState = await secret(a); } catch {} assert.equal(Boolean(refusedState?.refreshToken), false); checks += 3;
+  quantum.account("synthetic@cosmic.invalid").refuseRefresh = true; quantum.expire("synthetic@cosmic.invalid", computerA); await reject(() => sync(a), "sync_signin_required"); assert.equal((await a.api.sync.status()).failure.cause, "sync_signin_required"); let refusedState; try { refusedState = await secret(a); } catch {} assert.equal(Boolean(refusedState?.refreshToken), false); assert.equal((await a.api.entries.get(entry.id)).entry.note, "synthetic-private-Quantum-edited"); checks += 4;
   quantum.account("synthetic@cosmic.invalid").refuseRefresh = false; assert.equal(await signIn(a), computerA); await sync(a); await sync(b); await equal(a, b);
 
   stage = "refresh replay revokes its chain and mismatched identity is refused";
