@@ -2,7 +2,7 @@ import "../../../test/guard.mjs";
 import "./privacy-fixture.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { mkdtemp, readFile, writeFile, readdir, rm } from "node:fs/promises";
@@ -69,6 +69,16 @@ try {
   await edit(a, local, "pool-local"); await reject(() => sync(a), "sync_storage_full"); assert.equal((await a.api.sync.status()).pending > 0, true); checks += 2;
   await a.api.lock(); a.service.checkSync(); owner.full = false; const quotaRemote = await add(b, "pool-remote"); await sync(b); owner.full = true; await a.api.unlock(password); await reject(() => sync(a), "sync_storage_full"); assert.equal((await a.api.entries.get(quotaRemote.id)).entry.title, quotaRemote.title); checks += 2;
   owner.full = false; a.clock += 60001; a.service.checkSync(); await until(async () => (await a.api.sync.status()).pending === 0); await sync(b); await equal(a, b); await reject(() => b.api.entries.get(quotaDeleted.id), "not_found"); checks++;
+
+  stage = "tampered and oversized objects apply nothing";
+  const objects = owner.datasets.get((await state(a)).datasetId), storeHash = async v => { const hash = createHash("sha256"); for (const name of (await readdir(join(v.home, "store"))).sort()) hash.update(await readFile(join(v.home, "store", name))); return hash.digest("hex"); };
+  // A pulse of b that was still running when it locked finishes rewriting the same store files (a `.tmp-` staging file, then the replaced files) for a moment after lock() returns; the reference hash is taken once the store has stood still and holds no staging file.
+  await b.api.lock(); let still = 0, seen = ""; await until(async () => { const hash = await storeHash(b), staged = (await readdir(join(b.home, "store"))).some(name => name.startsWith(".tmp-")); still = !staged && hash === seen ? still + 1 : 0; seen = hash; return still >= 3; });
+  const stateBefore = await readFile(join(b.home, "sync", "state.json"), "utf8"), hashBefore = await storeHash(b); await edit(a, local, "object-edit"); await sync(a);
+  const lastBatch = [...objects.keys()].filter(path => path.startsWith(`writers/${computer}/`) && path.includes("/batches/")).sort((x, y) => Number(x.split("/").at(-1).split("-")[0]) - Number(y.split("/").at(-1).split("-")[0])).at(-1), lastBytes = objects.get(lastBatch).bytes, tampered = JSON.parse(lastBytes.toString()); tampered.sealed.data = `${tampered.sealed.data[0] === "A" ? "B" : "A"}${tampered.sealed.data.slice(1)}`;
+  objects.set(lastBatch, { bytes: Buffer.from(JSON.stringify(tampered)) }); await b.api.unlock(password);
+  for (const [invalid, code] of [[Buffer.from(JSON.stringify(tampered)), "invalid"], [lastBytes.subarray(0, -12), "invalid"], [Buffer.alloc(8 * 1024 * 1024 + 1, 120), "limited"]]) { objects.set(lastBatch, { bytes: invalid }); await reject(() => sync(b), code); assert.equal(await storeHash(b), hashBefore); assert.equal((await state(b)).index, JSON.parse(stateBefore).index); checks += 3; }
+  objects.set(lastBatch, { bytes: lastBytes }); await sync(b); await equal(a, b);
 
   stage = "acceptance state and policy links";
   await edit(a, local, "acceptance-local"); owner.missingPolicies = [{ id: "terms", version: "2026-10-09", path: "/terms" }]; a.clock += 60001;

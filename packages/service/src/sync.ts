@@ -1,11 +1,11 @@
 import fs from "node:fs";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, opendir, realpath, rename, rm, unlink } from "node:fs/promises";
+import { link as hardlink, lstat, mkdir, open, opendir, realpath, rename, rm, unlink } from "node:fs/promises";
 import { join, resolve, relative, isAbsolute, dirname } from "node:path";
 import { hostname } from "node:os";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { decrypt, decryptJson, encryptJson, unlock, hashProof, sealed, shape, stateInput, chunkIds, id, syncDataset, syncOperation, syncApplied, syncNumber, syncPatterns, syncWinner, sealSync, openSync, VaultError, FileVaultStore, SYNC_PACKAGE_CAP, SYNC_BLOB_CAP, SYNC_FILE_LIMIT, SYNC_WRITER_LIMIT, SYNC_CALL_MS, SYNC_CHECKPOINT_OPS, SYNC_TOMBSTONE_MS, SYNC_COMPACT_MS } from "vault-core";
-import type { SyncAddress, SyncOperation, SyncEntry, SyncCheckpoint, SyncBatch, SyncBlob, VaultState, StoredEntry, Sealed, Entry, VaultLogger } from "vault-core";
+import { decrypt, decryptJson, encryptJson, unlock, hashProof, sealed, shape, stateInput, chunkIds, id, syncDataset, syncOperation, syncApplied, syncNumber, syncPatterns, syncWinner, sealSync, openSync, VaultError, FileVaultStore, SYNC_PACKAGE_CAP, SYNC_BLOB_CAP, SYNC_FILE_LIMIT, SYNC_WRITER_LIMIT, SYNC_CALL_MS, SYNC_CHECKPOINT_OPS, SYNC_TOMBSTONE_MS, SYNC_COMPACT_MS, SYNC_LINEAGE } from "vault-core";
+import type { SyncAddress, SyncKept, SyncOperation, SyncEntry, SyncCheckpoint, SyncBatch, SyncBlob, VaultState, StoredEntry, Sealed, Entry, VaultLogger } from "vault-core";
 import type { SyncStatus, SyncConflict } from "../../client/src/types.ts";
 import { privateDirectory } from "../../client/src/private.ts";
 import { validateEntry } from "./vault.ts";
@@ -15,6 +15,7 @@ import { QuantumAuth, QuantumTransport, quantumUrl } from "./quantum.ts";
 const missing = (error: unknown) => (error as NodeJS.ErrnoException)?.code === "ENOENT";
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const sameAccount = (a: NonNullable<State["quantum"]>, b: NonNullable<State["quantum"]>) => a.api === b.api && a.site === b.site && (a.accountId ? a.accountId === b.accountId : a.account === b.account);
+const unusable = (error: unknown) => missing(error) || error instanceof VaultError && ["invalid", "limited"].includes(error.code);
 const writer = (a: { deviceId: string; generationId: string }) => `${a.deviceId}/${a.generationId}`;
 const binding = (home: string) => createHash("sha256").update(hostname()).update("\0").update(process.platform === "win32" ? resolve(home).toLowerCase() : resolve(home)).update("\0").update(String(fs.statSync(home).birthtimeMs)).digest("hex");
 export async function limited<T>(run: (live: () => void) => Promise<T>): Promise<T> {
@@ -75,10 +76,16 @@ export class FolderTransport implements SyncTransport {
   async remove(name: string, dataset = false) { if (!(dataset && name === "dataset.vsync") && !name.startsWith(`writers/${this.own}/`)) throw new VaultError("invalid"); return limited(async live => { const path = this.path(name); await this.safe(path, live); live(); await unlink(path); live(); }); }
   async leave() { return limited(async live => { const path = this.path(`writers/${this.own.split("/")[0]}`); try { await this.safe(path, live); live(); await rm(path, { recursive: true }); live(); } catch (error) { if (!missing(error)) throw error; } }); }
 }
-type RecordRow = { operation: SyncOperation; localVersion: number };
-type Kept = { operation: SyncOperation; entry: Sealed | null; blobs: SyncBlob[] };
-type Index = { records: RecordRow[]; applied: Record<string, number>; kept: Kept[] };
+// lineage: the revisions the record descends from, nearest first; a checkpoint carries it so a recovering computer can tell an ancestor from a concurrent edit.
+type RecordRow = { operation: SyncOperation; localVersion: number; lineage: string[] };
+// lineage: the revisions a kept loser descends from, so a checkpoint can tell a recovering computer which kept heads are only ancestors of others.
+type Kept = { operation: SyncOperation; lineage?: string[]; entry: Sealed | null; blobs: SyncBlob[] };
+// dismissed: the latest revisions this computer restored or dismissed, so recovery never brings one back as a conflict.
+type Index = { records: RecordRow[]; applied: Record<string, number>; kept: Kept[]; dismissed?: string[] };
+const DISMISSED_LIMIT = 1024;
 type State = { format: 2; origin: "folder" | "quantum"; quantum: { api: string; site: string; account: string; accountId?: string } | null; cursor?: number; folder: string; datasetId: string; deviceId: string; generationId: string; binding: string; sequence: number; operations: number; checkpoint: number; index: string; lastSynced: string | null; failure: { writer: string | null; cause: string } | null; computers: string[]; conflicts: number };
+type Candidate = { source: { deviceId: string; generationId: string }; time: number; records: SyncOperation[]; lineage: Record<string, string[]>; kept: SyncKept[]; applied: Record<string, number> };
+type Head = { op: SyncOperation; lineage: string[]; blobs: SyncBlob[] };
 type Publication = { path: string; bytes: string };
 type Snapshot = { index: Index; rows: StoredEntry[]; envelope: { state: VaultState; version: number }; chunks: SyncBlob[]; state: State; publications: Publication[]; before: { rows: StoredEntry[]; envelope: { state: VaultState | null; version: number } } };
 const emptyIndex = (): Index => ({ records: [], applied: {}, kept: [] });
@@ -93,12 +100,19 @@ function state(value: unknown): State {
   if (!Array.isArray(v.computers) || v.computers.length > SYNC_WRITER_LIMIT) throw new VaultError("invalid"); v.computers.forEach(id); syncNumber(v.conflicts);
   if (v.failure !== null) { object(v.failure, "cause,writer"); text(v.failure.cause, 80); if (v.failure.writer !== null) { const pair = v.failure.writer.split("/"); if (pair.length !== 2) throw new VaultError("invalid"); pair.forEach(id); } } return v;
 }
+const keptKeys = (value: unknown) => value && typeof value === "object" && Object.hasOwn(value, "lineage") ? "blobs,entry,lineage,operation" : "blobs,entry,operation";
 function indexInput(value: unknown): Index {
-  const v = object(value, "applied,kept,records") as unknown as Index; syncApplied(v.applied);
+  const v = object(value, value && typeof value === "object" && Object.hasOwn(value, "dismissed") ? "applied,dismissed,kept,records" : "applied,kept,records") as unknown as Index; syncApplied(v.applied); if (v.dismissed !== undefined && (!Array.isArray(v.dismissed) || v.dismissed.length > DISMISSED_LIMIT)) throw new VaultError("invalid"); v.dismissed?.forEach(id);
   if (!Array.isArray(v.records) || v.records.length > 10000 || !Array.isArray(v.kept) || v.kept.length > 10000) throw new VaultError("limited");
-  for (const row of v.records) { object(row, "localVersion,operation"); syncOperation(row.operation); syncNumber(row.localVersion); }
+  for (const row of v.records) { object(row, row && typeof row === "object" && Object.hasOwn(row, "lineage") ? "lineage,localVersion,operation" : "localVersion,operation"); syncOperation(row.operation); syncNumber(row.localVersion); row.lineage ??= row.operation.base ? [row.operation.base] : []; if (!Array.isArray(row.lineage) || row.lineage.length > SYNC_LINEAGE) throw new VaultError("invalid"); row.lineage.forEach(id); }
   if (new Set(v.records.map(row => row.operation.id.toLowerCase())).size !== v.records.length) throw new VaultError("invalid");
-  for (const kept of v.kept) { object(kept, "blobs,entry,operation"); syncOperation(kept.operation); if (kept.entry !== null) sealed(kept.entry, 220000); if (!Array.isArray(kept.blobs) || kept.blobs.length > 2560) throw new VaultError("invalid"); for (const blob of kept.blobs) { shape(blob, "id,sealed"); id(blob.id); sealed(blob.sealed, 32784); } } return v;
+  for (const kept of v.kept) { object(kept, keptKeys(kept)); syncOperation(kept.operation); if (kept.lineage !== undefined && (!Array.isArray(kept.lineage) || kept.lineage.length > SYNC_LINEAGE)) throw new VaultError("invalid"); kept.lineage?.forEach(id); if (kept.entry !== null) sealed(kept.entry, 220000); if (!Array.isArray(kept.blobs) || kept.blobs.length > 2560) throw new VaultError("invalid"); for (const blob of kept.blobs) { shape(blob, "id,sealed"); id(blob.id); sealed(blob.sealed, 32784); } } return v;
+}
+// The revisions an operation descends from, nearest first: its base, then whatever chain the held record and the kept losers know above it.
+function ancestry(op: SyncOperation, old: RecordRow | undefined, parents?: Map<string, string>): string[] {
+  if (!op.base) return [];
+  const held = new Map<string, string>(), chain = old ? [old.operation.revision, ...old.lineage] : []; for (let at = 0; at + 1 < chain.length; at++) held.set(chain[at], chain[at + 1]);
+  const result = [op.base]; for (let at = held.get(op.base) ?? parents?.get(op.base); at && result.length < SYNC_LINEAGE && !result.includes(at); at = held.get(at) ?? parents?.get(at)) result.push(at); return result;
 }
 function atomic(path: string, value: unknown) { const temporary = `${path}.${randomUUID()}.tmp`, fd = fs.openSync(temporary, "wx", 0o600); try { fs.writeFileSync(fd, JSON.stringify(value)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); } try { fs.renameSync(temporary, path); } finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); } }
 function localRead(path: string, cap = SYNC_PACKAGE_CAP) { const stat = fs.lstatSync(path); if (!stat.isFile() || stat.isSymbolicLink() || stat.size > cap) throw new VaultError("invalid"); return JSON.parse(fs.readFileSync(path, "utf8")); }
@@ -145,7 +159,7 @@ export class Sync {
   private async saveSnapshot(path: string, snapshot: Snapshot, key: CryptoKey, ticket: number) {
     privateDirectory(path); let part = 0;
     const write = async (section: string, items: unknown[]) => { const value = await encryptJson(key, { section, items }, `sync-local:${snapshot.state.datasetId}:${snapshot.state.index}:${part}`); this.check(ticket); atomic(join(path, `${part++}.json`), value); };
-    await write("meta", [{ state: snapshot.state, envelope: snapshot.envelope, beforeEnvelope: snapshot.before.envelope, applied: snapshot.index.applied }]);
+    await write("meta", [{ state: snapshot.state, envelope: snapshot.envelope, beforeEnvelope: snapshot.before.envelope, applied: snapshot.index.applied, ...snapshot.index.dismissed?.length ? { dismissed: snapshot.index.dismissed } : {} }]);
     const groups: { section: string; items: unknown[] }[] = [
       { section: "records", items: snapshot.index.records }, { section: "rows", items: snapshot.rows }, { section: "beforeRows", items: snapshot.before.rows }, { section: "chunks", items: snapshot.chunks },
       { section: "kept", items: snapshot.index.kept.map(item => ({ ...item, blobs: [] })) }, { section: "keptBlobs", items: snapshot.index.kept.flatMap(item => item.blobs.map(blob => ({ revision: item.operation.revision, blob }))) },
@@ -160,7 +174,7 @@ export class Sync {
     for (let part = 0; part < parts; part++) {
       const payload = object(await decryptJson(key, sealed(localRead(join(path, `${part}.json`)), SYNC_PACKAGE_CAP), `sync-local:${c.datasetId}:${c.index}:${part}`), "items,section"), section = text(payload.section, 32), items = payload.items;
       if (!Array.isArray(items) || items.length > 10000) throw new VaultError("invalid");
-      if (section === "meta") { if (meta || items.length !== 1) throw new VaultError("invalid"); meta = true; const v = object(items[0], "applied,beforeEnvelope,envelope,state"); snapshot.state = state(v.state); if (snapshot.state.index !== c.index || snapshot.state.datasetId !== c.datasetId) throw new VaultError("invalid"); snapshot.index.applied = syncApplied(v.applied); snapshot.envelope = v.envelope as Snapshot["envelope"]; snapshot.before.envelope = v.beforeEnvelope as Snapshot["before"]["envelope"]; }
+      if (section === "meta") { if (meta || items.length !== 1) throw new VaultError("invalid"); meta = true; const v = object(items[0], items[0] && typeof items[0] === "object" && Object.hasOwn(items[0], "dismissed") ? "applied,beforeEnvelope,dismissed,envelope,state" : "applied,beforeEnvelope,envelope,state"); snapshot.state = state(v.state); if (snapshot.state.index !== c.index || snapshot.state.datasetId !== c.datasetId) throw new VaultError("invalid"); snapshot.index.applied = syncApplied(v.applied); if (v.dismissed !== undefined) snapshot.index.dismissed = v.dismissed as string[]; snapshot.envelope = v.envelope as Snapshot["envelope"]; snapshot.before.envelope = v.beforeEnvelope as Snapshot["before"]["envelope"]; }
       else if (section === "records") snapshot.index.records.push(...items);
       else if (section === "kept") snapshot.index.kept.push(...items);
       else if (section === "rows") snapshot.rows.push(...items);
@@ -183,13 +197,13 @@ export class Sync {
       const sourceId = writer(source), names = (await this.transport(c).list(`writers/${sourceId}/batches`)).map(name => ({ name, match: syncPatterns.batch.exec(name) })).filter(item => item.match).sort((a, b) => Number(a.match![1]) - Number(b.match![1])); let last = index.applied[sourceId] ?? 0;
       for (const { name, match } of names) { const sequence = Number(match![1]); if (sequence <= last) continue; if (sequence !== last + 1) throw new ServiceError("sync_gap", 503);
         const batch = await openSync(key, this.address(c, "batch", sequence, match![2], source as State), await this.transport(c).read(`writers/${sourceId}/batches/${name}`)) as SyncBatch;
-        for (const op of batch.operations) { if (op.deviceId !== source.deviceId) throw new VaultError("invalid"); await this.validate(op, key); const old = index.records.find(row => row.operation.id.toLowerCase() === op.id.toLowerCase()); if (!old) index.records.push({ operation: op, localVersion: 0 }); else if (op.base === old.operation.revision || syncWinner(old.operation, op) === op) old.operation = op; } last = sequence;
+        for (const op of batch.operations) { if (op.deviceId !== source.deviceId) throw new VaultError("invalid"); await this.validate(op, key); const old = index.records.find(row => row.operation.id.toLowerCase() === op.id.toLowerCase()); if (!old) index.records.push({ operation: op, localVersion: 0, lineage: ancestry(op, undefined) }); else if (op.base === old.operation.revision || syncWinner(old.operation, op) === op) { old.lineage = ancestry(op, old); old.operation = op; } } last = sequence;
       } if (last) index.applied[sourceId] = last;
     }
     if (remote) return indexInput(index);
     const rows = await this.vault.store.entries(), envelope = await this.vault.store.envelope();
     for (const row of index.records) { const op = row.operation, local = rows.find(item => item.id === op.id); row.localVersion = op.record === "envelope" ? same(op.value, envelope.state) ? envelope.version : 0 : op.value && local && same((op.value as SyncEntry).sealed, local.sealed) && same((op.value as SyncEntry).chunks, local.chunks) ? local.version : 0; }
-    for (const name of fs.readdirSync(join(this.root, "kept"))) { const match = syncPatterns.blob.exec(name.replace(/\.json$/, ".vsync")); if (!match) continue; const revision = match[1], value = object(await decryptJson(key, sealed(localRead(join(this.root, "kept", name))), `sync-kept:${c.datasetId}:${revision}`), "blobs,entry,operation") as unknown as Kept; syncOperation(value.operation); if (value.operation.revision !== revision || !Array.isArray(value.blobs) || value.blobs.length) throw new VaultError("invalid");
+    for (const name of fs.readdirSync(join(this.root, "kept"))) { const match = syncPatterns.blob.exec(name.replace(/\.json$/, ".vsync")); if (!match) continue; const revision = match[1], raw = await decryptJson(key, sealed(localRead(join(this.root, "kept", name))), `sync-kept:${c.datasetId}:${revision}`), value = object(raw, keptKeys(raw)) as unknown as Kept; syncOperation(value.operation); if (value.operation.revision !== revision || !Array.isArray(value.blobs) || value.blobs.length) throw new VaultError("invalid");
       if (value.operation.record === "entry" && value.operation.value) for (const chunkId of (value.operation.value as SyncEntry).chunks) { const blob = object(await decryptJson(key, sealed(localRead(join(this.root, "kept", `${revision}-${chunkId}.json`), SYNC_BLOB_CAP), SYNC_BLOB_CAP), `sync-kept-blob:${c.datasetId}:${revision}:${chunkId}`), "id,sealed") as unknown as SyncBlob; if (blob.id !== chunkId) throw new VaultError("invalid"); sealed(blob.sealed, 32784); value.blobs.push(blob); } index.kept.push(value);
     }
     return indexInput(index);
@@ -207,20 +221,33 @@ export class Sync {
     for (const chunkId of (op.value as SyncEntry).chunks) { const blob = await openSync(key, this.address(c, "blob", 0, chunkId, source as State), await this.transport(c).read(`writers/${writer(source)}/blobs/${chunkId}.vsync`, SYNC_BLOB_CAP)) as SyncBlob;
       if (blob.id !== chunkId) throw new VaultError("invalid"); const bytes = await decrypt(key, blob.sealed, `chunk:${chunkId}`); try { if (bytes.length > 32768) throw new VaultError("invalid"); } finally { bytes.fill(0); } result.push(blob); } return result;
   }
-  private async checkpoint(c: State, key: CryptoKey): Promise<{ index: Index; blobs: SyncBlob[] }> {
-    const candidates: { source: { deviceId: string; generationId: string }; sequence: number; packageId: string; names: string[]; parts: number; time: number; records: SyncOperation[]; applied: Record<string, number> }[] = [];
+  // Every checkpoint that can be read, newest first. One that is tampered, foreign or oversized is skipped here and its error kept, so an older one can still serve.
+  private async checkpoints(c: State, key: CryptoKey): Promise<{ candidates: Candidate[]; error: unknown }> {
+    const candidates: Candidate[] = []; let error: unknown;
     for (const source of await this.writers(c)) {
       const groups = new Map<string, string[]>(); for (const name of await this.transport(c).list(`writers/${writer(source)}/checkpoints`)) { const m = syncPatterns.checkpoint.exec(name); if (!m) continue; const group = `${m[1]}-${m[2]}`; groups.set(group, [...groups.get(group) ?? [], name]); }
       for (const names of groups.values()) { const first = syncPatterns.checkpoint.exec(names[0])!, parts = Number(first[4]); if (names.length !== parts || new Set(names.map(name => syncPatterns.checkpoint.exec(name)![3])).size !== parts) continue;
-        const records: SyncOperation[] = []; let time = 0, applied: Record<string, number> | undefined;
-        for (const name of names) { const m = syncPatterns.checkpoint.exec(name)!, value = await openSync(key, this.address(c, "checkpoint", Number(m[1]), m[2], source as State), await this.transport(c).read(`writers/${writer(source)}/checkpoints/${name}`)) as SyncCheckpoint;
-          if (value.parts !== parts || value.part !== Number(m[3]) || applied && (!same(value.applied, applied) || value.time !== time)) throw new VaultError("invalid"); applied = value.applied; time = value.time; records.push(...value.records); }
-        if (records.length > 10000 || new Set(records.map(op => op.id.toLowerCase())).size !== records.length) throw new VaultError("limited"); candidates.push({ source, sequence: Number(first[1]), packageId: first[2], names, parts, time, records, applied: applied! });
+        try {
+          const records: SyncOperation[] = [], lineage: Record<string, string[]> = {}, kept: SyncKept[] = []; let time = 0, applied: Record<string, number> | undefined;
+          for (const name of names) { const m = syncPatterns.checkpoint.exec(name)!, value = await openSync(key, this.address(c, "checkpoint", Number(m[1]), m[2], source as State), await this.transport(c).read(`writers/${writer(source)}/checkpoints/${name}`)) as SyncCheckpoint;
+            if (value.parts !== parts || value.part !== Number(m[3]) || applied && (!same(value.applied, applied) || value.time !== time)) throw new VaultError("invalid"); applied = value.applied; time = value.time; records.push(...value.records); kept.push(...value.kept ?? []); Object.assign(lineage, value.lineage); }
+          if (records.length > 10000 || kept.length > 10000 || new Set(records.map(op => op.id.toLowerCase())).size !== records.length || new Set(kept.map(item => item.operation.revision)).size !== kept.length) throw new VaultError("limited"); candidates.push({ source, time, records, lineage, kept, applied: applied! });
+        } catch (failure) { if (!unusable(failure)) throw failure; error ??= failure; }
       }
     }
-    candidates.sort((a, b) => b.time - a.time || writer(b.source).localeCompare(writer(a.source))); const newest = candidates[0]; if (!newest) throw new ServiceError("sync_checkpoint", 503);
-    const blobs: SyncBlob[] = []; for (const op of newest.records) { await this.validate(op, key); if (op.value) blobs.push(...await this.findBlobs(c, op, key, newest.source)); }
-    return { index: { records: newest.records.map(operation => ({ operation, localVersion: 0 })), applied: newest.applied, kept: [] }, blobs };
+    candidates.sort((a, b) => b.time - a.time || writer(b.source).localeCompare(writer(a.source))); return { candidates, error };
+  }
+  private async usable(c: State, key: CryptoKey, candidate: Candidate, withKept = false): Promise<{ index: Index; blobs: SyncBlob[]; heads: Head[] }> {
+    const blobs: SyncBlob[] = [], heads: Head[] = []; for (const op of candidate.records) { await this.validate(op, key); if (op.value) blobs.push(...await this.findBlobs(c, op, key, candidate.source)); }
+    // A carried operation must come from a writer of this dataset (or this computer); one attributed to an unknown device makes the checkpoint unusable.
+    const known = withKept && candidate.kept.length ? new Set([...(await this.writers(c)).map(source => source.deviceId), c.deviceId]) : new Set<string>();
+    if (withKept) for (const item of candidate.kept) { if (!known.has(item.operation.deviceId)) throw new VaultError("invalid"); await this.validate(item.operation, key); heads.push({ op: item.operation, lineage: item.lineage, blobs: item.operation.value ? await this.findBlobs(c, item.operation, key, candidate.source) : [] }); }
+    return { heads, index: { records: candidate.records.map(operation => ({ operation, localVersion: 0, lineage: candidate.lineage[operation.id] ?? (operation.base ? [operation.base] : []) })), applied: candidate.applied, kept: [] }, blobs };
+  }
+  private async checkpoint(c: State, key: CryptoKey): Promise<{ index: Index; blobs: SyncBlob[]; heads: Head[] }> {
+    const found = await this.checkpoints(c, key); let error = found.error;
+    for (const candidate of found.candidates) { try { return await this.usable(c, key, candidate); } catch (failure) { if (!unusable(failure)) throw failure; error ??= failure; } }
+    throw error ?? new ServiceError("sync_checkpoint", 503);
   }
   private async findBlobs(c: State, op: SyncOperation, key: CryptoKey, preferred: { deviceId: string; generationId: string }): Promise<SyncBlob[]> {
     try { return await this.blobs(c, preferred, op, key); } catch (error) { if (!missing(error)) throw error; }
@@ -310,8 +337,10 @@ export class Sync {
   async changes(signal: AbortSignal) { const c = this.watch(); if (!c) throw new ServiceError("sync_unconfigured"); this.transport(this.config!); return { ...await this.quantum.changes(c.api, c.datasetId, c.cursor, signal), datasetId: c.datasetId }; }
   acknowledge(datasetId: string, cursor: number) { const c = this.config; syncNumber(cursor); if (c?.origin !== "quantum" || c.datasetId !== datasetId || cursor < (c.cursor ?? 0)) return; this.check(this.vault.memory.ticket()); c.cursor = cursor; atomic(join(this.root, "state.json"), c); }
   feedFailure(error: unknown) { const cause = this.cause(error); this.failure = { writer: null, cause }; if (cause === "sync_acceptance_required") { const policies = (error as { policies?: NonNullable<SyncStatus["missingPolicies"]> }).policies; if (policies && this.access) this.access.missingPolicies = policies; this.storage = null; } }
-  async pulse() {
-    const original = this.config; if (!original) throw new ServiceError("sync_unconfigured", 400); const ticket = this.vault.memory.ticket(), key = this.check(ticket);
+  // A local write that lands while a pulse is staging its store restarts the pulse, which then carries it; a few restarts, then the caller retries.
+  async pulse(): Promise<SyncStatus> { for (let attempt = 0; ; attempt++) try { return await this.attempt(); } catch (error) { if (this.cause(error) !== "sync_changed" || attempt >= 3) throw error; } }
+  private async attempt() {
+    const original = this.config; if (!original) throw new ServiceError("sync_unconfigured", 400); const ticket = this.vault.memory.ticket(), key = this.check(ticket); this.pulsing++;
     try {
       this.prepare(); if (original.origin === "quantum") { await this.status(); if (this.failure?.cause === "sync_acceptance_required") throw new ServiceError("sync_acceptance_required", 403); } let c = original;
       if (c.binding !== binding(this.home)) { for (const name of fs.readdirSync(join(this.root, "outbox"))) if (syncPatterns.writer.test(name)) fs.rmSync(join(this.root, "outbox", name), { recursive: true }); c = { ...c, deviceId: randomUUID(), generationId: randomUUID(), binding: binding(this.home), sequence: 0, operations: 0, checkpoint: 0 }; if (c.origin === "quantum") { atomic(join(this.root, "state.json"), c); this.config = c; await this.quantum.clear(c.deviceId); throw new ServiceError("sync_signin_required", 401); } }
@@ -322,39 +351,53 @@ export class Sync {
       }
       if (pending.length) { await this.finish(pending[0], key, ticket, c); c = this.config!; }
       await this.run(c, await this.current(c, key), key, ticket, false, this.config); this.failure = null; return this.status();
-    } catch (error) { const cause = this.cause(error); if (original.origin === "quantum" && ["sync_plan_required", "sync_storage_full"].includes(cause)) { const c = this.config!; for (const snapshot of await this.pending(key)) fs.rmSync(join(this.root, "outbox", snapshot.state.index), { recursive: true, force: true }); await this.run(c, await this.current(c, key), key, ticket, false, c, undefined, undefined, true); } if (cause !== "locked") { this.failure = { writer: this.receiving, cause }; try { atomic(join(this.root, "failure.json"), this.failure); this.logger("sync_pulse", { outcome: "denied" }); } catch {} } throw cause.startsWith("sync_") ? new ServiceError(cause, 503) : error instanceof VaultError || error instanceof ServiceError ? error : new VaultError("locked"); }
-    finally { this.receiving = null; }
+    } catch (error) { const cause = this.cause(error); if (original.origin === "quantum" && ["sync_plan_required", "sync_storage_full"].includes(cause)) { const c = this.config!; for (const snapshot of await this.pending(key)) fs.rmSync(join(this.root, "outbox", snapshot.state.index), { recursive: true, force: true }); await this.run(c, await this.current(c, key), key, ticket, false, c, undefined, undefined, true); } if (cause !== "locked" && cause !== "sync_changed") { this.failure = { writer: this.receiving, cause }; try { atomic(join(this.root, "failure.json"), this.failure); this.logger("sync_pulse", { outcome: "denied" }); } catch {} } throw cause.startsWith("sync_") ? new ServiceError(cause, 503) : error instanceof VaultError || error instanceof ServiceError ? error : new VaultError("locked"); }
+    finally { this.receiving = null; this.pulsing--; }
   }
   private receiving: string | null = null;
+  /** Pulses in progress, and a wait for the reads running beside them to end; the server sets the latter. */
+  pulsing = 0; quiet: () => Promise<void> = async () => {};
+  /** Counts the local writes that ran beside a pulse; one landing after the pulse read the store makes it start over before it replaces the store. */
+  touched = 0;
   private async run(c: State, index: Index, key: CryptoKey, ticket: number, force: boolean, previous: State | null, joining?: { envelope: VaultState; blobs: SyncBlob[]; preserve?: boolean }, dataset?: string, readOnly = false) {
     const beforeRecords = new Map(readOnly ? index.records.map(row => [row.operation.id, row] as const) : []); index = structuredClone(index); const appliedBefore = { ...index.applied }, rows = await this.vault.store.entries(), currentEnv = await this.vault.store.envelope(), env = { state: currentEnv.state ?? joining?.envelope!, version: currentEnv.version || 1 }, chunks = new Map<string, SyncBlob>(), publications: Publication[] = [], operations: SyncOperation[] = [];
     const rowMap = new Map(rows.map(row => [row.id.toLowerCase(), row]));
     for (const blob of joining?.blobs ?? []) chunks.set(blob.id, blob);
     const record = (op: SyncOperation) => index.records.find(row => row.operation.id.toLowerCase() === op.id.toLowerCase());
-    const set = (op: SyncOperation, localVersion: number) => { const old = record(op); if (old) { old.operation = op; old.localVersion = localVersion; } else index.records.push({ operation: op, localVersion }); };
+    const parents = new Map(index.kept.flatMap(item => item.operation.base ? [[item.operation.revision, item.operation.base] as const] : []));
+    const set = (op: SyncOperation, localVersion: number, lineage?: string[]) => { const old = record(op), chain = lineage ?? ancestry(op, old, parents); if (old) { old.operation = op; old.localVersion = localVersion; old.lineage = chain; } else index.records.push({ operation: op, localVersion, lineage: chain }); };
     const make = (record: SyncOperation["record"], recordId: string, value: SyncOperation["value"], old?: RecordRow): SyncOperation => ({ record, id: recordId, revision: randomUUID(), base: old?.operation.revision ?? null, deviceId: c.deviceId, time: this.now(), value });
-    const keep = (op: SyncOperation, fallback: SyncOperation) => { if (index.kept.some(item => item.operation.revision === op.revision)) return; const entry = op.record === "entry" ? (op.value ?? fallback.value) as SyncEntry | null : null; index.kept.push({ operation: op, entry: entry?.sealed ?? null, blobs: op.record === "entry" && op.value ? (op.value as SyncEntry).chunks.map(chunkId => { const blob = chunks.get(chunkId); if (!blob) throw new VaultError("invalid"); return blob; }) : [] }); };
+    const keep = (op: SyncOperation, fallback: SyncOperation, lineage?: string[]) => { if (index.kept.some(item => item.operation.revision === op.revision) || index.dismissed?.includes(op.revision)) return; if (op.base) parents.set(op.revision, op.base); const entry = op.record === "entry" ? (op.value ?? fallback.value) as SyncEntry | null : null; index.kept.push({ operation: op, lineage: lineage ?? ancestry(op, record(op), parents), entry: entry?.sealed ?? null, blobs: op.record === "entry" && op.value ? (op.value as SyncEntry).chunks.map(chunkId => { const blob = chunks.get(chunkId); if (!blob) throw new VaultError("invalid"); return blob; }) : [] }); };
     if (!joining || joining.preserve) {
-      for (const row of rows) { const old = index.records.find(item => item.operation.id === row.id); if (old?.localVersion === row.version) continue; if (joining?.preserve && old?.operation.value && same(old.operation.value, { sealed: row.sealed, chunks: row.chunks })) { old.localVersion = row.version; continue; } const op = make("entry", row.id, { sealed: row.sealed, chunks: row.chunks }, old); await this.validate(op, key); if (joining?.preserve && old) keep(old.operation, op); operations.push(op); set(op, row.version); }
+      for (const row of rows) { const old = index.records.find(item => item.operation.id === row.id); if (old?.localVersion === row.version) continue; if (joining?.preserve && old?.operation.value && same(old.operation.value, { sealed: row.sealed, chunks: row.chunks })) { old.localVersion = row.version; continue; } const op = make("entry", row.id, { sealed: row.sealed, chunks: row.chunks }, old); await this.validate(op, key); if (joining?.preserve && old) keep(old.operation, op, old.lineage); operations.push(op); set(op, row.version); }
       for (const old of [...index.records]) if (!joining?.preserve && old.operation.record === "entry" && old.localVersion > 0 && !rowMap.has(old.operation.id.toLowerCase())) { const op = make("entry", old.operation.id, null, old); operations.push(op); set(op, 0); }
-      const oldEnv = index.records.find(item => item.operation.id === "envelope"); if (joining?.preserve && oldEnv && same(oldEnv.operation.value, env.state)) oldEnv.localVersion = env.version; else if (oldEnv?.localVersion !== env.version) { const op = make("envelope", "envelope", env.state, oldEnv); if (joining?.preserve && oldEnv) keep(oldEnv.operation, op); operations.push(op); set(op, env.version); }
+      const oldEnv = index.records.find(item => item.operation.id === "envelope"); if (joining?.preserve && oldEnv && same(oldEnv.operation.value, env.state)) oldEnv.localVersion = env.version; else if (oldEnv?.localVersion !== env.version) { const op = make("envelope", "envelope", env.state, oldEnv); if (joining?.preserve && oldEnv) keep(oldEnv.operation, op, oldEnv.lineage); operations.push(op); set(op, env.version); }
     }
-    const apply = async (op: SyncOperation) => {
-      const old = record(op); if (old?.operation.revision === op.revision) return;
-      if (old && op.base !== old.operation.revision) { const winner = syncWinner(old.operation, op); keep(winner === op ? old.operation : op, winner); if (winner !== op) return; }
-      if (op.record === "envelope") { if (!same(env.state, op.value)) { env.state = stateInput(op.value); env.version++; } set(op, env.version); return; }
+    // A checkpoint record carries the revisions it descends from. A held record that is one of them is superseded silently, a record that is among the held record's own ancestors is ignored, and anything else is concurrent and keeps its loser, exactly as the batches would.
+    // An index written before lineage existed knows only the immediate base, and a chain past the cap is cut. The missing steps are looked up in this computer's own published batches (compaction of other writers never removes them) and the kept losers; what they cannot prove stays a conflict, because dropping a revision as an ancestor on a guess could lose a genuine losing head, while a kept duplicate is only restorable noise.
+    let own: Map<string, string> | undefined;
+    const history = async () => { if (own) return own; own = new Map(); const prefix = `writers/${writer(c)}/batches`; for (const name of await this.transport(c).list(prefix)) { const m = syncPatterns.batch.exec(name); if (!m) continue; const batch = await openSync(key, this.address(c, "batch", Number(m[1]), m[2]), await this.transport(c).read(`${prefix}/${name}`)) as SyncBatch; for (const op of batch.operations) if (op.base) own.set(op.revision, op.base); } return own; };
+    const reaches = async (lineage: string[], base: string | null, revision: string) => { if (lineage.includes(revision)) return true; const known = await history(), seen = new Set<string>(); for (let at: string | undefined = lineage.at(-1) ?? base ?? undefined; at && !seen.has(at); at = known.get(at) ?? parents.get(at)) { if (at === revision) return true; seen.add(at); } return false; };
+    const proves = (old: RecordRow, revision: string) => reaches(old.lineage, old.operation.base, revision);
+    const apply = async (op: SyncOperation, fromCheckpoint = false, lineage?: string[]) => {
+      const old = record(op); if (old?.operation.revision === op.revision) return; const chain = lineage ?? ancestry(op, old, parents);
+      if (old) {
+        if (fromCheckpoint && old.lineage.includes(op.revision)) return;
+        if (!(fromCheckpoint ? op.base === old.operation.revision || chain.includes(old.operation.revision) : op.base === old.operation.revision)) { if (fromCheckpoint && await proves(old, op.revision)) return; const winner = syncWinner(old.operation, op); keep(winner === op ? old.operation : op, winner, winner === op ? old.lineage : chain); if (winner !== op) return; }
+      }
+      if (op.record === "envelope") { if (!same(env.state, op.value)) { env.state = stateInput(op.value); env.version++; } set(op, env.version, chain); return; }
       const entry = await this.validate(op, key);
       if (entry?.kind === "env") {
         for (const other of [...index.records]) { if (other.operation.id === op.id || other.operation.record !== "entry" || !other.operation.value) continue; const theirs = await this.validate(other.operation, key); if (theirs?.kind !== "env" || theirs.title !== entry.title) continue;
-          const winner = syncWinner(other.operation, op); keep(winner === op ? other.operation : op, winner);
-          if (winner !== op) { set(op, 0); return; } rowMap.delete(other.operation.id.toLowerCase()); other.localVersion = 0;
+          const winner = syncWinner(other.operation, op); keep(winner === op ? other.operation : op, winner, winner === op ? other.lineage : chain);
+          if (winner !== op) { set(op, 0, chain); return; } rowMap.delete(other.operation.id.toLowerCase()); other.localVersion = 0;
         }
       }
-      const before = rowMap.get(op.id.toLowerCase()); if (op.value) { const value = op.value as SyncEntry; const next = same(before?.sealed, value.sealed) ? before!.version : (before?.version ?? 0) + 1; rowMap.set(op.id.toLowerCase(), { id: op.id, version: next, sealed: value.sealed, chunks: value.chunks }); set(op, next); }
-      else { rowMap.delete(op.id.toLowerCase()); set(op, 0); }
+      const before = rowMap.get(op.id.toLowerCase()); if (op.value) { const value = op.value as SyncEntry; const next = same(before?.sealed, value.sealed) ? before!.version : (before?.version ?? 0) + 1; rowMap.set(op.id.toLowerCase(), { id: op.id, version: next, sealed: value.sealed, chunks: value.chunks }); set(op, next, chain); }
+      else { rowMap.delete(op.id.toLowerCase()); set(op, 0, chain); }
     };
-    if (joining) { for (const item of [...index.records]) { const op = item.operation; index.records = index.records.filter(row => row !== item); await apply(op); } }
-    const outgoing = async (op: SyncOperation) => { if (op.record !== "entry" || !op.value) return; for (const chunkId of (op.value as SyncEntry).chunks) { let blob = chunks.get(chunkId); if (!blob) { blob = { id: chunkId, sealed: await this.vault.store.getChunk(chunkId) }; chunks.set(chunkId, blob); } const path = `writers/${writer(c)}/blobs/${chunkId}.vsync`; if (!publications.some(item => item.path === path)) { let bytes; try { bytes = await this.transport(c).read(path, SYNC_BLOB_CAP); const opened = await openSync(key, this.address(c, "blob", 0, chunkId), bytes) as SyncBlob; if (!same(opened, blob)) throw new VaultError("conflict"); } catch (error) { if (!missing(error)) throw error; bytes = await sealSync(key, this.address(c, "blob", 0, chunkId), blob); } publications.push({ path, bytes }); } } };
+    if (joining) { for (const item of [...index.records]) { const op = item.operation; index.records = index.records.filter(row => row !== item); await apply(op, false, item.lineage); } }
+    const outgoing = async (op: SyncOperation, held: SyncBlob[] = []) => { if (op.record !== "entry" || !op.value) return; for (const chunkId of (op.value as SyncEntry).chunks) { let blob = chunks.get(chunkId) ?? held.find(item => item.id === chunkId); if (!blob) { blob = { id: chunkId, sealed: await this.vault.store.getChunk(chunkId) }; chunks.set(chunkId, blob); } const path = `writers/${writer(c)}/blobs/${chunkId}.vsync`; if (!publications.some(item => item.path === path)) { let bytes; try { bytes = await this.transport(c).read(path, SYNC_BLOB_CAP); const opened = await openSync(key, this.address(c, "blob", 0, chunkId), bytes) as SyncBlob; if (!same(opened, blob)) throw new VaultError("conflict"); } catch (error) { if (!missing(error)) throw error; bytes = await sealSync(key, this.address(c, "blob", 0, chunkId), blob); } publications.push({ path, bytes }); } } };
     if (!readOnly) for (const op of operations) await outgoing(op);
     const batches: SyncOperation[][] = []; let batch: SyncOperation[] = [], size = 0;
     if (!readOnly) for (const op of operations) { const length = Buffer.byteLength(JSON.stringify(op)); if (size + length > 5 * 1024 * 1024 && batch.length) { batches.push(batch); batch = []; size = 0; } batch.push(op); size += length; } if (batch.length) batches.push(batch);
@@ -362,15 +405,40 @@ export class Sync {
       for (const op of operations.filter(op => op.record === "envelope")) { const packageId = randomUUID(), bytes = JSON.parse(await sealSync(key, this.address(c, "envelope", c.sequence, packageId), op)); publications.push({ path: `writers/${writer(c)}/envelopes/${c.sequence}-${packageId}.vsync`, bytes: JSON.stringify({ ...bytes, envelope: op.value, time: op.time }) }); }
     }
     // Validate every incoming package and blob before preparing any local or folder writes.
-    const incoming: { op: SyncOperation; blobs: SyncBlob[] }[] = [];
+    const incoming: { op: SyncOperation; blobs: SyncBlob[]; restored?: true; lineage?: string[] }[] = [];
     const sources = await this.writers(c, dataset !== undefined);
     if (!sources.some(source => writer(source) === writer(c)) && sources.length >= SYNC_WRITER_LIMIT) throw new VaultError("limited");
+    const listed = new Map<string, { source: (typeof sources)[number]; sequence: number; name: string; packageId: string }[]>();
     for (const source of sources) {
       const sourceId = writer(source); if (sourceId === writer(c)) continue; this.receiving = sourceId;
-      const names = (await this.transport(c).list(`writers/${sourceId}/batches`)).map(name => ({ name, match: syncPatterns.batch.exec(name) })).filter(item => item.match).sort((a, b) => Number(a.match![1]) - Number(b.match![1])); let last = index.applied[sourceId] ?? 0;
-      const future = names.filter(item => Number(item.match![1]) > last); if (new Set(future.map(item => item.match![1])).size !== future.length) throw new VaultError("invalid");
-      for (const { name, match } of names) { const seq = Number(match![1]); if (seq <= last) continue; if (seq !== last + 1) throw new ServiceError("sync_gap", 503);
-        const value = await openSync(key, this.address(c, "batch", seq, match![2], source as State), await this.transport(c).read(`writers/${sourceId}/batches/${name}`)) as SyncBatch;
+      const names = (await this.transport(c).list(`writers/${sourceId}/batches`)).map(name => ({ name, match: syncPatterns.batch.exec(name) })).filter(item => item.match).map(item => ({ source, sequence: Number(item.match![1]), name: item.name, packageId: item.match![2] })).sort((a, b) => a.sequence - b.sequence);
+      const future = names.filter(item => item.sequence > (index.applied[sourceId] ?? 0)); if (new Set(future.map(item => item.sequence)).size !== future.length) throw new VaultError("invalid"); listed.set(sourceId, names);
+    }
+    // A computer that stayed offline past a compaction no longer finds the batches that follow what it applied. Checkpoints stand in for them, newest first, until no writer has a gap left; one that cannot be used is passed over.
+    const gap = () => { for (const [sourceId, names] of listed) { let at = index.applied[sourceId] ?? 0; for (const item of names) { if (item.sequence <= at) continue; if (item.sequence !== at + 1) return sourceId; at = item.sequence; } } return null; };
+    const heads = new Map<string, Head>(), restored = new Map<string, { op: SyncOperation; blobs: SyncBlob[]; lineage: string[] }[]>(); let found: Awaited<ReturnType<Sync["checkpoints"]>> | undefined, next = 0, taken = 0; const used = new Set<string>();
+    for (let sourceId = gap(); sourceId; sourceId = gap()) {
+      this.receiving = sourceId; found ??= await this.checkpoints(c, key); let result: Awaited<ReturnType<Sync["usable"]>> | undefined;
+      while (!result && next < found.candidates.length) { const candidate = found.candidates[next++]; try { result = await this.usable(c, key, candidate, true); used.add(writer(candidate.source)); } catch (failure) { if (!unusable(failure)) throw failure; found.error ??= failure; } }
+      if (!result) throw taken ? new ServiceError("sync_gap", 503) : found.error ?? new ServiceError("sync_gap", 503); taken++;
+      const blobs = new Map(result.blobs.map(blob => [blob.id, blob] as const));
+      // Every concurrent head reaches apply, as the uncompacted feed would deliver it; only a record that another one descends from is dropped.
+      for (const { operation: op, lineage } of result.index.records) {
+        const held = restored.get(op.id.toLowerCase()) ?? [], item = { op, blobs: op.record === "entry" && op.value ? (op.value as SyncEntry).chunks.map(chunkId => blobs.get(chunkId)!) : [], lineage };
+        if (!held.some(other => other.op.revision === op.revision || other.lineage.includes(op.revision))) restored.set(op.id.toLowerCase(), [...held.filter(other => !lineage.includes(other.op.revision)), item]);
+      }
+      for (const head of result.heads) heads.set(head.op.revision, head);
+      if (heads.size > 10000 || [...restored.values()].reduce((total, list) => total + list.length, 0) > 10000) throw new VaultError("limited");
+      for (const [other, sequence] of Object.entries(result.index.applied)) if (other !== writer(c)) index.applied[other] = Math.max(index.applied[other] ?? 0, sequence);
+    }
+    // One checkpoint can close every gap while another writer's newest one carries a different losing head: when checkpoints served at all, the kept heads of the newest usable checkpoint of each writer not yet read are read too.
+    if (taken && found) for (const candidate of found.candidates.slice(next)) { const sourceId = writer(candidate.source); if (sourceId === writer(c) || used.has(sourceId)) continue; try { const result = await this.usable(c, key, candidate, true); used.add(sourceId); for (const head of result.heads) heads.set(head.op.revision, head); } catch (failure) { if (!unusable(failure)) throw failure; } }
+    if (heads.size > 10000) throw new VaultError("limited");
+    for (const list of restored.values()) for (const item of list) incoming.push({ ...item, restored: true });
+    for (const source of sources) {
+      const sourceId = writer(source); if (sourceId === writer(c)) continue; this.receiving = sourceId; let last = index.applied[sourceId] ?? 0;
+      for (const { name, sequence: seq, packageId } of listed.get(sourceId)!) { if (seq <= last) continue; if (seq !== last + 1) throw new ServiceError("sync_gap", 503);
+        const value = await openSync(key, this.address(c, "batch", seq, packageId, source as State), await this.transport(c).read(`writers/${sourceId}/batches/${name}`)) as SyncBatch;
         for (const op of value.operations) { if (incoming.length >= 10000) throw new VaultError("limited"); if (op.deviceId !== source.deviceId) throw new VaultError("invalid"); await this.validate(op, key); incoming.push({ op, blobs: await this.blobs(c, source, op, key) }); } last = seq;
       } if (last > 0) index.applied[sourceId] = last;
     }
@@ -383,39 +451,57 @@ export class Sync {
       fs.rmSync(join(this.root, "failure.json"), { force: true }); return;
     }
     for (const row of rows) for (const chunkId of row.chunks) if (!chunks.has(chunkId)) chunks.set(chunkId, { id: chunkId, sealed: await this.vault.store.getChunk(chunkId) });
-    for (const item of incoming) { for (const blob of item.blobs) { const existing = chunks.get(blob.id); if (existing && !same(existing, blob)) throw new VaultError("conflict"); chunks.set(blob.id, blob); } await apply(item.op); }
+    for (const item of incoming) { for (const blob of item.blobs) { const existing = chunks.get(blob.id); if (existing && !same(existing, blob)) throw new VaultError("conflict"); chunks.set(blob.id, blob); } await apply(item.op, item.restored, item.lineage); }
+    // A kept losing head a recovered checkpoint carries is kept exactly once: not when this computer holds or kept it, not when it only precedes the held record or another kept head, and not when it was resolved here.
+    const covered = new Set<string>(); for (const row of index.records) { covered.add(row.operation.revision); row.lineage.forEach(revision => covered.add(revision)); }
+    for (const item of index.kept) { covered.add(item.operation.revision); (item.lineage ?? ancestry(item.operation, undefined, parents)).forEach(revision => covered.add(revision)); }
+    for (const head of heads.values()) head.lineage.forEach(revision => covered.add(revision));
+    for (const head of heads.values()) { if (covered.has(head.op.revision) || index.dismissed?.includes(head.op.revision)) continue;
+      // The bounded lineages can stop short of a long chain this computer published itself; its surviving batches still prove the ancestry.
+      const sameId = (other: SyncOperation) => other.id.toLowerCase() === head.op.id.toLowerCase(); let ancestor = false;
+      for (const row of index.records) if (!ancestor && sameId(row.operation) && await proves(row, head.op.revision)) ancestor = true;
+      for (const item of index.kept) if (!ancestor && sameId(item.operation) && await reaches(item.lineage ?? ancestry(item.operation, undefined, parents), item.operation.base, head.op.revision)) ancestor = true;
+      if (ancestor) continue; if (head.op.base) parents.set(head.op.revision, head.op.base); const fallback = record(head.op)?.operation.value as SyncEntry | null | undefined; index.kept.push({ operation: head.op, lineage: head.lineage, entry: head.op.record === "entry" ? ((head.op.value ?? fallback) as SyncEntry | null)?.sealed ?? null : null, blobs: head.blobs }); }
     if (rowMap.size > 4096 || chunks.size > 6400) throw new VaultError("limited");
     // A suppressed same-project record stays indexed so it cannot be captured as a new deletion.
     const liveChunks = new Set([...rowMap.values()].flatMap(row => row.chunks)); if ([...rowMap.values()].flatMap(row => row.chunks).length !== liveChunks.size) throw new VaultError("conflict");
     index.records = index.records.filter(row => row.operation.value !== null || this.now() - row.operation.time < SYNC_TOMBSTONE_MS);
-    if (readOnly) for (const op of operations) { const row = record(op); if (row?.operation.revision === op.revision) { const before = beforeRecords.get(op.id); if (before) { row.operation = before.operation; row.localVersion = before.localVersion; } else index.records = index.records.filter(item => item !== row); } }
+    if (readOnly) for (const op of operations) { const row = record(op); if (row?.operation.revision === op.revision) { const before = beforeRecords.get(op.id); if (before) { row.operation = before.operation; row.localVersion = before.localVersion; row.lineage = before.lineage; } else index.records = index.records.filter(item => item !== row); } }
     c = { ...c, index: randomUUID(), operations: c.operations + (readOnly ? 0 : operations.length) + incoming.length, lastSynced, failure: null, computers, conflicts: index.kept.length };
     if (!readOnly && (force || c.operations >= SYNC_CHECKPOINT_OPS)) {
       for (const row of index.records) if (row.localVersion > 0) await outgoing(row.operation);
-      const records = index.records.filter(row => row.operation.record === "envelope" || row.localVersion > 0 || row.operation.value === null).map(row => row.operation), groups: SyncOperation[][] = [[]]; let size = 0;
-      for (const op of records) { const length = Buffer.byteLength(JSON.stringify(op)); if (size + length > 5 * 1024 * 1024) { groups.push([]); size = 0; } groups.at(-1)!.push(op); size += length; }
-      const checkpointId = randomUUID(), time = this.now(); for (let part = 1; part <= groups.length; part++) publications.push({ path: `writers/${writer(c)}/checkpoints/${c.sequence}-${checkpointId}-${part}-${groups.length}.vsync`, bytes: await sealSync(key, this.address(c, "checkpoint", c.sequence, checkpointId), { records: groups[part - 1], applied: index.applied, time, part, parts: groups.length }) }); c.checkpoint = c.sequence; c.operations = 0;
+      // The kept losing revisions travel with the checkpoint, their blobs published under this writer so compaction of the original writer cannot take them.
+      for (const item of index.kept) await outgoing(item.operation, item.blobs);
+      const rowsOut = index.records.filter(row => row.operation.record === "envelope" || row.localVersion > 0 || row.operation.value === null), groups: { records: SyncOperation[]; lineage: Record<string, string[]>; kept: SyncKept[] }[] = [{ records: [], lineage: {}, kept: [] }]; let size = 0;
+      const room = (length: number) => { if (size + length > 5 * 1024 * 1024) { groups.push({ records: [], lineage: {}, kept: [] }); size = 0; } size += length; };
+      for (const row of rowsOut) { room(Buffer.byteLength(JSON.stringify(row))); groups.at(-1)!.records.push(row.operation); if (row.lineage.length) groups.at(-1)!.lineage[row.operation.id] = row.lineage; }
+      for (const item of index.kept) { const head = { operation: item.operation, lineage: item.lineage ?? ancestry(item.operation, undefined, parents) }; room(Buffer.byteLength(JSON.stringify(head))); groups.at(-1)!.kept.push(head); }
+      const checkpointId = randomUUID(), time = this.now(); for (let part = 1; part <= groups.length; part++) publications.push({ path: `writers/${writer(c)}/checkpoints/${c.sequence}-${checkpointId}-${part}-${groups.length}.vsync`, bytes: await sealSync(key, this.address(c, "checkpoint", c.sequence, checkpointId), { records: groups[part - 1].records, applied: index.applied, lineage: groups[part - 1].lineage, ...groups[part - 1].kept.length ? { kept: groups[part - 1].kept } : {}, time, part, parts: groups.length }) }); c.checkpoint = c.sequence; c.operations = 0;
     }
     if (dataset) publications.push({ path: "dataset.vsync", bytes: dataset });
     this.check(ticket); const snapshot: Snapshot = { index, rows: [...rowMap.values()], envelope: env, chunks: [...chunks.values()].filter(blob => liveChunks.has(blob.id)), state: c, publications, before: { rows, envelope: currentEnv } }; this.prepare(); const path = join(this.root, "outbox", c.index);
     try { await this.saveSnapshot(join(path, "snapshot"), snapshot, key, ticket); this.check(ticket); atomic(join(path, "state.json"), c); await this.finish(snapshot, key, ticket, previous); }
-    catch (error) { if (this.cause(error) === "locked") fs.rmSync(path, { recursive: true, force: true }); throw error; }
+    catch (error) { if (this.cause(error) === "locked") try { fs.rmSync(path, { recursive: true, force: true }); } catch {} throw error; }
   }
   private async finish(snapshot: Snapshot, key: CryptoKey, ticket: number, previous: State | null) {
-    const c = snapshot.state, path = join(this.root, "outbox", c.index), transport = this.transport(c), written: string[] = [], removed: Publication[] = []; this.check(ticket);
+    const c = snapshot.state, path = join(this.root, "outbox", c.index), transport = this.transport(c), written: string[] = [], removed: Publication[] = []; this.check(ticket); const mark = this.touched;
     const currentRows = await this.vault.store.entries(), currentEnv = await this.vault.store.envelope(), plannedRows = new Map(snapshot.rows.map(row => [row.id.toLowerCase(), row])), currentChunks = new Map(snapshot.chunks.map(blob => [blob.id, blob]));
     // A later local write survives replay of an already sealed batch after a failed publication.
     for (const row of currentRows) if (!same(row, snapshot.before.rows.find(before => before.id === row.id))) { plannedRows.set(row.id.toLowerCase(), row); for (const chunkId of row.chunks) currentChunks.set(chunkId, { id: chunkId, sealed: await this.vault.store.getChunk(chunkId) }); const record = snapshot.index.records.find(item => item.operation.id === row.id); if (record) record.localVersion = 0; }
     for (const row of snapshot.before.rows) if (!currentRows.some(current => current.id === row.id)) plannedRows.delete(row.id.toLowerCase());
     if (!same(currentEnv, snapshot.before.envelope) && currentEnv.state) { snapshot.envelope = { state: currentEnv.state, version: currentEnv.version }; const record = snapshot.index.records.find(item => item.operation.id === "envelope"); if (record) record.localVersion = 0; }
     snapshot.rows = [...plannedRows.values()]; const claims = new Set(snapshot.rows.flatMap(row => row.chunks)); snapshot.chunks = [...currentChunks.values()].filter(blob => claims.has(blob.id));
+    // A local write landing while the store is staged makes the staging fail in several ways (a file replaced or gone, a version ahead); any failure while the store changed under it is a restart, never a failure of its own.
     const stage = join(path, "store"); privateDirectory(stage);
+    try {
     for (const name of fs.readdirSync(stage)) fs.unlinkSync(join(stage, name));
     // Store writes replace files by atomic rename, so editing the stage never changes its live hard links.
-    const link = (name: string) => { const source = join(this.home, "store", name), stat = fs.lstatSync(source); if (!stat.isFile() || stat.isSymbolicLink()) throw new VaultError("invalid"); fs.linkSync(source, join(stage, name)); };
-    if (currentEnv.state) link("envelope.json");
-    for (const row of currentRows) link(`entry-${row.id.toLowerCase()}.json`);
-    for (const name of fs.readdirSync(join(this.home, "store"))) { const match = /^chunk-(.+)\.json$/.exec(name); if (match && syncPatterns.writer.test(match[1])) link(name); }
+    // Linked in a bounded parallel pass, never synchronously: thousands of blocking links would hold the event loop and starve every local request.
+    const names: string[] = []; if (currentEnv.state) names.push("envelope.json"); for (const row of currentRows) names.push(`entry-${row.id.toLowerCase()}.json`);
+    for (const name of fs.readdirSync(join(this.home, "store"))) { const match = /^chunk-(.+)\.json$/.exec(name); if (match && syncPatterns.writer.test(match[1])) names.push(name); }
+    // Every worker settles before the stage can be cleaned; a lock that cuts the pass stays the error, whatever else failed beside it.
+    let broken = false; const linked = await Promise.allSettled(Array.from({ length: Math.min(16, names.length) }, async () => { try { for (let name = names.pop(); name && !broken; name = names.pop()) { this.check(ticket); const source = join(this.home, "store", name), stat = await lstat(source); if (!stat.isFile() || stat.isSymbolicLink()) throw new VaultError("invalid"); await hardlink(source, join(stage, name)); } } catch (error) { broken = true; throw error; } }));
+    const cut = linked.filter((item): item is PromiseRejectedResult => item.status === "rejected"); if (cut.length) throw cut.find(item => this.cause(item.reason) === "locked")?.reason ?? cut[0].reason;
     await new FileVaultStore(stage).staged(async store => {
       let envelopeVersion = currentEnv.version; if (!currentEnv.state) envelopeVersion = (await store.create(snapshot.envelope.state)).version;
       while (envelopeVersion < snapshot.envelope.version) { this.check(ticket); envelopeVersion = (await store.replace(snapshot.envelope.state, envelopeVersion)).version; }
@@ -428,6 +514,7 @@ export class Sync {
         while (expected < row.version) { this.check(ticket); for (const chunkId of row.chunks) { const blob = snapshot.chunks.find(blob => blob.id === chunkId); if (!blob) throw new VaultError("invalid"); await ensure(blob); } expected = (await store.save(row.id, row.sealed, expected, row.chunks)).version; }
       }
     }); this.check(ticket);
+    } catch (error) { this.check(ticket); if (this.cause(error) !== "locked") { await this.quiet(); if (this.touched !== mark) throw new ServiceError("sync_changed", 503); } throw error; }
     const keptFiles: { name: string; value: Sealed }[] = [];
     for (const kept of snapshot.index.kept) { const name = `${kept.operation.revision}.json`; if (!fs.existsSync(join(this.root, "kept", name))) keptFiles.push({ name, value: await encryptJson(key, { ...kept, blobs: [] }, `sync-kept:${c.datasetId}:${kept.operation.revision}`) }); this.check(ticket); for (const blob of kept.blobs) { const name = `${kept.operation.revision}-${blob.id}.json`; if (!fs.existsSync(join(this.root, "kept", name))) keptFiles.push({ name, value: await encryptJson(key, blob, `sync-kept-blob:${c.datasetId}:${kept.operation.revision}:${blob.id}`) }); this.check(ticket); } }
     try {
@@ -435,7 +522,7 @@ export class Sync {
       const garbage = snapshot.publications.some(item => item.path.startsWith(`writers/${writer(c)}/checkpoints/`)) ? await this.compact(c, snapshot.index, key, ticket) : [];
       for (const item of garbage) { this.check(ticket); await transport.remove(item.path); removed.push(item); this.check(ticket); }
       if (!same(currentEnv.state, snapshot.envelope.state)) { this.check(ticket); await this.disableHello(); }
-      await this.saveSnapshot(join(this.root, "index", c.index), { ...snapshot, publications: [] }, key, ticket); this.check(ticket); atomic(join(this.root, "index", c.index, "versions.json"), { envelope: snapshot.index.records.find(row => row.operation.record === "envelope")?.localVersion ?? 0, rows: snapshot.index.records.filter(row => row.operation.record === "entry" && row.localVersion > 0).map(row => ({ id: row.operation.id, version: row.localVersion })) }); this.check(ticket);
+      await this.saveSnapshot(join(this.root, "index", c.index), { ...snapshot, publications: [] }, key, ticket); this.check(ticket); atomic(join(this.root, "index", c.index, "versions.json"), { envelope: snapshot.index.records.find(row => row.operation.record === "envelope")?.localVersion ?? 0, rows: snapshot.index.records.filter(row => row.operation.record === "entry" && row.localVersion > 0).map(row => ({ id: row.operation.id, version: row.localVersion })) }); await this.quiet(); this.check(ticket); if (this.touched !== mark) throw new ServiceError("sync_changed", 503);
       // No async boundary exists between the final ticket check and the durable state pointer.
       this.logger("sync_pulse", { outcome: "allowed" }); atomic(join(this.root, "commit.json"), { next: c, previous: previous ?? this.switching }); const backup = join(this.root, "previous"), store = join(this.home, "store");
       fs.renameSync(store, backup);
@@ -458,7 +545,7 @@ export class Sync {
     const referenced = new Set(index.records.flatMap(row => row.operation.record === "entry" && row.operation.value ? (row.operation.value as SyncEntry).chunks : []).concat(index.kept.flatMap(kept => kept.blobs.map(blob => blob.id))));
     const reference = (ops: SyncOperation[]) => { for (const op of ops) if (op.record === "entry" && op.value) for (const chunkId of (op.value as SyncEntry).chunks) referenced.add(chunkId); };
     for (const name of await transport.list(`${prefix}/batches`)) { const m = syncPatterns.batch.exec(name); if (!m) continue; const bytes = await transport.read(`${prefix}/batches/${name}`), batch = await openSync(key, this.address(c, "batch", Number(m[1]), m[2]), bytes) as SyncBatch; this.check(ticket); if (Number(m[1]) < c.checkpoint && batch.operations.every(op => op.time < cutoff)) garbage.push({ path: `${prefix}/batches/${name}`, bytes }); else reference(batch.operations); }
-    for (const name of await transport.list(`${prefix}/checkpoints`)) { const m = syncPatterns.checkpoint.exec(name); if (!m) continue; const checkpoint = await openSync(key, this.address(c, "checkpoint", Number(m[1]), m[2]), await transport.read(`${prefix}/checkpoints/${name}`)) as SyncCheckpoint; this.check(ticket); reference(checkpoint.records); }
+    for (const name of await transport.list(`${prefix}/checkpoints`)) { const m = syncPatterns.checkpoint.exec(name); if (!m) continue; const checkpoint = await openSync(key, this.address(c, "checkpoint", Number(m[1]), m[2]), await transport.read(`${prefix}/checkpoints/${name}`)) as SyncCheckpoint; this.check(ticket); reference([...checkpoint.records, ...(checkpoint.kept ?? []).map(item => item.operation)]); }
     for (const name of await transport.list(`${prefix}/blobs`)) { const m = syncPatterns.blob.exec(name); if (m && !referenced.has(m[1])) { garbage.push({ path: `${prefix}/blobs/${name}`, bytes: await transport.read(`${prefix}/blobs/${name}`, SYNC_BLOB_CAP) }); this.check(ticket); } } return garbage;
   }
   async conflicts(): Promise<SyncConflict[]> {
@@ -480,11 +567,11 @@ export class Sync {
         const value = op.value as SyncEntry; snapshot.rows = snapshot.rows.filter(row => row.id !== op.id); snapshot.rows.push({ id: op.id, version: (before?.version ?? 0) + 1, sealed: value.sealed, chunks: value.chunks });
       }
     }
-    snapshot.index.kept = snapshot.index.kept.filter(item => item !== kept); snapshot.state = { ...c, index: randomUUID(), conflicts: snapshot.index.kept.length }; snapshot.publications = [];
+    snapshot.index.kept = snapshot.index.kept.filter(item => item !== kept); snapshot.index.dismissed = [...snapshot.index.dismissed ?? [], conflictId].slice(-DISMISSED_LIMIT); snapshot.state = { ...c, index: randomUUID(), conflicts: snapshot.index.kept.length }; snapshot.publications = [];
     const claims = new Set(snapshot.rows.flatMap(row => row.chunks)); snapshot.chunks = [...chunks.values()].filter(blob => claims.has(blob.id)); this.check(ticket);
     const path = join(this.root, "outbox", snapshot.state.index);
     try { await this.saveSnapshot(join(path, "snapshot"), snapshot, key, ticket); this.check(ticket); atomic(join(path, "state.json"), snapshot.state); await this.finish(snapshot, key, ticket, c); }
-    catch (error) { if (this.cause(error) === "locked") fs.rmSync(path, { recursive: true, force: true }); throw error; } return { ok: true as const };
+    catch (error) { if (this.cause(error) === "locked") try { fs.rmSync(path, { recursive: true, force: true }); } catch {} throw error; } return { ok: true as const };
   }
   async leave(remove: boolean) { const c = this.config; if (!c) throw new ServiceError("sync_unconfigured"); this.prepare(); if (remove) { if (c.binding !== binding(this.home)) throw new VaultError("conflict"); await this.transport(c).leave(); } if (c.origin === "quantum") for (const name of ["quantum-setup.json", "quantum-switch.json"]) fs.rmSync(join(this.root, name), { force: true }); fs.rmSync(join(this.root, "state.json"), { force: true }); fs.rmSync(join(this.root, "outbox"), { recursive: true, force: true }); fs.rmSync(join(this.root, "failure.json"), { force: true }); this.prepared = false; this.config = null; this.failure = null; return { ok: true as const }; }
 }

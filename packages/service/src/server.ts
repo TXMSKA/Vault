@@ -54,6 +54,9 @@ export async function startService(options: ServiceOptions = {}) {
   const prompts = new Prompts(now, runs, { unlocked, start: appStarter(home, lifecycle, now) }, options.prompts);
   lifecycle.lockWithLastApp = settings.get().lockWithLastApp; vault.memory.onOpen = () => prompts.opened();
   try { await sync.load(); } catch (error) { vault.memory.lock(); release(); throw error; }
+  // While a pulse applies remote changes the shared queue is held, so a person's reads and entry writes answer beside it. The pulse waits for them before it replaces the store, and starts over when a write landed after it read the store.
+  const beside = new Set(["/v1/status", "/v1/entries", "/v1/entries/get", "/v1/logins", "/v1/logins/all", "/v1/logins/get", "/v1/keys"]), writes = new Set(["/v1/entries", "/v1/entries/remove"]), settled: (() => void)[] = []; let readers = 0;
+  sync.quiet = () => readers ? new Promise<void>(done => { settled.push(done); }) : Promise.resolve();
   const limits = new Map<string, { start: number; count: number }>(); let port = 0, pending = 0, stopping: Promise<void> | undefined, queue: Promise<unknown> = Promise.resolve();
   let syncDue = now() + SYNC_PULSE_MS, syncQueued = 0, feedDue = 0, feedErrors = 0, reconciled = 0, quantumMode = false, feed: AbortController | null = null;
   const scheduleSync = (delay: number) => { syncDue = Math.min(syncDue, now() + delay); };
@@ -64,7 +67,7 @@ export async function startService(options: ServiceOptions = {}) {
     if (syncQueued || pending >= 20) return;
     const pull = (changed?: { datasetId: string; cursor: number }) => {
       syncQueued++; syncDue = sync.watch() ? Infinity : now() + SYNC_PULSE_MS;
-      const run = queue.catch(() => undefined).then(async () => { if (stopping || !unlocked()) return; if ((await sync.status()).configured) { try { await sync.pulse(); } catch (error) { if (!["sync_plan_required", "sync_storage_full"].includes((error as ServiceError).code)) throw error; } reconciled = now(); if (changed) sync.acknowledge(changed.datasetId, changed.cursor); } }); queue = run;
+      const run = queue.catch(() => undefined).then(async () => { if (stopping || !unlocked()) return; if ((await sync.status()).configured) { try { await sync.pulse(); } catch (error) { const code = (error as ServiceError).code; if (code === "sync_changed") scheduleSync(SYNC_WRITE_MS); else if (!["sync_plan_required", "sync_storage_full"].includes(code)) throw error; } reconciled = now(); if (changed) sync.acknowledge(changed.datasetId, changed.cursor); } }); queue = run;
       void run.catch(() => undefined).finally(() => { syncQueued--; }); return run;
     };
     if (now() >= syncDue) { void pull(); return; }
@@ -116,7 +119,8 @@ export async function startService(options: ServiceOptions = {}) {
         if (["/v1/unlock", "/v1/unlock/hello", "/v1/recover"].includes(route.path)) checkSync();
       };
       // Lock and presence departures invalidate in-flight key work immediately; a long poll must not hold the queue.
-      if (["/v1/lock", "/v1/apps/leave", "/v1/apps/present", "/v1/sync/quantum/wait"].includes(route.path) || route.method === "GET" && route.path.startsWith("/v1/prompts")) await execute();
+      if (["/v1/lock", "/v1/apps/leave", "/v1/apps/present", "/v1/sync/quantum/wait", "/v1/health"].includes(route.path) || route.method === "GET" && route.path.startsWith("/v1/prompts")) await execute();
+      else if (route.method === "GET" ? (syncQueued > 0 || sync.pulsing > 0) && beside.has(route.path) : sync.pulsing > 0 && route.method === "POST" && writes.has(route.path)) { readers++; try { await execute(); } finally { if (route.method !== "GET") sync.touched++; if (!--readers) settled.splice(0).forEach(done => done()); } }
       else {
         if (pending >= 20) throw new ServiceError("busy", 503); pending++;
         const enqueued = now(); const run = queue.catch(() => undefined).then(async () => { if (now() - enqueued > 30000 || stopping) throw new ServiceError("busy", 503); await execute(); }); queue = run;
