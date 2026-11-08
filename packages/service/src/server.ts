@@ -12,7 +12,8 @@ import type { AppView } from "../../client/src/types.ts";
 import { routes, validateRoutes, validateInput } from "./routes.ts";
 import type { Route } from "./routes.ts";
 import { acquireLock } from "./lock.ts";
-import { bootstrapKey, matches, Apps, manages, blocked, isAgent } from "./secrets.ts";
+import { quantumUrl } from "./quantum.ts";
+import { bootstrapKey, matches, Apps, manages, blocked, isAgent, cosmicCaller } from "./secrets.ts";
 import { Vault } from "./vault.ts";
 import { Lifecycle } from "./lifecycle.ts";
 import { Runs } from "./runs.ts";
@@ -39,7 +40,12 @@ async function readBody(request: IncomingMessage, cap: number): Promise<unknown>
 }
 // `idleMs` replaces the idle time stored in settings.json for this start; the next change to the settings replaces it.
 export type ServiceOptions = { home?: string; now?: () => number; idleMs?: number; presenceMs?: number; routes?: Route[]; runs?: Partial<RunLimits>; prompts?: Partial<PromptLimits> };
+export function providerOrigin(env: NodeJS.ProcessEnv): string {
+  const site = env.VAULT_QUANTUM_SITE === undefined ? "https://cosmic.txmska.com" : quantumUrl(env.VAULT_QUANTUM_SITE);
+  return new URL(site).origin;
+}
 export async function startService(options: ServiceOptions = {}) {
+  const cosmicOrigin = providerOrigin(process.env);
   const home = resolve(options.home ?? resolveHome()), now = options.now ?? Date.now;
   if (options.idleMs !== undefined && (!Number.isSafeInteger(options.idleMs) || options.idleMs < 1)) throw new ServiceError("invalid");
   const table = options.routes ?? routes; validateRoutes(table); prepareHome(home);
@@ -49,7 +55,7 @@ export async function startService(options: ServiceOptions = {}) {
   try { bootstrap = bootstrapKey(home); apps = new Apps(home); await apps.load(); await settings.load(); }
   catch (error) { release(); throw error; }
   try { recoverSync(home); } catch (error) { release(); throw error; }
-  const idleMs = options.idleMs ?? settings.idleMs, vault = new Vault(join(home, "store"), now, idleMs, logger), lifecycle = new Lifecycle(vault.memory, now, options.presenceMs), hello = helloAdapter(home, vault), runs = new Runs(now, options.runs), sync = new Sync(home, vault, now, () => hello.disable(), logger, () => settings.get().language === "system" ? Intl.DateTimeFormat().resolvedOptions().locale : settings.get().language);
+  const idleMs = options.idleMs ?? settings.idleMs, vault = new Vault(join(home, "store"), now, idleMs, logger, cosmicOrigin), lifecycle = new Lifecycle(vault.memory, now, options.presenceMs), hello = helloAdapter(home, vault), runs = new Runs(now, options.runs), sync = new Sync(home, vault, now, () => hello.disable(), logger, () => settings.get().language === "system" ? Intl.DateTimeFormat().resolvedOptions().locale : settings.get().language);
   const unlocked = () => { try { vault.memory.get(vault.memory.ticket()); return true; } catch { return false; } };
   const prompts = new Prompts(now, runs, { unlocked, start: appStarter(home, lifecycle, now) }, options.prompts);
   lifecycle.lockWithLastApp = settings.get().lockWithLastApp; vault.memory.onOpen = () => prompts.opened();
@@ -80,7 +86,7 @@ export async function startService(options: ServiceOptions = {}) {
     let bucket = limits.get(actor); if (!bucket || now() - bucket.start >= 60000) { bucket = { start: now(), count: 0 }; limits.set(actor, bucket); }
     if (++bucket.count > max) throw new ServiceError("rate_limited", 429);
   };
-  const audit = (outcome: string, requestId: string, actor = "unknown") => logger("request", { actor, source: "loopback", outcome, requestId });
+  const audit = (outcome: string, requestId: string, actor = "unknown", name = "request") => logger(name.startsWith("cosmic_password_") ? name : "request", { actor, source: "loopback", outcome, requestId });
   const server = http.createServer((request, response) => {
     const requestId = randomUUID(); let app: AppView | undefined, event = "request";
     void (async () => {
@@ -94,7 +100,7 @@ export async function startService(options: ServiceOptions = {}) {
       const matchesPath = table.filter(route => { if (!route.path.includes("{id}")) return route.path === url.pathname; const [before, after] = route.path.split("{id}"); if (!url.pathname.startsWith(before) || !url.pathname.endsWith(after)) return false; const value = url.pathname.slice(before.length, -after.length); if (!appIdPattern.test(value)) return false; routeId = value; return true; });
       if (!matchesPath.length) throw new ServiceError("not_found", 404);
       const route = matchesPath.find(route => route.method === request.method); if (!route) throw new ServiceError("method_not_allowed", 405);
-      event = ({ "/v1/sync": "sync_status", "/v1/sync/setup": "sync_setup", "/v1/sync/join": "sync_join", "/v1/sync/now": "sync_now", "/v1/sync/conflicts": "sync_conflicts", "/v1/sync/conflicts/restore": "sync_restore", "/v1/sync/conflicts/dismiss": "sync_dismiss", "/v1/sync/leave": "sync_leave", "/v1/apps/register": "app_register", "/v1/apps/{id}/allow": "app_allow", "/v1/apps/{id}/revoke": "app_revoke", "/v1/apps/permissions/import": "app_permission", "/v1/apps/permissions/import/hello": "app_permission", "/v1/unlock": "unlock", "/v1/recover": "recovery", "/v1/create": "create", "/v1/lock": "lock", "/v1/import": "import", "/v1/import/env": "import", "/v1/export": "export", "/v1/restore": "restore", "/v1/export/file": "export", "/v1/restore/file": "restore", "/v1/runs": "run_request", "/v1/runs/approve": "run_approve", "/v1/runs/approve/hello": "run_approve", "/v1/runs/reject": "run_reject", "/v1/apps/permissions/import/request": "permission_request", "/v1/prompts/unlock": "prompt_unlock", "/v1/prompts/dismiss": "prompt_dismiss", "/v1/settings": "settings" } as Record<string, string>)[route.method !== "GET" || route.path.startsWith("/v1/sync") ? route.path : ""] ?? "request";
+      event = ({ "/v1/sync": "sync_status", "/v1/sync/setup": "sync_setup", "/v1/sync/join": "sync_join", "/v1/sync/now": "sync_now", "/v1/sync/conflicts": "sync_conflicts", "/v1/sync/conflicts/restore": "sync_restore", "/v1/sync/conflicts/dismiss": "sync_dismiss", "/v1/sync/leave": "sync_leave", "/v1/apps/register": "app_register", "/v1/apps/{id}/allow": "app_allow", "/v1/apps/{id}/revoke": "app_revoke", "/v1/apps/permissions/import": "app_permission", "/v1/apps/permissions/import/hello": "app_permission", "/v1/unlock": "unlock", "/v1/recover": "recovery", "/v1/create": "create", "/v1/lock": "lock", "/v1/import": "import", "/v1/import/env": "import", "/v1/export": "export", "/v1/restore": "restore", "/v1/export/file": "export", "/v1/restore/file": "restore", "/v1/runs": "run_request", "/v1/runs/approve": "run_approve", "/v1/runs/approve/hello": "run_approve", "/v1/runs/reject": "run_reject", "/v1/apps/permissions/import/request": "permission_request", "/v1/prompts/unlock": "prompt_unlock", "/v1/prompts/dismiss": "prompt_dismiss", "/v1/settings": "settings", "/v1/cosmic/password/status": "cosmic_password_status", "/v1/cosmic/password/read": "cosmic_password_read" } as Record<string, string>)[route.method !== "GET" || route.path.startsWith("/v1/sync") ? route.path : ""] ?? "request";
       const authorization = request.headers.authorization ?? "";
       const authenticate = () => {
         if (route.access === "bootstrap") { if (!authorization.startsWith("Bootstrap ") || !matches(authorization.slice(10), bootstrap)) throw new ServiceError("unauthenticated", 401); }
@@ -102,22 +108,27 @@ export async function startService(options: ServiceOptions = {}) {
           app = authorization.startsWith("Bearer ") ? apps.byToken(authorization.slice(7)) : undefined;
           if (!app) throw new ServiceError("unauthenticated", 401);
           if (app.status !== "granted") throw new ServiceError(app.status, 403);
-          if (blocked(app) || route.access === "manage" && !manages(app) || isAgent(app) && route.access !== "run" || app.id === "lyra" && (/^\/v1\/(?:entries|logins|chunks|env|import|export|restore|runs|sync)(?:\/|$)/.test(route.path) || route.path.startsWith("/v1/apps/permissions/"))) throw new ServiceError("forbidden", 403);
+          const secretBearing = /^\/v1\/(?:entries|logins|chunks|env|import|export|restore|runs|sync)(?:\/|$)/.test(route.path) || route.path.startsWith("/v1/apps/permissions/");
+          const cosmicPath = route.path === "/v1/cosmic/password/status" || route.path === "/v1/cosmic/password/read";
+          if (blocked(app) || route.access === "manage" && !manages(app) || isAgent(app) && route.access !== "run" || app.id === "lyra" && secretBearing || app.id === "hivem1nd" && (secretBearing || route.path.startsWith("/v1/keys")) || cosmicPath && !cosmicCaller(app)) throw new ServiceError("forbidden", 403);
         }
       };
       authenticate(); take(app?.id ?? route.access, route.access === "bootstrap" ? 30 : 240);
+      if (route.path === "/v1/cosmic/password/status" || route.path === "/v1/cosmic/password/read") { take(`cosmic:${app!.id}`, 60); take("cosmic", 120); }
       const cap = ["/v1/import", "/v1/import/env", "/v1/restore"].includes(route.path) ? 12 * 1024 * 1024 : route.path === "/v1/chunks" ? 4 * 1024 * 1024 : 256 * 1024;
       const body = await readBody(request, cap); validateInput(route, body, url.searchParams);
       const execute = async () => {
-        authenticate(); lifecycle.check();
+        const hold = !route.path.startsWith("/v1/cosmic/password/");
+        authenticate(); lifecycle.check(hold);
         const detached = new AbortController();
         if (route.path === "/v1/sync/quantum/wait") { const detach = () => { if (!response.writableEnded) detached.abort(); }; request.on("aborted", detach); response.on("close", detach); }
         const result = await route.handle({ app, apps, vault, lifecycle, runs, sync, prompts, settings, hello, body: body as Record<string, unknown>, query: url.searchParams, id: routeId, idleMs: vault.memory.idle ?? idleMs, signal: detached.signal });
         if (["/v1/unlock", "/v1/unlock/hello", "/v1/recover"].includes(route.path)) scheduleSync(0);
         else if (route.method === "POST" && ["/v1/entries", "/v1/entries/remove", "/v1/import", "/v1/import/env", "/v1/restore", "/v1/restore/file", "/v1/sync/conflicts/restore", "/v1/keys/revoke"].includes(route.path)) scheduleSync(SYNC_WRITE_MS);
-        authenticate(); lifecycle.check();
+        authenticate(); lifecycle.check(hold);
         // A response that contains values must still have a live key after async work.
-        if (["/v1/entries", "/v1/entries/get", "/v1/logins", "/v1/logins/all", "/v1/logins/get", "/v1/env", "/v1/export", "/v1/keys/read"].includes(route.path)) vault.memory.get(vault.memory.ticket());
+        if (route.path === "/v1/cosmic/password/read") vault.memory.get(vault.cosmicTicket ?? -1);
+        else if (["/v1/entries", "/v1/entries/get", "/v1/logins", "/v1/logins/all", "/v1/logins/get", "/v1/env", "/v1/export", "/v1/keys/read"].includes(route.path)) vault.memory.get(vault.memory.ticket());
         logger(event, { actor: app?.id ?? "unknown", source: "loopback", outcome: "allowed", requestId }); respond(response, 200, result);
         if (["/v1/unlock", "/v1/unlock/hello", "/v1/recover"].includes(route.path)) checkSync();
       };
@@ -131,7 +142,7 @@ export async function startService(options: ServiceOptions = {}) {
       }
     })().catch(error => {
       const mapped = error instanceof ServiceError ? error : error instanceof VaultError ? new ServiceError(error.code, ({ invalid: 400, locked: 423, conflict: 409, unavailable: 503, not_found: 404, limited: 429 })[error.code]) : error instanceof Error && error.message === "locked" ? new ServiceError("locked", 423) : new ServiceError("internal", 500);
-      try { audit(mapped.code, requestId, app?.id); } catch { vault.memory.lock(); }
+      try { audit(mapped.code, requestId, app?.id, event); } catch { vault.memory.lock(); }
       if (!response.headersSent && !response.destroyed) respond(response, mapped.status, { error: { code: mapped.code, message: "Vault could not complete the request.", fields: mapped.fields, requestId } }, mapped.status === 429 ? { "Retry-After": "60" } : {});
       request.resume();
     });

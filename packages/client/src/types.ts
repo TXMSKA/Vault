@@ -12,6 +12,8 @@ export type Permission = "import" | `key:${string}`;
 export type AppView = AppIdentity & { status: "granted" | "pending" | "revoked"; kinds: Kind[]; permissions: Permission[] };
 export type ApiKey = { id: string; label: string };
 export type ApiKeyValue = { key: string };
+export type CosmicPasswordStatus = { state: "available" | "locked" | "none" };
+export type CosmicPasswordValue = { password: string };
 export type ApiKeyUsage = { entry: string; app: string; lastRead: string };
 /** In the answer to vault-app and vault-cli only: whether Windows Hello can be used here, and whether it is set up for this vault (its wrapped key exists). */
 export type HelloStatus = { available: boolean; enabled: boolean };
@@ -63,6 +65,10 @@ export interface Client {
   hello: { enable(password: string): Promise<{ ok: true }>; unlock(hwnd: string): Promise<{ ok: true }>; disable(): Promise<{ ok: true }> };
   lock(): Promise<{ ok: true }>;
   present(): Promise<{ ok: true }>;
+  cosmic: {
+    passwordStatus(email: string): Promise<CosmicPasswordStatus>;
+    readPassword(email: string): Promise<CosmicPasswordValue>;
+  };
   close(): Promise<void>;
   logins(origin: string): Promise<EntryRow[]>;
   listLogins(): Promise<LoginSummary[]>;

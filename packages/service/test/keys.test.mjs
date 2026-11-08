@@ -48,9 +48,10 @@ try {
   // This exercises the Hello route's proof and grant ordering without a real biometric dialog.
   const table = routes.map(route => route.path !== "/v1/keys/approve/hello" ? route : { ...route, handle: c => route.handle({ ...c, hello: { ...c.hello, async unlock(hwnd) { helloCalls++; helloWindow = hwnd; if (helloRefused) throw new ServiceError("cancelled", 403); await c.vault.auth.unlock(password); } } }) });
   const service = await startService({ home, now: () => now, idleMs: 1e9, presenceMs: 1e12, prompts: { waitMs: 5 }, routes: table }); services.push(service);
-  const ui = await as("vault-app"), cli = await as("vault-cli"), lyra = await as("lyra"), nova = await as("nova"), nebula = await as("nebula"), horizon = await as("horizon"), agent = await as("synthetic-agent", "agent");
+  const ui = await as("vault-app"), cli = await as("vault-cli"), lyra = await as("lyra"), nova = await as("nova"), nebula = await as("nebula"), horizon = await as("horizon"), agent = await as("synthetic-agent", "agent"), hivem1nd = await as("hivem1nd");
   await cli.apps.allow("synthetic-agent");
   const identity = await lyra.apps.self(); check.equal(identity.kind, "cosmic"); check.equal(identity.status, "granted"); check.deepEqual(identity.kinds, []); check.deepEqual(identity.permissions, []);
+  check.deepEqual((await hivem1nd.apps.self()).kinds, []); check.deepEqual((await hivem1nd.apps.self()).permissions, []);
   check.equal((await cli.apps.allow("lyra")).status, "granted"); check.deepEqual((await nova.apps.self()).kinds, ["env"]); check.deepEqual((await horizon.apps.self()).kinds, ["login"]); check.equal((await nebula.apps.self()).kinds.includes("apikey"), false);
   await rejects(() => as("lyra", "app"), "invalid");
   check.equal((await findService(home)).serviceVersion, "0.1.0"); check.equal((await probe(service, "/v1/health")).value.serviceVersion, "0.1.0");
@@ -73,7 +74,8 @@ try {
   ];
   for (const [method, path, body] of refused) { const result = await probe(service, path, { api: lyra, method, body }); errorShape(result, 403, "forbidden"); }
   await rejects(() => ui.permissions.importWithPassword(password, "lyra"), "forbidden");
-  for (const api of [agent, nova, nebula, horizon, ui, cli]) {
+  await rejects(() => ui.permissions.importWithPassword(password, "hivem1nd"), "forbidden");
+  for (const api of [agent, nova, nebula, horizon, ui, cli, hivem1nd]) {
     errorShape(await probe(service, "/v1/keys", { api }), 403, "forbidden");
     errorShape(await probe(service, "/v1/keys/read", { api, method: "POST", body: { id: original.id } }), 403, "forbidden");
   }

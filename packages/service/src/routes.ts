@@ -1,7 +1,7 @@
 import { id } from "vault-core";
 import type { AppView } from "../../client/src/types.ts";
 import { object, text, ServiceError } from "./errors.ts";
-import { isAgent, manages } from "./secrets.ts";
+import { cosmicCaller, isAgent, manages } from "./secrets.ts";
 import type { Apps } from "./secrets.ts";
 import type { Vault } from "./vault.ts";
 import type { Lifecycle } from "./lifecycle.ts";
@@ -19,6 +19,12 @@ export type Context = { app?: AppView; apps: Apps; vault: Vault; lifecycle: Life
 export type Route = { method: string; path: string; access: "public" | "bootstrap" | "granted" | "manage" | "run"; keys: string; query?: string; handle(c: Context): unknown | Promise<unknown> };
 const password = (value: unknown) => { const result = text(value, 128); if (result.length < 15) throw new ServiceError("invalid"); return result; };
 const active = (c: Context) => c.lifecycle.requirePresence(c.app!.id);
+const quiet = (c: Context) => c.lifecycle.requirePresence(c.app!.id, false);
+const cosmicEmail = (value: unknown) => {
+  const email = text(value, 320);
+  if (!email || email !== email.trim() || /[\u0000-\u001f\u007f]/.test(email) || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new ServiceError("invalid");
+  return email;
+};
 const windowHandle = (value: unknown) => { const hwnd = text(value, 20); if (!/^[1-9][0-9]{0,18}$/.test(hwnd)) throw new ServiceError("invalid"); return BigInt(hwnd); };
 // An app proposes runs only when it holds the project kind; an allowed agent holds no kind and may only propose.
 const proposer = (c: Context) => { if (!isAgent(c.app!) && !c.app!.kinds.includes("env")) throw new ServiceError("not_found", 404); };
@@ -84,6 +90,8 @@ export const routes: Route[] = [
   { method: "POST", path: "/v1/unlock/hello", access: "granted", keys: "hwnd", handle: async c => { active(c); await c.hello.unlock(windowHandle(c.body.hwnd)); return { ok: true }; } },
   { method: "POST", path: "/v1/unlock/hello/disable", access: "manage", keys: "", handle: async c => { await c.hello.disable(); return { ok: true }; } },
   { method: "POST", path: "/v1/lock", access: "granted", keys: "", handle: c => { c.vault.auth.lock(); return { ok: true }; } },
+  { method: "POST", path: "/v1/cosmic/password/status", access: "granted", keys: "email", handle: c => { quiet(c); return c.vault.cosmicPasswordStatus(cosmicEmail(c.body.email)); } },
+  { method: "POST", path: "/v1/cosmic/password/read", access: "granted", keys: "email", handle: c => { quiet(c); return c.vault.cosmicPasswordRead(cosmicEmail(c.body.email)); } },
   { method: "GET", path: "/v1/keys", access: "granted", keys: "", handle: c => c.vault.keyList(c.app!) },
   { method: "POST", path: "/v1/keys/read", access: "granted", keys: "id", handle: c => c.vault.keyRead(c.app!, id(c.body.id), c.prompts) },
   { method: "POST", path: "/v1/keys/approve", access: "manage", keys: "id,password", handle: c => { active(c); return approveKey(c, () => c.vault.auth.unlock(text(c.body.password, 128))); } },

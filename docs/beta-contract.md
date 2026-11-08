@@ -59,6 +59,11 @@ process. They never bundle Vault, write its installation records or read its sto
 App-kind restrictions and the agent rules stay in force. The service protocol marker stays `0.1.0`,
 so clients already shipped keep recognizing the service.
 
+Nebula, Nova, Horizon, Lyra and the ONEM1ND human host (`hivem1nd`) may ask for the Cosmic password
+saved as a login for the account site. The contract is `docs/cosmic-password-provider.md`. While
+Vault is locked the answer is `locked` and availability is unknown. Vault keeps no separate index
+for that. Detecting whether Vault is installed is the calling app's job.
+
 ## Key hub
 
 With Vault installed, API keys and secrets can live in Vault and sync with it. Lyra and the other

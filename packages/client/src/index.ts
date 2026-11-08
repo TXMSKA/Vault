@@ -10,10 +10,22 @@ import { isSettings } from "./settings.ts";
 import { isPromptId, isReason } from "./prompts.ts";
 import { installedApp } from "./app.ts";
 import { recoveryKit } from "./kit.ts";
-import type { ApiKey, ApiKeyUsage, ApiKeyValue, AppView, Backup, Client, ConnectOptions, EntryRow, EnvImportCount, ImportCount, InstallRecord, LoginSummary, Prompt, PromptState, PromptTicket, RunProgress, RunSummary, ServiceRecord, Settings, Status, SyncStatus, SyncConflict, TokenStore } from "./types.ts";
+import type { ApiKey, ApiKeyUsage, ApiKeyValue, AppView, Backup, Client, ConnectOptions, CosmicPasswordStatus, CosmicPasswordValue, EntryRow, EnvImportCount, ImportCount, InstallRecord, LoginSummary, Prompt, PromptState, PromptTicket, RunProgress, RunSummary, ServiceRecord, Settings, Status, SyncStatus, SyncConflict, TokenStore } from "./types.ts";
 export type * from "./types.ts";
 export { VaultClientError, resolveHome, readCapped, readFirstLine, FILE_CAP, installedApp, recoveryKit };
 const pause = (ms: number) => new Promise<void>(done => setTimeout(done, ms));
+function cosmicStatus(value: unknown): CosmicPasswordStatus {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new VaultClientError("unavailable");
+  const keys = Object.keys(value), state = (value as { state?: unknown }).state;
+  if (keys.length !== 1 || keys[0] !== "state" || (state !== "available" && state !== "locked" && state !== "none")) throw new VaultClientError("unavailable");
+  return { state };
+}
+function cosmicValue(value: unknown): CosmicPasswordValue {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new VaultClientError("unavailable");
+  const keys = Object.keys(value), password = (value as { password?: unknown }).password;
+  if (keys.length !== 1 || keys[0] !== "password" || typeof password !== "string") throw new VaultClientError("unavailable");
+  return { password };
+}
 async function request<T>(record: ServiceRecord, method: string, route: string, auth?: string, body?: unknown, timeout = 15000, signal?: AbortSignal): Promise<T> {
   try {
     const response = await fetch(`http://127.0.0.1:${record.port}${route}`, { method, redirect: "error", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout), headers: { ...(auth ? { Authorization: auth } : {}), ...(body === undefined ? {} : { "Content-Type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
@@ -120,6 +132,10 @@ export async function connect(options: ConnectOptions): Promise<Client> {
       now: () => call<SyncStatus>("POST", "/v1/sync/now", {}, 130000), conflicts: () => call<SyncConflict[]>("GET", "/v1/sync/conflicts"), restore: id => call("POST", "/v1/sync/conflicts/restore", { id }), dismiss: id => call("POST", "/v1/sync/conflicts/dismiss", { id }), leave: remove => call("POST", "/v1/sync/leave", { remove }, held),
     },
     unlock: password => call("POST", "/v1/unlock", { password }), recover: (recovery, password) => call("POST", "/v1/recover", { recovery, password }),
+    cosmic: {
+      passwordStatus: async email => cosmicStatus(await call<unknown>("POST", "/v1/cosmic/password/status", { email })),
+      readPassword: async email => cosmicValue(await call<unknown>("POST", "/v1/cosmic/password/read", { email })),
+    },
     hello: { enable: password => call("POST", "/v1/unlock/hello/enable", { password }), unlock: hwnd => call("POST", "/v1/unlock/hello", { hwnd }), disable: () => call("POST", "/v1/unlock/hello/disable", {}) },
     lock: () => call("POST", "/v1/lock", {}), present,
     async close() { if (closed) return; clearInterval(timer); try { if (holds) await call("POST", "/v1/apps/leave", { session }); } finally { closed = true; } },

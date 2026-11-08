@@ -40,6 +40,17 @@ export function origin(value: string): string {
   if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) throw new ServiceError("invalid"); return url.origin;
 }
 const fieldValue = (entry: Entry, name: string) => entry.fields.find(field => field.id === name)?.value ?? "";
+export function selectCosmicLogin(entries: Entry[], email: string, siteOrigin: string): { status: "none" } | { status: "conflict" } | { status: "available"; password: string } {
+  const passwords: string[] = [];
+  for (const entry of entries) {
+    if (entry.kind !== "login" || fieldValue(entry, "username") !== email) continue;
+    const password = fieldValue(entry, "password"); if (!password) continue;
+    try { if (origin(fieldValue(entry, "website")) !== siteOrigin) continue; } catch { continue; }
+    passwords.push(password);
+  }
+  if (passwords.length > 1) return { status: "conflict" };
+  return passwords.length === 1 ? { status: "available", password: passwords[0] } : { status: "none" };
+}
 const keyApps = (entry: Entry) => fieldValue(entry, "apps").split(",").map(app => app.trim()).filter(Boolean);
 const batchIds = (value: unknown) => { if (!Array.isArray(value) || value.length < 1 || value.length > 64) throw new ServiceError("invalid"); return value.map(value => id(value).toLowerCase()); };
 const backupPath = (value: string) => { const path = text(value, 4096); if (!isAbsolute(path)) throw new ServiceError("invalid"); return path; };
@@ -95,10 +106,13 @@ async function scanBackup(file: FileHandle, password: string, entry: (value: Ent
 }
 export class Vault {
   store: FileVaultStore; memory: VaultMemory; auth: ReturnType<typeof createVaultUnlock>; now: () => number; lastRead = new Map<string, Map<string, string>>();
-  constructor(home: string, now: () => number, idle: number, logger: VaultLogger) {
-    this.store = new FileVaultStore(home); this.memory = new VaultMemory(now, idle); this.auth = createVaultUnlock(this.store, { memory: this.memory, clock: now, logger }); this.now = now;
+  cosmicOrigin: string;
+  /** Ticket captured for an in-flight Cosmic password read. A later unlock does not revive it. */
+  cosmicTicket: number | null = null;
+  constructor(home: string, now: () => number, idle: number, logger: VaultLogger, cosmicOrigin: string) {
+    this.store = new FileVaultStore(home); this.memory = new VaultMemory(now, idle); this.auth = createVaultUnlock(this.store, { memory: this.memory, clock: now, logger }); this.now = now; this.cosmicOrigin = cosmicOrigin;
   }
-  key() { const ticket = this.memory.ticket(); const key = this.memory.get(ticket); this.memory.touch(); return { key, ticket }; }
+  key(touch = true) { const ticket = this.memory.ticket(); const key = this.memory.get(ticket); if (touch) this.memory.touch(); return { key, ticket }; }
   check(ticket: number) { this.memory.get(ticket); }
   allowed(app: AppView, kind: Entry["kind"]) { if (!app.kinds.includes(kind) || kind === "apikey" && !manages(app)) throw new ServiceError("not_found", 404); }
   private async keyRows(app: AppView) {
@@ -127,8 +141,8 @@ export class Vault {
     for (const entry of this.lastRead.keys()) if (!entries.has(entry)) this.lastRead.delete(entry);
     return [...this.lastRead].flatMap(([entry, apps]) => [...apps].map(([app, lastRead]) => ({ entry, app, lastRead })));
   }
-  async rows(): Promise<EntryRow[]> {
-    const { key, ticket } = this.key(), rows = await this.store.entries();
+  async rows(touch = true): Promise<EntryRow[]> {
+    const { key, ticket } = this.key(touch), rows = await this.store.entries();
     const opened: EntryRow[] = [];
     for (const row of rows) {
       const entry = validateEntry(await decryptJson(key, row.sealed, `entry:${row.id}`)); if (entry.id !== row.id) throw new ServiceError("invalid");
@@ -154,6 +168,33 @@ export class Vault {
     const row = (await this.rows()).find(row => row.entry.id.toLowerCase() === entry.toLowerCase());
     if (!row || row.entry.kind !== "login") throw new ServiceError("not_found", 404);
     return row;
+  }
+  private async cosmicMode(): Promise<"missing" | "locked" | "open"> {
+    if (!(await this.store.envelope()).state) return "missing";
+    try { this.memory.get(this.memory.ticket()); return "open"; } catch (error) { if (error instanceof Error && error.message === "locked") return "locked"; throw error; }
+  }
+  async cosmicPasswordStatus(email: string) {
+    const mode = await this.cosmicMode(); if (mode === "missing") return { state: "none" as const }; if (mode === "locked") return { state: "locked" as const };
+    let entries: Entry[];
+    try { entries = (await this.rows(false)).map(row => row.entry); } catch (error) { if (error instanceof Error && error.message === "locked") return { state: "locked" as const }; throw error; }
+    const selected = selectCosmicLogin(entries, email, this.cosmicOrigin);
+    if (selected.status === "conflict") throw new ServiceError("conflict", 409);
+    return { state: selected.status === "available" ? "available" as const : "none" as const };
+  }
+  async cosmicPasswordRead(email: string) {
+    const mode = await this.cosmicMode();
+    if (mode === "missing") throw new ServiceError("not_found", 404);
+    if (mode === "locked") throw new ServiceError("locked", 423);
+    const ticket = this.memory.ticket(); this.cosmicTicket = ticket;
+    const entries = (await this.rows(false)).map(row => row.entry);
+    this.memory.get(ticket);
+    const selected = selectCosmicLogin(entries, email, this.cosmicOrigin);
+    this.memory.get(ticket);
+    if (selected.status === "none") throw new ServiceError("not_found", 404);
+    if (selected.status === "conflict") throw new ServiceError("conflict", 409);
+    if (!this.memory.touch()) throw new ServiceError("locked", 423);
+    this.memory.get(ticket);
+    return { password: selected.password };
   }
   async save(app: AppView, input: unknown, expected: unknown) {
     // Check the stored kind before replacement validation so hidden IDs stay indistinguishable.

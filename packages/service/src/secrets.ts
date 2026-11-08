@@ -7,7 +7,9 @@ import { appIdPattern } from "../../client/src/paths.ts";
 import type { AppIdentity, AppView, Kind, Permission } from "../../client/src/types.ts";
 import { object, text, ServiceError } from "./errors.ts";
 const all: Kind[] = ["login", "card", "doc", "note", "key", "custom", "env"];
-const trusted = new Set(["horizon", "nova", "nebula", "lyra", "vault-cli", "vault-app"]);
+const trusted = new Set(["horizon", "nova", "nebula", "lyra", "hivem1nd", "vault-cli", "vault-app"]);
+const cosmicCallers = new Set(["nebula", "nova", "horizon", "lyra", "hivem1nd"]);
+export const cosmicCaller = (app: AppIdentity) => app.kind === "cosmic" && cosmicCallers.has(app.id);
 export const manages = (app: AppIdentity) => app.id === "vault-cli" || app.id === "vault-app";
 export const blocked = (app: AppIdentity) => /^lyra-/.test(app.id);
 // An agent never receives values: once allowed, it can only propose runs that a person approves.
@@ -31,10 +33,13 @@ export class Apps {
     try { value = JSON.parse(await readCapped(this.filename, 512 * 1024)); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw new ServiceError("unavailable", 500); }
     if (!Array.isArray(value) || value.length > 100) throw new ServiceError("unavailable", 500);
+    let migrated = false;
     for (const row of value) {
       object(row, "app,tokenHash"); object(row.app, Object.hasOwn(row.app ?? {}, "permissions") ? "id,kind,kinds,name,permissions,status" : "id,kind,kinds,name,status");
       // Older Lyra registrations were blocked ordinary apps; their existing status still needs to be respected.
       if (row.app.id === "lyra" && row.app.kind === "app" && ["pending", "revoked"].includes(row.app.status)) row.app.kind = "cosmic";
+      // A legacy ordinary row keeps its token and status. Grants the narrow policy cannot honor are dropped. An agent row is not promoted.
+      if (row.app.id === "hivem1nd" && row.app.kind === "app") { row.app.kind = "cosmic"; row.app.permissions = []; migrated = true; }
       identity({ id: row.app.id, name: row.app.name, kind: row.app.kind });
       if (!/^[a-f0-9]{64}$/.test(row.tokenHash) || !["granted", "pending", "revoked"].includes(row.app.status)) throw new ServiceError("unavailable", 500);
       row.app.kinds = kinds(row.app); if (blocked(row.app) && row.app.status === "granted") throw new ServiceError("unavailable", 500);
@@ -44,6 +49,7 @@ export class Apps {
       row.app.permissions = permissions;
     }
     if (new Set(value.map(row => row.app.id)).size !== value.length) throw new ServiceError("unavailable", 500);
+    if (migrated) await atomicJson(this.filename, value);
     this.rows = value;
   }
   list() { return this.rows.map(row => ({ ...row.app, kinds: [...row.app.kinds], permissions: [...row.app.permissions] })); }
@@ -79,8 +85,8 @@ export class Apps {
     await atomicJson(this.filename, rows); this.rows = rows; return app;
   }
 }
-const permissionAllowed = (app: AppIdentity, permission: unknown) => typeof permission === "string" && (permission === "import" ? app.id !== "lyra" : app.id === "lyra" && /^key:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(permission));
-function kinds(app: AppIdentity): Kind[] { return blocked(app) || isAgent(app) || app.id === "lyra" ? [] : app.id === "horizon" ? ["login"] : app.id === "nova" ? ["env"] : manages(app) ? [...all, "apikey"] : [...all]; }
+const permissionAllowed = (app: AppIdentity, permission: unknown) => app.id !== "hivem1nd" && typeof permission === "string" && (permission === "import" ? app.id !== "lyra" : app.id === "lyra" && /^key:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(permission));
+function kinds(app: AppIdentity): Kind[] { return blocked(app) || isAgent(app) || app.id === "lyra" || app.id === "hivem1nd" ? [] : app.id === "horizon" ? ["login"] : app.id === "nova" ? ["env"] : manages(app) ? [...all, "apikey"] : [...all]; }
 // Held by policy, never by request, so no app can ask to keep Vault unlocked.
 export const holds = (app: string) => app === "horizon";
 export function identity(value: unknown): AppIdentity {
