@@ -97,6 +97,7 @@ async function run(promptsOnly: boolean, home: string, platform: Platform, clipb
   const copied = createClipboard(platform.clipboard, clipboardMs === undefined ? {} : { ms: clipboardMs });
   const entries = createEntries({ service: () => link.service(), clipboard: copied, openUrl: platform.openUrl });
   const sync = createSync({ service: () => link.service(), quantum: () => quantumConfig(env), openUrl: platform.openUrl, chooseFolder: () => platform.chooseFolder(window), refresh: () => link.refresh() });
+  sync.foreground(window.isFocused());
   const idle = promptsOnly ? quitWhenIdle({ pending: () => link.snapshot().pending, quit: () => app.quit() }) : undefined;
   // Updates are checked once the window has been shown, so a start only for prompts never asks about an update nobody opened Vault for.
   const updates = createUpdates({
@@ -127,7 +128,8 @@ async function run(promptsOnly: boolean, home: string, platform: Platform, clipb
   };
   // Nothing deleted can be put back, and no list is kept, once the vault is locked.
   link.onChange(snapshot => { if (open && !snapshot.unlocked) entries.forget(); open = snapshot.unlocked; push(); }); link.onArrival(reveal);
-  nativeTheme.on("updated", push); window.on("maximize", push); window.on("unmaximize", push); window.on("focus", () => { void link.refresh(); });
+  nativeTheme.on("updated", push); window.on("maximize", push); window.on("unmaximize", push);
+  window.on("focus", () => { sync.foreground(true); void link.refresh(); }); window.on("blur", () => { sync.foreground(false); });
   app.on("second-instance", () => { idle?.interact(); reveal(); });
   // Closing while the recovery key is on screen and was neither saved nor printed asks first; the window shows the question and answers it.
   // A close the person confirmed passes once.
@@ -206,7 +208,9 @@ async function run(promptsOnly: boolean, home: string, platform: Platform, clipb
     syncNow: () => read(sync.now()),
     syncLeave: ({ remove, signOut }) => read(sync.leave(remove, signOut)),
     syncSignOut: () => read(sync.signOut()),
-    syncAcceptance: ({ id }) => read(sync.acceptance(id)),
+    syncAcceptance: () => read(sync.acceptance()),
+    syncAcceptanceWait: () => read(sync.acceptanceWait()),
+    syncAcceptanceOpen: () => read(sync.openAcceptance()),
     saveSettings: next => link.saveSettings(next),
     enableHello: ({ password }) => link.enableHello(password),
     disableHello: () => link.disableHello(),

@@ -352,9 +352,10 @@ form.card { margin: 0; }
 .account > .icon { flex: none; color: var(--primary); }
 .acopy { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
 .acopy .line { font: 400 13px/18px var(--sans); color: var(--soft); overflow-wrap: anywhere; }
-.alert { display: flex; align-items: flex-start; gap: 12px; padding: 14px; border-radius: 10px; background: var(--error-wash); font: 400 14px/20px var(--sans); color: var(--title); }
+.alert { display: flex; align-items: center; gap: 12px; padding: 14px; border-radius: 10px; background: var(--error-wash); font: 400 14px/20px var(--sans); color: var(--title); }
 .alert > .icon { flex: none; color: var(--error); }
 .alert .grow { flex: 1; }
+.alert > .btn { flex: none; }
 .computers { display: flex; flex-direction: column; }
 .computers .label { padding-bottom: 4px; }
 .computer { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }

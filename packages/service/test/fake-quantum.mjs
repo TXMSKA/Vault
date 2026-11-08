@@ -7,12 +7,12 @@ const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 // Tokens and codes remain inside this fixture; only fixed test locations reach output.
 export async function fakeQuantum() {
   const accounts = new Map(), codes = new Map(), access = new Map(), refresh = new Map(), requests = [], credentials = [], held = new Set();
-  const counters = { signin: 0, refresh: 0, revoke: 0, pages: 0, usage: 0, foreign: 0, busy: 0, bootstrap: 0, me: 0, changes: 0, held: 0, maxHeld: 0 }, controls = { busy: 0, unavailable: false, badHash: false, lostDatasetResponse: 0, postCreateListingFailure: 0, objectWriteFailure: 0, feedHoldMs: 25000, feedRetryAfter: 0, feedFailure: 0, bootstrapFailure: 0, deviceRevoked: false, accountMismatch: false };
+  const counters = { signin: 0, refresh: 0, revoke: 0, pages: 0, usage: 0, foreign: 0, busy: 0, bootstrap: 0, me: 0, changes: 0, held: 0, maxHeld: 0, legal: 0, legalInflight: 0, legalMax: 0, keys: 0 }, controls = { busy: 0, unavailable: false, badHash: false, lostDatasetResponse: 0, postCreateListingFailure: 0, objectWriteFailure: 0, feedHoldMs: 25000, feedRetryAfter: 0, feedFailure: 0, bootstrapFailure: 0, deviceRevoked: false, accountMismatch: false, registrationBetaRequired: false, legalBlock: null, legalRetryAfter: null, legalFailure: 0, legalStatus: 429 };
   const account = email => { if (!accounts.has(email)) accounts.set(email, { email, accountId: randomUUID(), datasets: new Map(), plan: true, full: false, refuseRefresh: false, missingPolicies: [], deviceRevoked: false, sequences: new Map() }); return accounts.get(email); };
   const wake = () => { for (const pending of [...held]) pending.wake(); };
   const used = owner => [...owner.datasets.values()].reduce((sum, dataset) => sum + [...dataset.values()].reduce((size, row) => size + Math.max(1, row.bytes.length), 0), 0);
   const opaque = () => { const value = randomBytes(32).toString("base64url"); credentials.push(value); return value; };
-  const pair = chain => { const accessToken = opaque(), refreshToken = opaque(); access.set(accessToken, { chain, expired: false }); refresh.set(refreshToken, { chain, used: false }); return { accessToken, refreshToken, tokenType: "Bearer", expiresIn: 900, deviceId: chain.registration, account_id: chain.account.accountId }; };
+  const pair = chain => { const accessToken = opaque(), refreshToken = opaque(); access.set(accessToken, { chain, expired: false }); refresh.set(refreshToken, { chain, used: false }); return { accessToken, refreshToken, tokenType: "Bearer", expiresIn: 900, deviceId: chain.registration, account_id: chain.account.accountId, syntheticMetadata: true }; };
   const json = (res, code, value) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
   const error = (res, status, code, fields = {}) => json(res, status, { error: { code, message: "Synthetic Quantum failure", fields, requestId: randomUUID() } });
   const body = async req => { const parts = []; for await (const part of req) parts.push(part); return Buffer.concat(parts); };
@@ -40,8 +40,18 @@ export async function fakeQuantum() {
     const chain = token.chain, owner = chain.account; requests.push({ method, path, url: `${path}${url.search}`, computer: chain.computer });
     if (chain.deviceRevoked || owner.deviceRevoked || controls.deviceRevoked) return error(res, 403, "device_revoked");
     if (path === "/v1/oauth/revoke" && method === "POST") { chain.revoked = true; counters.revoke++; wake(); return json(res, 200, { success: true }); }
-    if (path === "/v1/me" && method === "GET") { counters.me++; return json(res, 200, { accountId: controls.accountMismatch ? randomUUID() : owner.accountId, email: owner.email, displayName: null, plans: [], devices: [], twoFactorEnabled: false, createdAt: new Date(0).toISOString(), consentRequired: owner.missingPolicies.some(policy => policy.id !== "beta"), deleteAt: null }); }
-    if (path === "/v1/bootstrap" && method === "GET") { counters.bootstrap++; if (controls.bootstrapFailure > 0) { controls.bootstrapFailure--; return error(res, 503, "identity_unavailable"); } return json(res, 200, { accountId: owner.accountId, app: "vault", device: { id: chain.registration, name: "Synthetic computer" }, capabilities: { managedSync: { vault: owner.plan } }, plans: [], pool: { poolBytes: owner.poolBytes === undefined ? 100000000 : owner.poolBytes, usedBytes: used(owner) }, legal: { missing: owner.missingPolicies }, spaces: [], after: null, cursors: { spaces: null } }); }
+    if (path === "/v1/me" && method === "GET") { counters.me++; return json(res, 200, { accountId: controls.accountMismatch ? randomUUID() : owner.accountId, email: owner.email, displayName: null, plans: [], devices: [], twoFactorEnabled: false, createdAt: new Date(0).toISOString(), consentRequired: owner.missingPolicies.some(policy => policy.id !== "beta"), deleteAt: null, syntheticMetadata: true }); }
+    if (path === "/v1/bootstrap" && method === "GET") { counters.bootstrap++; if (controls.bootstrapFailure > 0) { controls.bootstrapFailure--; return error(res, 503, "identity_unavailable"); } return json(res, 200, { accountId: owner.accountId, app: "vault", device: { id: chain.registration, name: "Synthetic computer" }, capabilities: { managedSync: { vault: owner.plan } }, plans: [], pool: { poolBytes: owner.poolBytes === undefined ? 100000000 : owner.poolBytes, usedBytes: used(owner) }, legal: { missing: owner.missingPolicies }, spaces: [], after: null, cursors: { spaces: null }, syntheticMetadata: true }); }
+    if (path === "/v1/legal/requirements" && method === "GET") {
+      counters.legal++; counters.legalInflight++; counters.legalMax = Math.max(counters.legalMax, counters.legalInflight);
+      try {
+        if (controls.legalBlock) await controls.legalBlock;
+        if (controls.legalRetryAfter != null) res.setHeader("Retry-After", String(controls.legalRetryAfter));
+        if (controls.legalFailure > 0) { controls.legalFailure--; return error(res, controls.legalStatus || 429, "rate_limited"); }
+        return json(res, 200, { registrationBetaRequired: controls.registrationBetaRequired === true, policies: owner.missingPolicies, syntheticMetadata: true });
+      } finally { counters.legalInflight--; }
+    }
+    if (path.startsWith("/v1/keys")) { counters.keys++; return error(res, 404, "not_found"); }
     if (owner.missingPolicies.some(policy => policy.id !== "beta")) return error(res, 403, "acceptance_required", { policies: owner.missingPolicies.filter(policy => policy.id !== "beta") });
     if (path === "/v1/usage" && method === "GET") { counters.usage++; return json(res, 200, { poolBytes: 100000000, usedBytes: used(owner) }); }
     if (controls.unavailable) return error(res, 503, "storage_unavailable");

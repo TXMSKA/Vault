@@ -48,6 +48,7 @@ export class QuantumAuth {
   private home: string; private filename: string; private language: () => string; private credentials: Credentials | null = null; private access: string | null = null;
   private refreshing: Promise<void> | null = null; private revision = 0; private pending = new Map<string, Pending>(); private writing: Promise<void> = Promise.resolve();
   private snapshot: { at: number; value: Bootstrap } | null = null; private bootstrapping: Promise<Bootstrap> | null = null;
+  private acceptanceBlock: { accountId: string | null; api: string; site: string; revision: number; ids: string[] } | null = null; private readers = new Set<AbortController>();
   constructor(home: string, language: () => string = () => "en") { this.home = resolve(home); this.filename = join(this.home, "secrets", "quantum.json"); this.language = language; }
   async load(): Promise<void> {
     try { await lstat(this.filename); } catch (error) { if (missing(error)) return; throw new ServiceError("sync_signin_required", 401); }
@@ -58,6 +59,10 @@ export class QuantumAuth {
     } catch { throw new ServiceError("sync_signin_required", 401); }
   }
   identity(): { api: string; site: string; deviceId: string; account: string; accountId: string | null } { const c = this.credentials; if (!c?.refreshToken || !c.account) throw new ServiceError("sync_signin_required", 401); return { api: c.api, site: c.site, deviceId: c.deviceId, account: c.account, accountId: c.accountId }; }
+  authRevision(): number { return this.revision; }
+  blocked() { return this.acceptanceBlock; }
+  clearBlocked(): void { this.acceptanceBlock = null; }
+  track(controller: AbortController): () => void { this.readers.add(controller); return () => { this.readers.delete(controller); }; }
   private async save(value: Credentials, revision = this.revision) {
     const pending = this.writing.catch(() => {}).then(async () => {
       if (revision !== this.revision) throw new ServiceError("sync_signin_required", 401); await privateDirectoryAsync(join(this.home, "secrets"), this.home); const temporary = `${this.filename}.${randomUUID()}.tmp`;
@@ -99,7 +104,7 @@ export class QuantumAuth {
     })(); this.refreshing = pending;
     try { await pending; } finally { if (this.refreshing === pending) this.refreshing = null; }
   }
-  async request(api: string, path: string, init: RequestInit = {}, cap = SYNC_PACKAGE_CAP, feed = false): Promise<Reply> {
+  async request(api: string, path: string, init: RequestInit = {}, cap = SYNC_PACKAGE_CAP, feed = false, pace = false): Promise<Reply> {
     return limited(async live => {
       if (quantumUrl(api) !== this.identity().api || !path.startsWith("/v1/") || path.includes("\\")) throw new ServiceError("sync_signin_required", 401);
       const revision = this.revision, signal = init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(SYNC_CALL_MS)]) : AbortSignal.timeout(SYNC_CALL_MS); if (!this.access) await this.refresh(signal); live(); let retried = false, delayed = false;
@@ -109,11 +114,12 @@ export class QuantumAuth {
         if (reply.status === 401 && !retried) { retried = true; if (this.access === access) await this.refresh(signal); live(); continue; }
         // Quantum limits each account to 300 requests a minute across every app, and a vault with attachments reads many small objects: a wait that fits
         // the call's time is taken instead of failing the whole sync.
-        if (reply.status === 429 && !delayed && !feed && retryAfter(reply.headers) <= 20000) {
+        // Acceptance polling records Retry-After itself. Consuming it here would let one wait skip the cadence.
+        if (reply.status === 429 && !delayed && !feed && !pace && retryAfter(reply.headers) <= 20000) {
           delayed = true; await new Promise<void>(done => { const timer = setTimeout(done, retryAfter(reply.headers)); timer.unref(); }); live(); continue;
         }
         if (reply.status === 401) { await this.clear(); throw new ServiceError("sync_signin_required", 401); }
-        if (reply.status === 403) { let error: { code?: unknown; fields?: { policies?: unknown } } | undefined; try { error = json(reply).error as typeof error; } catch {} if (error?.code === "device_revoked") { await this.clear(); throw new ServiceError("sync_signin_required", 401); } if (error?.code === "acceptance_required" && this.snapshot) this.snapshot.value.missingPolicies = policies(error.fields?.policies, this.identity().site); }
+        if (reply.status === 403) { let error: { code?: unknown; fields?: { policies?: unknown } } | undefined; try { error = json(reply).error as typeof error; } catch {} if (error?.code === "device_revoked") { await this.clear(); throw new ServiceError("sync_signin_required", 401); } if (error?.code === "acceptance_required") { const site = this.identity().site, rows = policies(error.fields?.policies, site); if (rows.length) { const current = this.identity(); this.acceptanceBlock = { accountId: current.accountId, api: current.api, site, revision, ids: [...new Set(rows.map(row => row.id))] }; } if (this.snapshot) this.snapshot.value.missingPolicies = rows; } }
         if (reply.status < 200 || reply.status >= 300) failed(reply, this.identity().site); return reply;
       }
     });
@@ -164,6 +170,12 @@ export class QuantumAuth {
     if (!email || /[\x00-\x1f\x7f]/.test(email)) throw new VaultError("invalid");
     if (canonical !== current.accountId || email !== current.account) { const next = { ...current, account: email, accountId: canonical }; await this.save(next, revision); this.credentials = next; } return this.identity();
   }
+  async dropBootstrap(): Promise<void> { const pending = this.bootstrapping; if (pending) { try { await pending; } catch { /* the next read replaces the snapshot */ } } if (this.bootstrapping === pending) this.bootstrapping = null; this.snapshot = null; }
+  async requirements(signal?: AbortSignal): Promise<{ ids: string[]; retryAfter: number }> {
+    const current = this.identity(), reply = await this.request(current.api, "/v1/legal/requirements", signal ? { signal } : {}, 65536, false, true), value = json(reply);
+    if (typeof value.registrationBetaRequired !== "boolean") throw new VaultError("invalid");
+    return { ids: [...new Set(policies(value.policies, current.site).map(row => row.id))], retryAfter: retryAfter(reply.headers) };
+  }
   async bootstrap(now = Date.now()): Promise<Bootstrap> {
     this.identity(); if (this.snapshot && now - this.snapshot.at < 60000) return this.snapshot.value; if (this.bootstrapping) return this.bootstrapping;
     const pending = (async () => {
@@ -180,7 +192,7 @@ export class QuantumAuth {
     for (const row of value.changes) { if (!row || typeof row !== "object" || !Number.isSafeInteger(row.seq) || row.seq <= previous || row.seq > 999999999999999 || typeof row.path !== "string" || row.path.length > 255 || !/^[A-Za-z0-9_./-]+$/.test(row.path) || row.path.split("/").some((part: string) => !part || part === "." || part === "..") || !Number.isSafeInteger(row.size) || row.size < 0 || typeof row.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(row.sha256)) throw new VaultError("invalid"); previous = row.seq; }
     if (Number(value.cursor) !== previous) throw new VaultError("invalid"); return { cursor: previous, changed: value.changes.length > 0, retryAfter: retryAfter(reply.headers) };
   }
-  stop(): void { this.revision++; this.bootstrapping = null; for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.server.close(); pending.fail(new ServiceError("sync_signin_failed")); } }
+  stop(): void { this.revision++; this.acceptanceBlock = null; this.bootstrapping = null; for (const controller of this.readers) controller.abort(); this.readers.clear(); for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.server.close(); pending.fail(new ServiceError("sync_signin_failed")); } }
 }
 
 export class QuantumTransport implements SyncTransport {

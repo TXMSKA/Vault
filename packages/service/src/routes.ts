@@ -15,7 +15,7 @@ import type { Settings } from "./settings.ts";
 import { appIdPattern } from "../../client/src/paths.ts";
 import { isReason } from "../../client/src/prompts.ts";
 import type { ImportFormat } from "../../client/src/types.ts";
-export type Context = { app?: AppView; apps: Apps; vault: Vault; lifecycle: Lifecycle; runs: Runs; sync: Sync; prompts: Prompts; settings: Settings; hello: ReturnType<typeof helloAdapter>; body: Record<string, unknown>; query: URLSearchParams; id?: string; idleMs: number };
+export type Context = { app?: AppView; apps: Apps; vault: Vault; lifecycle: Lifecycle; runs: Runs; sync: Sync; prompts: Prompts; settings: Settings; hello: ReturnType<typeof helloAdapter>; body: Record<string, unknown>; query: URLSearchParams; id?: string; idleMs: number; signal?: AbortSignal };
 export type Route = { method: string; path: string; access: "public" | "bootstrap" | "granted" | "manage" | "run"; keys: string; query?: string; handle(c: Context): unknown | Promise<unknown> };
 const password = (value: unknown) => { const result = text(value, 128); if (result.length < 15) throw new ServiceError("invalid"); return result; };
 const active = (c: Context) => c.lifecycle.requirePresence(c.app!.id);
@@ -59,7 +59,9 @@ const syncOrigin = (c: Context) => { if (Object.hasOwn(c.body, "quantum")) { if 
 export const routes: Route[] = [
   { method: "GET", path: "/v1/sync", access: "manage", keys: "", handle: c => c.sync.status() },
   { method: "POST", path: "/v1/sync/quantum/signin", access: "manage", keys: "api,site", handle: c => { active(c); return c.sync.signIn(text(c.body.api, 2048), text(c.body.site, 2048)); } },
-  { method: "POST", path: "/v1/sync/quantum/wait", access: "manage", keys: "id", handle: c => { active(c); return c.sync.quantum.poll(id(c.body.id)); } },
+  { method: "POST", path: "/v1/sync/quantum/acceptance", access: "manage", keys: "", handle: c => { active(c); return c.sync.acceptance(c.app!.id); } },
+  { method: "POST", path: "/v1/sync/quantum/acceptance/cancel", access: "manage", keys: "id", handle: c => { active(c); return c.sync.cancelAcceptance(id(c.body.id), c.app!.id); } },
+  { method: "POST", path: "/v1/sync/quantum/wait", access: "manage", keys: "id", handle: c => { active(c); return c.sync.pollQuantum(id(c.body.id), c.signal); } },
   { method: "POST", path: "/v1/sync/quantum/account", access: "manage", keys: "", handle: c => { active(c); return c.sync.quantumAccount(); } },
   { method: "POST", path: "/v1/sync/quantum/signout", access: "manage", keys: "", handle: c => { active(c); return c.sync.signOut(); } },
   { method: "POST", path: "/v1/sync/setup", access: "manage", keys: "folder|quantum", handle: c => { active(c); return c.sync.setup(syncOrigin(c)); } },

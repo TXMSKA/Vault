@@ -75,6 +75,7 @@ export async function startService(options: ServiceOptions = {}) {
     const controller = new AbortController(); feed = controller;
     void sync.changes(controller.signal).then(async result => { if (controller.signal.aborted || stopping || !unlocked() || sync.watch()?.datasetId !== result.datasetId) return; feedDue = now() + Math.max(0, result.retryAfter); if (result.changed || now() - reconciled >= SYNC_PULSE_MS) await pull(result); else { const run = queue.catch(() => undefined).then(() => { if (!controller.signal.aborted && !stopping && unlocked()) sync.acknowledge(result.datasetId, result.cursor); }); queue = run; await run; } feedErrors = 0; }).catch(error => { if (!controller.signal.aborted && !stopping) { sync.feedFailure(error); feedDue = now() + Math.max(Number((error as { retryAfter?: number }).retryAfter) || 0, Math.min(SYNC_PULSE_MS, 1000 * 2 ** Math.min(feedErrors++, 6))); } }).finally(() => { if (feed === controller) feed = null; });
   };
+  sync.onResume = () => { feedErrors = 0; feedDue = now(); scheduleSync(0); checkSync(); };
   const take = (actor: string, max: number) => {
     let bucket = limits.get(actor); if (!bucket || now() - bucket.start >= 60000) { bucket = { start: now(), count: 0 }; limits.set(actor, bucket); }
     if (++bucket.count > max) throw new ServiceError("rate_limited", 429);
@@ -109,7 +110,9 @@ export async function startService(options: ServiceOptions = {}) {
       const body = await readBody(request, cap); validateInput(route, body, url.searchParams);
       const execute = async () => {
         authenticate(); lifecycle.check();
-        const result = await route.handle({ app, apps, vault, lifecycle, runs, sync, prompts, settings, hello, body: body as Record<string, unknown>, query: url.searchParams, id: routeId, idleMs: vault.memory.idle ?? idleMs });
+        const detached = new AbortController();
+        if (route.path === "/v1/sync/quantum/wait") { const detach = () => { if (!response.writableEnded) detached.abort(); }; request.on("aborted", detach); response.on("close", detach); }
+        const result = await route.handle({ app, apps, vault, lifecycle, runs, sync, prompts, settings, hello, body: body as Record<string, unknown>, query: url.searchParams, id: routeId, idleMs: vault.memory.idle ?? idleMs, signal: detached.signal });
         if (["/v1/unlock", "/v1/unlock/hello", "/v1/recover"].includes(route.path)) scheduleSync(0);
         else if (route.method === "POST" && ["/v1/entries", "/v1/entries/remove", "/v1/import", "/v1/import/env", "/v1/restore", "/v1/restore/file", "/v1/sync/conflicts/restore", "/v1/keys/revoke"].includes(route.path)) scheduleSync(SYNC_WRITE_MS);
         authenticate(); lifecycle.check();
@@ -119,7 +122,7 @@ export async function startService(options: ServiceOptions = {}) {
         if (["/v1/unlock", "/v1/unlock/hello", "/v1/recover"].includes(route.path)) checkSync();
       };
       // Lock and presence departures invalidate in-flight key work immediately; a long poll must not hold the queue.
-      if (["/v1/lock", "/v1/apps/leave", "/v1/apps/present", "/v1/sync/quantum/wait", "/v1/health"].includes(route.path) || route.method === "GET" && route.path.startsWith("/v1/prompts")) await execute();
+      if (["/v1/lock", "/v1/apps/leave", "/v1/apps/present", "/v1/sync/quantum/wait", "/v1/sync/quantum/acceptance/cancel", "/v1/health"].includes(route.path) || route.method === "GET" && route.path.startsWith("/v1/prompts")) await execute();
       else if (route.method === "GET" ? (syncQueued > 0 || sync.pulsing > 0) && beside.has(route.path) : sync.pulsing > 0 && route.method === "POST" && writes.has(route.path)) { readers++; try { await execute(); } finally { if (route.method !== "GET") sync.touched++; if (!--readers) settled.splice(0).forEach(done => done()); } }
       else {
         if (pending >= 20) throw new ServiceError("busy", 503); pending++;
@@ -139,7 +142,7 @@ export async function startService(options: ServiceOptions = {}) {
   const timer = setInterval(() => { checkSync(); void checkLifecycle().catch(() => { process.exitCode = 1; }); }, 1000); timer.unref();
   async function shutdown() {
     if (stopping) return stopping;
-    vault.memory.lock(); feed?.abort(); clearInterval(timer); runs.stopAll(); prompts.stop(); sync.quantum.stop();
+    vault.memory.lock(); feed?.abort(); clearInterval(timer); runs.stopAll(); prompts.stop(); sync.stop();
     stopping = (async () => {
       try { server.closeAllConnections(); await new Promise<void>(done => server.close(() => done())); await queue.catch(() => undefined); }
       finally { await rm(recordPath, { force: true }); release(); process.off("SIGINT", signal); process.off("SIGTERM", signal); }

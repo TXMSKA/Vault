@@ -34,7 +34,7 @@ try {
   for (const files of [[], [other], Array(50).fill(other)]) check.equal(accepts("entrySave", { entry: { ...document, files }, expected: 0 }), true);
   for (const files of [null, "x", ["x"], Array(51).fill(other)]) check.equal(accepts("entrySave", { entry: { ...document, files }, expected: 0 }), false);
   // ---- the bridge's arguments: exactly the keys of the call, each one within its cap -------------------------------------------------------
-  const bridge = ["state", "onState", "create", "chooseBackup", "restoreBackup", "unlock", "unlockWithHello", "recover", "lock", "saveRecoverySheet", "printRecoverySheet", "finishSetup", "approveRun", "approveRunWithHello", "allowImport", "allowImportWithHello", "dismissPrompt", "entries", "entryOpen", "entryReveal", "entryCopy", "entryCode", "entryCopyCode", "entryOpenSite", "entryFavorite", "entrySave", "entryRemove", "entryUndo", "saveSettings", "enableHello", "disableHello", "dismissTour", "cancelClose", "confirmClose", "interact", "retry", "minimize", "toggleMaximize", "close", "syncStatus", "syncSignIn", "syncWait", "syncCancel", "syncChooseFolder", "syncSetup", "syncJoin", "syncMove", "syncNow", "syncLeave", "syncSignOut", "syncAcceptance", "keyApprove", "keyApproveWithHello", "keyRevoke", "keyUsage"];
+  const bridge = ["state", "onState", "create", "chooseBackup", "restoreBackup", "unlock", "unlockWithHello", "recover", "lock", "saveRecoverySheet", "printRecoverySheet", "finishSetup", "approveRun", "approveRunWithHello", "allowImport", "allowImportWithHello", "dismissPrompt", "entries", "entryOpen", "entryReveal", "entryCopy", "entryCode", "entryCopyCode", "entryOpenSite", "entryFavorite", "entrySave", "entryRemove", "entryUndo", "saveSettings", "enableHello", "disableHello", "dismissTour", "cancelClose", "confirmClose", "interact", "retry", "minimize", "toggleMaximize", "close", "syncStatus", "syncSignIn", "syncWait", "syncCancel", "syncChooseFolder", "syncSetup", "syncJoin", "syncMove", "syncNow", "syncLeave", "syncSignOut", "syncAcceptance", "syncAcceptanceOpen", "syncAcceptanceWait", "keyApprove", "keyApproveWithHello", "keyRevoke", "keyUsage"];
   const preload = await readFile(new URL("../dist/preload/preload.cjs", import.meta.url), "utf8");
   let exposed, filePath = "", invoked = [];
   const dropped = {};
@@ -50,21 +50,43 @@ try {
   check.deepEqual(quantumConfig({}), { api: "https://quantum.txmska.com", site: "https://cosmic.txmska.com" }); check.deepEqual(quantumConfig({ VAULT_QUANTUM_API: "http://127.0.0.1:1", VAULT_QUANTUM_SITE: "http://127.0.0.1:2" }), { api: "http://127.0.0.1:1", site: "http://127.0.0.1:2" });
   check.equal(accepts("keyApprove", { id: crypto.randomUUID(), password: "x" }), true); check.equal(accepts("keyApprove", { id: "nope", password: "x" }), false); check.equal(accepts("keyApproveWithHello", { id: crypto.randomUUID() }), true);
   check.equal(accepts("keyRevoke", { app: "lyra", entry: crypto.randomUUID() }), true); check.equal(accepts("keyRevoke", { app: "Lyra!", entry: crypto.randomUUID() }), false); check.equal(accepts("keyRevoke", { app: "lyra" }), false); check.equal(accepts("keyUsage", undefined), true); check.equal(accepts("keyUsage", {}), false);
-  check.equal(accepts("syncAcceptance", { id: "beta" }), true); check.equal(accepts("syncAcceptance", { id: "" }), false); check.equal(accepts("syncAcceptance", { id: "beta", url: "https://other.invalid" }), false);
+  for (const call of ["syncAcceptance", "syncAcceptanceWait", "syncAcceptanceOpen"]) { check.equal(accepts(call, undefined), true); check.equal(accepts(call, {}), false); check.equal(accepts(call, { id: "terms" }), false); check.equal(accepts(call, { url: "https://other.invalid" }), false); }
   {
-    const policy = { id: "beta", version: "2026-10-26", path: "/beta", url: "https://cosmic.example.invalid/beta" }, opened = [];
-    const source = { configured: true, origin: "quantum", account: "synthetic@example.invalid", folder: null, storage: null, lastSynced: null, computers: ["one", "two"], pending: 2, conflicts: 0, failure: { writer: null, cause: "sync_acceptance_required" }, managedSync: true, missingPolicies: [policy] };
-    const sync = createSync({ service: () => ({ sync: { status: async () => source } }), quantum: () => undefined, openUrl: async url => { opened.push(url); }, chooseFolder: async () => undefined, refresh: async () => {} });
-    const view = syncView(source); check.equal(view.problem, "sync_acceptance_required"); check.equal(view.managedSync, true); check.deepEqual(view.missingPolicies, [policy]); check.equal(view.others, 1);
-    check.equal((await sync.acceptance("other")).code, "not_found"); check.equal(opened.length, 0); check.equal((await sync.acceptance("beta")).ok, true); check.deepEqual(opened, [policy.url]);
-    for (const url of ["file:///C:/synthetic", "javascript:alert(1)", "https://person@example.invalid/beta"]) { source.missingPolicies = [{ ...policy, url }]; check.equal((await sync.acceptance("beta")).code, "invalid"); }
-    check.equal(opened.length, 1); source.missingPolicies = []; source.managedSync = false; source.failure.cause = "sync_plan_required"; check.equal((await sync.status()).status.managedSync, false);
-    source.failure.cause = "sync_signin_required"; check.equal((await sync.status()).status.problem, "sync_signin_required");
+    const opened = [], calls = [], polls = [];
+    let url = "https://cosmic.example.invalid/", flow = "flow-root", refreshed = 0, blocked = false;
+    const source = { configured: true, origin: "quantum", account: "synthetic@example.invalid", folder: null, storage: null, lastSynced: null, computers: ["one", "two"], pending: 2, conflicts: 0, failure: { writer: null, cause: "sync_acceptance_required" }, managedSync: true, missingPolicies: [{ id: "terms", version: "2026-10-09", path: "/terms" }] };
+    const quantum = {
+      acceptance: async () => { calls.push("acceptance"); if (blocked) throw { code: "invalid" }; return { url, id: flow }; },
+      poll: (id, signal) => new Promise(resolve => { polls.push({ id, signal }); signal.addEventListener("abort", () => resolve({ account: "late@example.invalid" }), { once: true }); polls.at(-1).finish = resolve; }),
+      cancelAcceptance: async id => { calls.push(`cancel:${id}`); return { ok: true }; },
+    };
+    const sync = createSync({ service: () => ({ sync: { status: async () => { calls.push("status"); return source; }, now: async () => { calls.push("now"); throw new Error("acceptance must not retry sync"); }, quantum } }), quantum: () => undefined, openUrl: async value => { opened.push(value); }, chooseFolder: async () => undefined, refresh: async () => { refreshed++; } });
+    const view = syncView(source); check.equal(view.problem, "sync_acceptance_required"); check.equal(view.managedSync, true); check.equal(view.others, 1);
+    check.equal((await sync.status()).ok, true); check.deepEqual(opened, []);
+    check.equal((await sync.acceptance()).ok, true); check.deepEqual(opened, ["https://cosmic.example.invalid/"]); check.equal(calls.filter(item => item === "acceptance").length, 1);
+    check.equal((await sync.openAcceptance()).ok, true); check.deepEqual(opened, ["https://cosmic.example.invalid/", "https://cosmic.example.invalid/"]); check.equal(calls.filter(item => item === "acceptance").length, 1);
+    const spin = async until => { for (let i = 0; i < 20 && !until(); i++) await Promise.resolve(); check.equal(until(), true); };
+    let early; const waiting = sync.acceptanceWait().then(result => { early = result; return result; });
+    await spin(() => polls.length === 1); check.equal(polls[0].id, "flow-root");
+    sync.foreground(false); await spin(() => polls[0].signal.aborted); for (let i = 0; i < 5; i++) await Promise.resolve();
+    check.equal(early, undefined); check.equal(polls.length, 1); check.equal(refreshed, 0);
+    sync.foreground(true); await spin(() => polls.length === 2); check.equal(early, undefined); check.equal(polls[1].id, "flow-root");
+    source.failure = null; source.missingPolicies = []; polls[1].finish({ account: "synthetic@example.invalid" });
+    const done = await waiting; check.equal(done.ok, true); check.equal(done.status.problem, null); check.equal(done.status.pending, 2); check.equal(refreshed, 1); check.equal(calls.includes("now"), false); check.equal(source.pending, 2);
+    url = "https://cosmic.example.invalid/es/"; flow = "flow-es"; check.equal((await sync.acceptance()).ok, true); check.equal(opened.at(-1), "https://cosmic.example.invalid/es/");
+    const second = sync.acceptanceWait(); await spin(() => polls.length === 3); check.equal(polls[2].id, "flow-es");
+    check.equal((await sync.cancel()).ok, true); check.equal((await second).code, "cancelled"); check.equal(calls.includes("cancel:flow-es"), true); check.equal((await sync.openAcceptance()).code, "not_found");
+    const openedBefore = opened.length;
+    for (const [badUrl, badId] of [["javascript:alert(1)", "bad-script"], ["https://person@example.invalid/es/", "bad-user"], ["file:///C:/synthetic", "bad-file"]]) { url = badUrl; flow = badId; check.equal((await sync.acceptance()).code, "invalid", badId); check.equal(calls.includes(`cancel:${badId}`), true, badId); }
+    check.equal(opened.length, openedBefore);
+    blocked = true; check.equal((await sync.acceptance()).code, "invalid"); check.equal(opened.length, openedBefore);
+    source.missingPolicies = []; source.managedSync = false; source.failure = { writer: null, cause: "sync_plan_required" }; check.equal((await sync.status()).status.managedSync, false);
+    source.failure.cause = "sync_signin_required"; check.equal((await sync.status()).status.problem, "sync_signin_required"); check.equal(opened.length, openedBefore);
   }
   check.equal(accepts("syncSetup", { via: "quantum" }), true); check.equal(accepts("syncSetup", { via: "cloud" }), false); check.equal(accepts("syncSetup", { via: "folder", folder: "C:/x" }), false);
   check.equal(accepts("syncJoin", { via: "quantum", password: "x" }), true); check.equal(accepts("syncJoin", { via: "folder", recovery: "ABCD" }), true); check.equal(accepts("syncJoin", { via: "quantum", password: "x", recovery: "y" }), false); check.equal(accepts("syncJoin", { via: "quantum", password: "" }), false); check.equal(accepts("syncJoin", { via: "quantum" }), false);
   check.equal(accepts("syncLeave", { remove: false, signOut: true }), true); check.equal(accepts("syncLeave", { remove: "no", signOut: true }), false); check.equal(accepts("syncLeave", { remove: false }), false);
-  for (const call of ["syncStatus", "syncSignIn", "syncWait", "syncCancel", "syncChooseFolder", "syncMove", "syncNow", "syncSignOut"]) { check.equal(accepts(call, undefined), true); check.equal(accepts(call, {}), false); }
+  for (const call of ["syncStatus", "syncSignIn", "syncWait", "syncCancel", "syncChooseFolder", "syncMove", "syncNow", "syncSignOut", "syncAcceptance", "syncAcceptanceWait", "syncAcceptanceOpen"]) { check.equal(accepts(call, undefined), true); check.equal(accepts(call, {}), false); }
   for (const call of ["interact", "retry", "minimize", "toggleMaximize", "close", "state", "chooseBackup", "unlockWithHello", "lock", "saveRecoverySheet", "printRecoverySheet", "finishSetup", "entries", "disableHello", "dismissTour", "cancelClose", "confirmClose"]) { check.equal(accepts(call, undefined), true); check.equal(accepts(call, {}), false); check.equal(accepts(call, null), false); check.equal(accepts(call, { password }), false); }
   check.equal(accepts("create", { password }), true); check.equal(accepts("create", { password: short }), false); check.equal(accepts("create", { password: "x".repeat(129) }), false); check.equal(accepts("create", { password: "x".repeat(128) }), true);
   check.equal(accepts("unlock", { password: "x" }), true); check.equal(accepts("unlock", { password: "" }), false); check.equal(accepts("unlock", { password: "x".repeat(129) }), false); check.equal(accepts("unlock", { password: `a${"\0"}b` }), false);
@@ -182,11 +204,12 @@ try {
   const now = Date.parse("2026-10-09T12:00:00.000Z");
   check.deepEqual([minutesLeft("2026-10-09T12:09:00.000Z", now), minutesLeft("2026-10-09T12:08:01.000Z", now), minutesLeft("2026-10-09T12:00:01.000Z", now), minutesLeft("2026-10-09T12:00:00.000Z", now), minutesLeft("2026-10-09T11:59:00.000Z", now)], [9, 9, 1, 0, 0]);
   // Both languages say the same things, impersonally; Spanish has no voseo or tuteo.
+  // The acceptance wait body is the owner's sentence, so that one string addresses the person.
   check.deepEqual(Object.keys(en).sort(), Object.keys(es).sort());
   for (const name of Object.keys(en)) check.equal(typeof en[name], typeof es[name], name);
   const strings = dictionary => Object.entries(dictionary).flatMap(([name, value]) => typeof value === "string" ? [[name, value]] : [[name, value("Claude Code", 2)], [name, value("sprout", 1)], [name, value(1)], [name, value("a", "b")]]);
   for (const [name, text] of strings(es)) {
-    check.doesNotMatch(text, /\b(vos|tu|tus|ti|contigo|sos|tenés|podés|querés|tené|elegí|escribí|guardá|ingresá|usá|abrí|confirmá|intentá|esperá|cerrá|probá|volvé|elegís|escribís|usás|ingresás|guardás|intentás|confirmás|abrís|verificá|revisá|hacé|ponés)\b/i, name);
+    if (name !== "acceptingBody") check.doesNotMatch(text, /\b(vos|tu|tus|ti|contigo|sos|tenés|podés|querés|tené|elegí|escribí|guardá|ingresá|usá|abrí|confirmá|intentá|esperá|cerrá|probá|volvé|elegís|escribís|usás|ingresás|guardás|intentás|confirmás|abrís|verificá|revisá|hacé|ponés)\b/i, name);
     check.ok(!/\b\w+(?:á|í)\b(?=[.,:;]?\s|$)/.test(text.replace(/\b(está|aquí|así|allí|ahí|colón|menú|atrás|Windows|sí|dí|vía|día|días)\b/gi, "")) || /(^| )(Cómo|Qué)\b/.test(text), `${name}: ${text}`);
   }
   for (const [name, text] of strings(en)) { check.doesNotMatch(text, /—|–/, name); check.ok(text.length > 0, name); }
@@ -202,4 +225,12 @@ try {
   check.deepEqual([en.fieldLabel("securityCode"), es.fieldLabel("username"), en.fieldLabel("unheard"), en.copyField("One-time code"), es.copyField("Contraseña"), en.secondsLeft(18), en.kb(84000), en.kb(12), es.kb(3 * 1048576)], ["Security code", "Usuario", "unheard", "Copy one-time code", "Copiar contraseña", "18 s", "82 KB", "12 B", "3.0 MB"]);
   check.deepEqual([en.tipsOf(1), es.tipsOf(2), en.showLabel("Logins"), es.showLabel("Notas")], ["1 of 2", "2 de 2", "Show: Logins", "Mostrar: Notas"]);
   check.equal(en.lockedAsks("Field Notes", "field-notes"), "Field Notes (field-notes) asks to unlock Vault."); check.equal(en.runShort("DEBUG", 1), "DEBUG is shorter than 4 characters, so it shows as it is in the output.");
+  // Spanish says dispositivo, with the gender that word takes. English still says computer.
+  check.equal(en.acceptInBrowser, "Accept in the browser"); check.equal(es.acceptInBrowser, "Aceptar en el navegador");
+  check.equal(en.acceptingBody, "Your Cosmic account page opened in your browser. Vault continues in this window once you accept.");
+  check.equal(es.acceptingBody, "La página de tu cuenta de Cosmic se abrió en el navegador. Vault continúa en esta ventana cuando aceptes.");
+  check.equal(en.thisComputer, "This computer"); check.equal(en.otherComputer, "Another computer"); check.equal(en.computers, "Computers");
+  check.equal(es.thisComputer, "Este dispositivo"); check.equal(es.otherComputer, "Otro dispositivo"); check.equal(es.computers, "Dispositivos");
+  check.equal(es.problemAcceptance.endsWith("este dispositivo."), true); check.equal(en.problemAcceptance.endsWith("this computer."), true);
+  for (const [, text] of strings(es)) check.equal(/\bcomputadoras?\b|\bequipos?\b/i.test(text), false);
 } finally { await rm(scratch, { recursive: true, force: true }); }

@@ -305,13 +305,46 @@ async function joinScenario({ connect, startService, core, tokens, as }) {
     await click("Move to Cosmic account"); await showing("Move sync to the Cosmic account?"); await click("Sign in and move", "document.querySelector('#modal')");
     await signInFor("first@cosmic.invalid"); await showing("Cosmic account", "first@cosmic.invalid", "Storage"); plain("moved", (await manager.sync.status()).origin, "quantum"); await shoot("sync-moved", true);
 
-    say("policy acceptance links, and the Beta agreement, which Vault does not need, is not asked for");
-    const owner = cosmic.account("first@cosmic.invalid"); owner.missingPolicies = [{ id: "terms", version: "2026-10-09", path: "/terms" }]; cosmic.wake();
-    await click("Sync now"); await showing("The current account policies require acceptance", "Review the Terms"); await click("Review the Terms"); await poll("the Terms page", async () => opened.includes(`${cosmic.api}/terms`)); await shoot("sync-acceptance-banner", true);
-    owner.missingPolicies = [{ id: "beta", version: "2026-10-26", path: "/beta" }];
-    const accepted = await manager.sync.quantum.signIn(cosmic.api, cosmic.api); await fetch(cosmic.issue(accepted.url, "first@cosmic.invalid").callback); await manager.sync.quantum.wait(accepted.id);
+    say("acceptance opens the account page, waits only while the window is in front, and keeps a local edit");
+    const owner = cosmic.account("first@cosmic.invalid");
+    const kept = core.newEntry("note"); kept.title = "Kept during acceptance"; kept.note = "synthetic-acceptance-edit"; await manager.entries.save(kept, 0);
+    owner.missingPolicies = [{ id: "terms", version: "2026-10-09", path: "/terms" }]; cosmic.wake();
+    await click("Sync now"); await showing("The current account policies require acceptance", "Accept in the browser");
+    check.equal(/Review the Terms|Review the Privacy|Beta agreement/.test(await text()), false); await shoot("sync-acceptance-banner", true);
+    const pageOf = item => { try { return new URL(item).pathname; } catch { return ""; } };
+    const before = opened.length; running.window.emit("focus"); await click("Accept in the browser");
+    await showing("Continue in the browser", "Your Cosmic account page opened in your browser. Vault continues in this window once you accept.", "Cancel", "Open the page again");
+    await poll("the account root", async () => opened.slice(before).some(item => pageOf(item) === "/"));
+    const root = opened.slice(before).find(item => pageOf(item) === "/"); check.equal(new URL(root).origin, new URL(cosmic.api).origin);
+    check.equal(opened.slice(before).some(item => /\/terms|\/privacy|\/authorize/.test(pageOf(item))), false);
+    await click("Open the page again"); await poll("the same page", async () => opened.filter(item => item === root).length >= 2);
+    await poll("a requirements read", async () => cosmic.counters.legal >= 1);
+    running.window.emit("blur"); await wait(400); const paused = cosmic.counters.legal; await wait(3000); check.equal(cosmic.counters.legal, paused);
+    owner.missingPolicies = []; cosmic.wake(); running.window.emit("focus"); await gone("The current account policies require acceptance"); await gone("Continue in the browser");
+    check.equal((await manager.entries.list()).find(row => row.entry.title === "Kept during acceptance").entry.note, "synthetic-acceptance-edit"); await shoot("sync-acceptance-done", true);
+
+    say("the Beta agreement, which Vault does not need, is not asked for");
+    owner.missingPolicies = [{ id: "beta", version: "2026-10-26", path: "/beta" }]; cosmic.wake();
     await click("Sync now"); await gone("The current account policies require acceptance"); await wait(300); check.equal((await text()).includes("Beta agreement"), false); await shoot("sync-beta-policy", true);
     owner.missingPolicies = [];
+
+    say("Spanish acceptance opens /es/ and cancel returns to the banner");
+    await setting({ language: "es" });
+    owner.missingPolicies = [{ id: "privacy", version: "2026-11-06", path: "/privacy" }, { id: "terms", version: "2026-10-09", path: "/terms" }]; cosmic.wake();
+    await click("Sincronizar ahora"); await showing("Se requiere aceptar las políticas vigentes", "Aceptar en el navegador");
+    check.equal(/Revisar los Términos|Revisar la Política/.test(await text()), false); await shoot("sync-acceptance-banner-es", true);
+    const beforeEs = opened.length; running.window.emit("focus"); await click("Aceptar en el navegador");
+    await showing("Continuar en el navegador", "La página de tu cuenta de Cosmic se abrió en el navegador. Vault continúa en esta ventana cuando aceptes.", "Cancelar", "Abrir la página otra vez"); await shoot("sync-acceptance-wait-es", true);
+    await poll("the Spanish page", async () => opened.slice(beforeEs).some(item => pageOf(item) === "/es/"));
+    await click("Cancelar"); await showing("Aceptar en el navegador");
+    await wait(400); const afterCancel = cosmic.counters.legal; await wait(3000); check.equal(cosmic.counters.legal, afterCancel);
+    running.window.emit("focus");
+    await poll("the Spanish page again", async () => {
+      if (opened.slice(beforeEs).filter(item => pageOf(item) === "/es/").length >= 2) return true;
+      await evaluate(`(() => { const button = [...document.querySelectorAll("button")].find(item => item.textContent.trim() === "Aceptar en el navegador" && !item.disabled); if (!button) return false; button.click(); return true; })()`);
+      return false;
+    });
+    owner.missingPolicies = []; cosmic.wake(); await gone("Se requiere aceptar las políticas vigentes"); await gone("Continuar en el navegador"); await setting({ language: "en" });
 
     say("the plan and sign-in banners");
     cosmic.account("first@cosmic.invalid").plan = false; const queued = core.newEntry("note"); queued.title = "Pending plan renewal"; await manager.entries.save(queued, 0); await click("Sync now"); await showing("This Cosmic account does not include Vault sync."); await wait(300); check.equal((await text()).includes("could not be reached"), false); await shoot("sync-plan-banner", true);
@@ -383,7 +416,7 @@ async function main() {
   { const { screen } = require("electron"), displays = screen.getAllDisplays(); plain("the display the window is on", displays.length > 1 && screen.getDisplayMatching(win.getBounds()).id === screen.getPrimaryDisplay().id, false); }
   check.equal(wc.getURL(), "app://vault/"); check.equal(win.getTitle(), "Vault");
   check.deepEqual(await evaluate("[typeof require, typeof process, typeof module, typeof Buffer, typeof ipcRenderer, typeof window.electron]"), ["undefined", "undefined", "undefined", "undefined", "undefined", "undefined"]);
-  check.deepEqual(await evaluate("Object.keys(window.vault).sort()"), ["allowImport", "allowImportWithHello", "approveRun", "approveRunWithHello", "cancelClose", "chooseBackup", "close", "confirmClose", "create", "disableHello", "dismissPrompt", "dismissTour", "enableHello", "entries", "entryAttach", "entryAttachDropped", "entryCode", "entryCopy", "entryCopyCode", "entryDiscard", "entryDownload", "entryFavorite", "entryOpen", "entryOpenSite", "entryRemove", "entryReveal", "entrySave", "entryUndo", "finishSetup", "interact", "keyApprove", "keyApproveWithHello", "keyRevoke", "keyUsage", "lock", "minimize", "onState", "printRecoverySheet", "recover", "restoreBackup", "retry", "saveRecoverySheet", "saveSettings", "state", "syncAcceptance", "syncCancel", "syncChooseFolder", "syncJoin", "syncLeave", "syncMove", "syncNow", "syncSetup", "syncSignIn", "syncSignOut", "syncStatus", "syncWait", "toggleMaximize", "unlock", "unlockWithHello"]);
+  check.deepEqual(await evaluate("Object.keys(window.vault).sort()"), ["allowImport", "allowImportWithHello", "approveRun", "approveRunWithHello", "cancelClose", "chooseBackup", "close", "confirmClose", "create", "disableHello", "dismissPrompt", "dismissTour", "enableHello", "entries", "entryAttach", "entryAttachDropped", "entryCode", "entryCopy", "entryCopyCode", "entryDiscard", "entryDownload", "entryFavorite", "entryOpen", "entryOpenSite", "entryRemove", "entryReveal", "entrySave", "entryUndo", "finishSetup", "interact", "keyApprove", "keyApproveWithHello", "keyRevoke", "keyUsage", "lock", "minimize", "onState", "printRecoverySheet", "recover", "restoreBackup", "retry", "saveRecoverySheet", "saveSettings", "state", "syncAcceptance", "syncAcceptanceOpen", "syncAcceptanceWait", "syncCancel", "syncChooseFolder", "syncJoin", "syncLeave", "syncMove", "syncNow", "syncSetup", "syncSignIn", "syncSignOut", "syncStatus", "syncWait", "toggleMaximize", "unlock", "unlockWithHello"]);
   check.equal(await evaluate("Object.isFrozen(window.vault)"), true);
   check.equal(await evaluate("(() => { try { window.vault.create = () => 0; } catch {} return typeof window.vault.create; })()"), "function");
   check.equal(await evaluate("typeof window.vault.invoke"), "undefined");

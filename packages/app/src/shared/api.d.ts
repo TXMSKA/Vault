@@ -123,7 +123,12 @@ export interface VaultBridge {
   syncNow(): Promise<Result<{ status: SyncView }>>;
   syncLeave(input: { remove: boolean; signOut: boolean }): Promise<Result<{ status: SyncView }>>;
   syncSignOut(): Promise<Result>;
-  syncAcceptance(input: { id: string }): Promise<Result>;
+  /** Starts acceptance for every current blocker and opens the account page the service returns. */
+  syncAcceptance(): Promise<Result>;
+  /** Waits until that acceptance finishes. Polling pauses while the window is in the background. */
+  syncAcceptanceWait(): Promise<Result<{ status: SyncView }>>;
+  /** Opens the same account page again, without starting another acceptance. */
+  syncAcceptanceOpen(): Promise<Result>;
   saveSettings(input: SettingsView): Promise<Result>;
   enableHello(input: { password: string }): Promise<Result>;
   disableHello(): Promise<Result>;

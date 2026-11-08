@@ -12,21 +12,24 @@ import { main } from "../../cli/src/main.ts";
 import { quantumUrls, QUANTUM_DEFAULTS } from "../../cli/src/quantum.ts";
 const parent = resolve(tmpdir()), scratch = await mkdtemp(join(parent, "service-quantum-cli-")), calls = [], launches = [], lines = [], answers = [], previous = Object.fromEntries(["VAULT_HOME", "VAULT_QUANTUM_API", "VAULT_QUANTUM_SITE", "LC_ALL"].map(name => [name, process.env[name]])), originalSpawn = childProcess.spawn;
 const account = "synthetic@example.invalid", url = "https://cosmic.example.invalid/authorize?appId=vault", status = { configured: true, origin: "quantum", account, storage: { used: 120, pool: 1000 }, folder: null, lastSynced: null, computers: [], pending: 0, conflicts: 0, failure: null };
-const io = { isTTY: () => true, async ask() { return answers.shift() ?? "no"; }, write(value) { lines.push(value); }, error(value) { lines.push(value); }, out(value) { lines.push(value); }, err(value) { lines.push(value); } };
-let checks = 0, stage = "URL flags", waiting = 0, failure;
+let tty = true;
+const io = { isTTY: () => tty, async ask() { return answers.shift() ?? "no"; }, write(value) { lines.push(value); }, error(value) { lines.push(value); }, out(value) { lines.push(value); }, err(value) { lines.push(value); } };
+let checks = 0, stage = "URL flags", waiting = 0, failure, blockNow = false, acceptanceMode = "ready", waitResult = "account";
 const server = createServer(async (request, response) => {
   const parts = []; for await (const bytes of request) parts.push(bytes); const body = parts.length ? JSON.parse(Buffer.concat(parts).toString("utf8")) : undefined;
   calls.push({ method: request.method, path: request.url, body }); let result = { ok: true };
   if (request.url === "/v1/health") result = { ok: true, pid: process.pid };
   else if (request.url === "/v1/status") result = { created: true, unlocked: true, present: 1, idleMs: 1000 };
   else if (request.url === "/v1/sync/quantum/signin") { waiting = 0; result = { url, id: "synthetic-signin-id" }; }
-  else if (request.url === "/v1/sync/quantum/wait") result = waiting++ ? { account } : { pending: true };
+  else if (request.url === "/v1/sync/quantum/acceptance") { if (acceptanceMode === "missing") { response.statusCode = 401; result = { error: { code: "sync_signin_required" } }; } else { waiting = 0; result = { url: "https://cosmic.example.invalid/privacy", id: "synthetic-acceptance-id" }; } }
+  else if (request.url === "/v1/sync/quantum/wait") { if (waitResult === "account") result = waiting++ ? { account } : { pending: true }; else { response.statusCode = 400; result = { error: { code: waitResult } }; } }
   else if (request.url === "/v1/sync") result = status;
+  else if (request.url === "/v1/sync/now") { if (blockNow) { response.statusCode = 403; result = { error: { code: "sync_acceptance_required" } }; } else result = status; }
   else if (["/v1/sync/setup", "/v1/sync/join", "/v1/sync/switch"].includes(request.url)) result = status;
   if (failure && request.url === "/v1/sync/quantum/signout") { response.statusCode = 409; result = { error: { code: failure } }; }
   response.setHeader("Content-Type", "application/json"); response.end(JSON.stringify(result));
 });
-const command = async (args, input = []) => { lines.length = 0; answers.length = 0; answers.push(...input); return main(["sync", ...args], io); };
+const command = async (args, input = [], interactive = true) => { tty = interactive; lines.length = 0; answers.length = 0; answers.push(...input); return main(["sync", ...args], io); };
 try {
   process.env.VAULT_HOME = scratch; process.env.LC_ALL = "en"; delete process.env.VAULT_QUANTUM_API; delete process.env.VAULT_QUANTUM_SITE;
   assert.deepEqual(quantumUrls([]), { api: "https://quantum.txmska.com", site: "https://cosmic.txmska.com" }); assert.deepEqual(QUANTUM_DEFAULTS, quantumUrls([])); assert.deepEqual(quantumUrls(["--api", "http://127.0.0.1:1", "--site", "http://127.0.0.1:2"]), { api: "http://127.0.0.1:1", site: "http://127.0.0.1:2" }); checks += 3;
@@ -55,6 +58,18 @@ try {
   const policyUrl = "https://site.example.invalid/terms"; status.missingPolicies = [{ id: "terms", version: "2026-10-09", path: "/terms", url: policyUrl }];
   for (const language of ["en", "es"]) { process.env.LC_ALL = language; for (const allowed of [true, false]) { status.managedSync = allowed; await command(["status"]); assert.equal(lines.some(line => line.includes(language === "en" ? allowed ? "Managed sync: allowed." : "Managed sync: plan required." : allowed ? "permitida" : "requiere un plan")), true); assert.equal(lines.some(line => line.includes(policyUrl)), true); checks += 2; } for (const code of ["sync_acceptance_required", "sync_signin_required"]) { status.failure = { writer: null, cause: code }; await command(["status"]); assert.equal(lines.some(line => line.includes(code === "sync_signin_required" ? "vault sync signin" : language === "en" ? "Accept the current account policies" : "aceptar las")), true); checks++; } }
   status.failure = null; status.missingPolicies = []; process.env.LC_ALL = "en";
+  stage = "acceptance handoff";
+  blockNow = true; const launched = launches.length, root = "https://cosmic.example.invalid/";
+  assert.equal(await command(["now"]), 1); assert.equal(launches.length, launched + 1); assert.deepEqual(launches.at(-1).args, [root]); assert.equal(calls.filter(call => call.path === "/v1/sync/quantum/acceptance").length, 1); assert.deepEqual(calls.find(call => call.path === "/v1/sync/quantum/acceptance").body, {}); assert.equal(calls.filter(call => call.path === "/v1/sync/quantum/wait").length > 0, true); assert.equal(lines.includes(root), true); assert.equal(lines.some(line => line.includes("Retry the original command.")), true); assert.equal(lines.includes("Synced."), false); assert.equal(lines.some(line => line.includes("could not complete the operation")), false); checks += 10;
+  process.env.LC_ALL = "es"; assert.equal(await command(["now"]), 1); assert.equal(launches.length, launched + 2); assert.deepEqual(launches.at(-1).args, ["https://cosmic.example.invalid/es/"]); assert.equal(lines.some(line => line.includes("comando original")), true); checks += 4;
+  process.env.LC_ALL = "en"; const quiet = launches.length, quietCalls = calls.length; assert.equal(await command(["now"], [], false), 1); assert.equal(launches.length, quiet); assert.equal(calls.slice(quietCalls).some(call => call.path === "/v1/sync/quantum/acceptance"), false); assert.equal(lines.some(line => line.includes("Accept the current account policies")), true); checks += 4;
+  waitResult = "expired"; assert.equal(await command(["now"]), 1); assert.equal(lines.some(line => line.includes("expired")), true); assert.equal(lines.some(line => line.includes("sign-in failed") || line.includes("sign-in timed out")), false); checks += 3;
+  waitResult = "cancelled"; assert.equal(await command(["now"]), 1); assert.equal(lines.includes("Cancelled."), true); assert.equal(lines.some(line => line.includes("sign-in failed")), false); checks += 3;
+  waitResult = "account"; acceptanceMode = "missing"; const beforeMissing = launches.length; assert.equal(await command(["now"]), 1); assert.equal(launches.length, beforeMissing); assert.equal(lines.some(line => line.includes("vault sync signin")), true); checks += 3;
+  acceptanceMode = "ready"; const statusLaunches = launches.length; await command(["status"]); await command(["status"]); assert.equal(launches.length, statusLaunches); checks++;
+  blockNow = false; status.missingPolicies = [{ id: "beta", version: "2026-10-26", path: "/beta", url: "https://site.example.invalid/beta" }]; status.failure = null; const betaLaunches = launches.length, betaAcceptance = calls.filter(call => call.path === "/v1/sync/quantum/acceptance").length; assert.equal(await command(["now"]), 0); assert.equal(lines.includes("Synced."), true); assert.equal(launches.length, betaLaunches); assert.equal(calls.filter(call => call.path === "/v1/sync/quantum/acceptance").length, betaAcceptance); checks += 4;
+  status.missingPolicies = [{ id: "privacy", version: "2026-11-06", path: "/privacy", url: "https://site.example.invalid/privacy" }]; assert.equal(await command(["status"]), 0); assert.equal(lines.some(line => line.includes("privacy") && line.includes("2026-11-06") && line.includes("https://site.example.invalid/privacy")), true); checks += 2;
+  status.missingPolicies = []; status.failure = null; assert.equal(await command(["status"]), 0); assert.equal(lines.some(line => line.includes("Acceptance required")), false); checks += 2;
   failure = undefined; assert.equal(await command(["signout"]), 0); assert.equal(lines.includes("Signed out of Quantum."), true); checks += 2;
   console.log(`Quantum CLI: ${checks} checks passed.`);
 } catch { console.error(`Quantum CLI failed at ${stage}.`); throw new Error("quantum CLI check failed"); }

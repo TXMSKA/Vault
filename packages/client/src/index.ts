@@ -14,9 +14,9 @@ import type { ApiKey, ApiKeyUsage, ApiKeyValue, AppView, Backup, Client, Connect
 export type * from "./types.ts";
 export { VaultClientError, resolveHome, readCapped, readFirstLine, FILE_CAP, installedApp, recoveryKit };
 const pause = (ms: number) => new Promise<void>(done => setTimeout(done, ms));
-async function request<T>(record: ServiceRecord, method: string, route: string, auth?: string, body?: unknown, timeout = 15000): Promise<T> {
+async function request<T>(record: ServiceRecord, method: string, route: string, auth?: string, body?: unknown, timeout = 15000, signal?: AbortSignal): Promise<T> {
   try {
-    const response = await fetch(`http://127.0.0.1:${record.port}${route}`, { method, redirect: "error", signal: AbortSignal.timeout(timeout), headers: { ...(auth ? { Authorization: auth } : {}), ...(body === undefined ? {} : { "Content-Type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const response = await fetch(`http://127.0.0.1:${record.port}${route}`, { method, redirect: "error", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout), headers: { ...(auth ? { Authorization: auth } : {}), ...(body === undefined ? {} : { "Content-Type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     const reader = response.body?.getReader(); if (!reader) throw new VaultClientError("unavailable");
     const parts: Uint8Array[] = []; let size = 0;
     try {
@@ -25,7 +25,7 @@ async function request<T>(record: ServiceRecord, method: string, route: string, 
       if (!response.ok) { const code = typeof value?.error?.code === "string" ? value.error.code : "unavailable"; throw new VaultClientError(code, code === "key_approval_required" && isPromptId(value?.error?.fields?.prompt) ? { prompt: value.error.fields.prompt } : undefined); }
       return value as T;
     } finally { reader.releaseLock(); }
-  } catch (error) { throw error instanceof VaultClientError ? error : new VaultClientError("unavailable"); }
+  } catch (error) { if (signal?.aborted) throw new VaultClientError("cancelled"); throw error instanceof VaultClientError ? error : new VaultClientError("unavailable"); }
 }
 export async function findService(home = resolveHome(), timeout = 1000): Promise<ServiceRecord | undefined> {
   try {
@@ -84,10 +84,10 @@ export async function connect(options: ConnectOptions): Promise<Client> {
     const result = await request<{ token: string; app: AppView }>(record, "POST", "/v1/apps/register", `Bootstrap ${key}`, options.app);
     token = result.token; await tokens.set(token); granted = result.app.status === "granted";
   }
-  async function call<T>(method: string, route: string, body?: unknown, timeout?: number): Promise<T> {
+  async function call<T>(method: string, route: string, body?: unknown, timeout?: number, signal?: AbortSignal): Promise<T> {
     if (closed) throw new VaultClientError("closed");
     record ??= await ensureRunning(home, options.startTimeoutMs);
-    try { return await request<T>(record, method, route, `Bearer ${token}`, body, timeout); }
+    try { return await request<T>(record, method, route, `Bearer ${token}`, body, timeout, signal); }
     catch (error) { if (error instanceof VaultClientError && error.code === "unavailable") record = undefined; throw error; }
   }
   const session = randomUUID();
@@ -109,7 +109,10 @@ export async function connect(options: ConnectOptions): Promise<Client> {
       status: () => call<SyncStatus>("GET", "/v1/sync", undefined, held), setup: folder => call<SyncStatus>("POST", "/v1/sync/setup", { folder }, 130000), join: (folder, credentials) => call<SyncStatus>("POST", "/v1/sync/join", { folder, ...credentials }, 130000),
       quantum: {
         signIn: (api, site) => call<{ url: string; id: string }>("POST", "/v1/sync/quantum/signin", { api, site }, held),
+        acceptance: () => call<{ url: string; id: string }>("POST", "/v1/sync/quantum/acceptance", {}, held),
+        poll: (id, signal) => call<{ pending: true } | { account: string }>("POST", "/v1/sync/quantum/wait", { id }, held, signal),
         async wait(id) { for (;;) { const result = await call<{ pending: true } | { account: string }>("POST", "/v1/sync/quantum/wait", { id }, held); if ("account" in result) return result; } },
+        cancelAcceptance: id => call<{ ok: true }>("POST", "/v1/sync/quantum/acceptance/cancel", { id }, held),
         account: () => call<{ account: string; datasets: number }>("POST", "/v1/sync/quantum/account", {}, held),
         signOut: () => call("POST", "/v1/sync/quantum/signout", {}, held),
       },

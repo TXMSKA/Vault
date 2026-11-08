@@ -10,7 +10,7 @@ import { serve } from "../../service/src/main.ts";
 import { appIdPattern } from "../../client/src/paths.ts";
 import { hiddenPrompt } from "./prompt.ts";
 import { AGENTS, approve, run, runOptions, visible } from "./run.ts";
-import { copy, yes } from "./copy.ts";
+import { copy, spanish, yes } from "./copy.ts";
 import { installLauncher } from "./launcher.ts";
 import { appFile, install, layout, uninstall } from "./install.ts";
 import { unlocked } from "./unlock.ts";
@@ -18,18 +18,18 @@ import { settingLines, withSetting } from "./settings.ts";
 import { quantumUrls, openQuantum } from "./quantum.ts";
 const usage = () => copy(
   "vault status\nvault create --kit <file.txt>\nvault unlock [--terminal]\nvault recover --kit <file.txt>\nvault lock\nvault apps [allow|revoke <id>]\nvault keys\nvault settings\nvault settings set <key> <value>\nvault run --project <name> [--agent <id>] -- <command> [args...]\nvault run --project <name> [--agent <id>] --batch <file.json>\nvault run --attach <request> [--agent <id>]\nvault approve [--terminal]\nvault reject <request>\nvault import <file> --from chrome|edge|firefox|bitwarden|1password|keepass\nvault import <file.env> --from dotenv --project <name>\nvault export <file>\nvault restore <file>\nvault sync status\nvault sync signin [--api <url>] [--site <url>]\nvault sync signout\nvault sync setup <folder>|--quantum\nvault sync join <folder>|--quantum [--recovery]\nvault sync switch --quantum\nvault sync now\nvault sync conflicts\nvault sync restore <id>\nvault sync dismiss <id>\nvault sync leave\nvault install [--app <path>]\nvault uninstall [--remove-data]\nvault dev-install\nvault serve",
-  "vault status: consultar el estado\nvault create --kit <archivo.txt>: crear la bóveda y guardar el kit\nvault unlock [--terminal]: desbloquear\nvault recover --kit <archivo.txt>: recuperar y guardar un kit nuevo\nvault lock: bloquear\nvault apps [allow|revoke <id>]: listar, permitir o revocar apps\nvault keys: listar los nombres y las apps autorizadas\nvault settings: ver los ajustes\nvault settings set <clave> <valor>: cambiar un ajuste\nvault run --project <nombre> [--agent <id>] -- <comando> [args...]: pedir que se ejecute con las variables del proyecto\nvault run --project <nombre> [--agent <id>] --batch <archivo.json>: pedir varios comandos juntos\nvault run --attach <pedido> [--agent <id>]: volver a seguir un pedido\nvault approve [--terminal]: ver los pedidos que esperan y aprobarlos o rechazarlos\nvault reject <pedido>: rechazar un pedido o detenerlo\nvault import <archivo> --from chrome|edge|firefox|bitwarden|1password|keepass: importar\nvault import <archivo.env> --from dotenv --project <nombre>: guardar las variables de un proyecto\nvault export <archivo>: guardar una copia cifrada\nvault restore <archivo>: restaurar una copia cifrada\nvault sync status: consultar la sincronización\nvault sync signin [--api <url>] [--site <url>]: iniciar sesión en Quantum\nvault sync signout: cerrar la sesión en Quantum\nvault sync setup <carpeta>|--quantum: configurar la sincronización\nvault sync join <carpeta>|--quantum [--recovery]: unir esta computadora\nvault sync switch --quantum: cambiar de carpeta a Quantum\nvault sync now: sincronizar ahora\nvault sync conflicts: ver los conflictos\nvault sync restore <id>: restaurar una versión guardada\nvault sync dismiss <id>: descartar una versión guardada\nvault sync leave: dejar de sincronizar\nvault install [--app <ruta>]: instalar Vault desde esta copia\nvault uninstall [--remove-data]: desinstalar Vault y conservar los datos, o borrarlos también\nvault dev-install: guardar la instalación de desarrollo\nvault serve: ejecutar el servicio");
+  "vault status: consultar el estado\nvault create --kit <archivo.txt>: crear la bóveda y guardar el kit\nvault unlock [--terminal]: desbloquear\nvault recover --kit <archivo.txt>: recuperar y guardar un kit nuevo\nvault lock: bloquear\nvault apps [allow|revoke <id>]: listar, permitir o revocar apps\nvault keys: listar los nombres y las apps autorizadas\nvault settings: ver los ajustes\nvault settings set <clave> <valor>: cambiar un ajuste\nvault run --project <nombre> [--agent <id>] -- <comando> [args...]: pedir que se ejecute con las variables del proyecto\nvault run --project <nombre> [--agent <id>] --batch <archivo.json>: pedir varios comandos juntos\nvault run --attach <pedido> [--agent <id>]: volver a seguir un pedido\nvault approve [--terminal]: ver los pedidos que esperan y aprobarlos o rechazarlos\nvault reject <pedido>: rechazar un pedido o detenerlo\nvault import <archivo> --from chrome|edge|firefox|bitwarden|1password|keepass: importar\nvault import <archivo.env> --from dotenv --project <nombre>: guardar las variables de un proyecto\nvault export <archivo>: guardar una copia cifrada\nvault restore <archivo>: restaurar una copia cifrada\nvault sync status: consultar la sincronización\nvault sync signin [--api <url>] [--site <url>]: iniciar sesión en Quantum\nvault sync signout: cerrar la sesión en Quantum\nvault sync setup <carpeta>|--quantum: configurar la sincronización\nvault sync join <carpeta>|--quantum [--recovery]: unir este dispositivo\nvault sync switch --quantum: cambiar de carpeta a Quantum\nvault sync now: sincronizar ahora\nvault sync conflicts: ver los conflictos\nvault sync restore <id>: restaurar una versión guardada\nvault sync dismiss <id>: descartar una versión guardada\nvault sync leave: dejar de sincronizar\nvault install [--app <ruta>]: instalar Vault desde esta copia\nvault uninstall [--remove-data]: desinstalar Vault y conservar los datos, o borrarlos también\nvault dev-install: guardar la instalación de desarrollo\nvault serve: ejecutar el servicio");
 const messages: Record<string, [string, string]> = {
-  sync_existing: ["This computer already has a vault. Export and restore it instead.", "Esta computadora ya tiene una bóveda. En su lugar, exportarla y restaurarla."],
+  sync_existing: ["This computer already has a vault. Export and restore it instead.", "Este dispositivo ya tiene una bóveda. En su lugar, exportarla y restaurarla."],
   sync_unconfigured: ["Set up sync first.", "Primero hay que configurar la sincronización."],
   sync_configured: ["Leave sync before signing out: vault sync leave.", "Para cerrar la sesión, primero dejar la sincronización: vault sync leave."],
   sync_signin_required: ["Sign in to Quantum again: vault sync signin.", "Volver a iniciar sesión en Quantum: vault sync signin."],
-  sync_acceptance_required: ["Accept the current account policies to resume publishing. Local changes are kept. See vault sync status for the acceptance link.", "Para reanudar la publicación, aceptar las políticas vigentes de la cuenta. Se conservan los cambios locales. El enlace está en vault sync status."],
+  sync_acceptance_required: ["Accept the current account policies to resume publishing. Local changes are kept. The next sync command opens the acceptance page.", "Para reanudar la publicación, aceptar las políticas vigentes de la cuenta. Se conservan los cambios locales. El próximo comando de sincronización abre la página de aceptación."],
   sync_plan_required: ["This Cosmic account does not include Vault sync.", "Esta cuenta Cosmic no incluye la sincronización de Vault."],
   sync_storage_full: ["The Cosmic account's storage is full.", "El almacenamiento de la cuenta Cosmic está lleno."],
   quantum_url_required: ["Set --api and --site, or VAULT_QUANTUM_API and VAULT_QUANTUM_SITE, to sign in to Quantum.", "Para iniciar sesión en Quantum, indicar --api y --site, o VAULT_QUANTUM_API y VAULT_QUANTUM_SITE."],
-  sync_dataset_exists: ["This Cosmic account already has a Vault dataset. Use vault sync join --quantum.", "Esta cuenta Cosmic ya tiene una bóveda. Para unir esta computadora: vault sync join --quantum."],
-  sync_dataset: ["Exactly one synced vault must be available to join.", "Para unir esta computadora, debe haber exactamente una bóveda sincronizada."],
+  sync_dataset_exists: ["This Cosmic account already has a Vault dataset. Use vault sync join --quantum.", "Esta cuenta Cosmic ya tiene una bóveda. Para unir este dispositivo: vault sync join --quantum."],
+  sync_dataset: ["Exactly one synced vault must be available to join.", "Para unir este dispositivo, debe haber exactamente una bóveda sincronizada."],
   sync_signin_failed: ["Quantum sign-in failed. Try again: vault sync signin.", "No se pudo iniciar sesión en Quantum. Se puede volver a intentar: vault sync signin."],
   sync_signin_timeout: ["Quantum sign-in timed out. Try again: vault sync signin.", "Se agotó el tiempo para iniciar sesión en Quantum. Se puede volver a intentar: vault sync signin."],
   sync_busy: ["Sync is busy. Try again in a moment.", "La sincronización está ocupada. Se puede volver a intentar en un momento."],
@@ -52,7 +52,7 @@ const messages: Record<string, [string, string]> = {
   rate_limited: ["Too many requests. Try again later.", "Demasiadas solicitudes. Se puede volver a intentar más tarde."],
   conflict: ["The data changed or already exists.", "Los datos cambiaron o ya existen."],
   not_verified: ["Vault could not confirm it is you. Nothing ran.", "Vault no pudo confirmar la identidad. No se ejecutó nada."],
-  hello_unavailable: ["Windows Hello is not available for Vault here. Type the master password instead.", "Windows Hello no está disponible para Vault en esta computadora. Se puede usar la contraseña maestra."],
+  hello_unavailable: ["Windows Hello is not available for Vault here. Type the master password instead.", "Windows Hello no está disponible para Vault en este dispositivo. Se puede usar la contraseña maestra."],
   expired: ["The request expired. Nothing ran.", "El pedido venció. No se ejecutó nada."],
   not_pending: ["That request was already answered.", "Ese pedido ya tuvo respuesta."],
   run_not_found: ["Vault has no request with that id. It ended more than 10 minutes ago, or the service restarted.", "Vault no tiene un pedido con ese id. Terminó hace más de 10 minutos o el servicio se reinició."],
@@ -133,7 +133,29 @@ export async function main(args = process.argv.slice(2), io: CliIO = terminal): 
     api = await connect({ home, app: agent ? { id: agent, name: AGENTS[agent] ?? agent, kind: "agent" } : { id: "vault-cli", name: "Vault CLI", kind: "cosmic" } });
     if (["get", "import", "export", "restore"].includes(command)) await unlocked(api, io, viaApp, `vault ${command}`);
     if (syncing) {
-      if (["setup", "switch", "now", "conflicts", "restore", "dismiss"].includes(sub)) await unlocked(api, io, viaApp, "vault sync");
+      const service = api;
+      if (["setup", "switch", "now", "conflicts", "restore", "dismiss"].includes(sub)) await unlocked(service, io, viaApp, "vault sync");
+      const finishSync = async (work: () => Promise<unknown>) => {
+        try { await work(); return true; }
+        catch (error) {
+          if (!(error instanceof VaultClientError) || error.code !== "sync_acceptance_required" || !io.isTTY()) throw error;
+          const started = await service.sync.quantum.acceptance(), destination = `${new URL(started.url).origin}${spanish() ? "/es/" : "/"}`;
+          io.write(destination); openQuantum(destination);
+          const controller = new AbortController(), onStop = () => { controller.abort(); void service.sync.quantum.cancelAcceptance(started.id).catch(() => undefined); };
+          process.on("SIGINT", onStop);
+          try {
+            for (;;) {
+              if (controller.signal.aborted) throw new VaultClientError("cancelled");
+              const result = await service.sync.quantum.poll(started.id, controller.signal);
+              if (controller.signal.aborted) throw new VaultClientError("cancelled");
+              if ("account" in result) break;
+            }
+          } finally { process.off("SIGINT", onStop); }
+          await service.sync.status();
+          io.write(copy("The saved blockers are cleared. Retry the original command.", "Los bloqueos guardados se resolvieron. Hay que volver a intentar el comando original."));
+          return false;
+        }
+      };
       if (sub === "status") {
         const status = await api.sync.status();
         io.write(copy(status.configured ? "Sync is configured." : "Sync is not configured.", status.configured ? "La sincronización está configurada." : "La sincronización no está configurada."));
@@ -144,18 +166,18 @@ export async function main(args = process.argv.slice(2), io: CliIO = terminal): 
         for (const policy of status.missingPolicies ?? []) io.write(copy(`Acceptance required: ${visible(policy.id)} (${visible(policy.version)}). Review: ${visible(policy.url)}`, `Aceptación requerida: ${visible(policy.id)} (${visible(policy.version)}). Revisar: ${visible(policy.url)}`));
         io.write(copy(`Folder: ${visible(status.folder ?? "-")}`, `Carpeta: ${visible(status.folder ?? "-")}`));
         io.write(copy(`Last synced: ${status.lastSynced ?? "-"}`, `Última sincronización: ${status.lastSynced ?? "-"}`));
-        io.write(copy(`Computers: ${status.computers.join(", ") || "-"}; pending changes: ${status.pending}; conflicts: ${status.conflicts}.`, `Computadoras: ${status.computers.join(", ") || "-"}; cambios pendientes: ${status.pending}; conflictos: ${status.conflicts}.`));
+        io.write(copy(`Computers: ${status.computers.join(", ") || "-"}; pending changes: ${status.pending}; conflicts: ${status.conflicts}.`, `Dispositivos: ${status.computers.join(", ") || "-"}; cambios pendientes: ${status.pending}; conflictos: ${status.conflicts}.`));
         if (status.failure) io.write(copy(`Last failure: ${status.failure.writer ?? "-"} | ${messages[status.failure.cause] ? copy(...messages[status.failure.cause]) : status.failure.cause}`, `Última falla: ${status.failure.writer ?? "-"} | ${messages[status.failure.cause] ? copy(...messages[status.failure.cause]) : status.failure.cause}`));
       } else if (sub === "signin") { const result = await api.sync.quantum.signIn(signin!.api, signin!.site); io.write(result.url); openQuantum(result.url); const { account } = await api.sync.quantum.wait(result.id); io.write(copy(`Signed in as ${visible(account)}.`, `Se inició sesión como ${visible(account)}.`)); }
       else if (sub === "signout") { await api.sync.quantum.signOut(); io.write(copy("Signed out of Quantum.", "Se cerró la sesión en Quantum.")); }
-      else if (sub === "setup") { if (quantum) await api.sync.setupQuantum(); else await api.sync.setup(resolve(third)); io.write(copy("Sync configured.", "Se configuró la sincronización.")); }
-      else if (sub === "join") { const recovery = args[3] === "--recovery", secret = await io.ask(copy(recovery ? "Recovery key: " : "Master password: ", recovery ? "Clave de recuperación: " : "Contraseña maestra: ")), credentials = recovery ? { recovery: secret } : { password: secret }; if (quantum) await api.sync.joinQuantum(credentials); else await api.sync.join(resolve(third), credentials); io.write(copy("This computer joined Vault.", "Esta computadora se unió a Vault.")); }
-      else if (sub === "switch") { await api.sync.switchToQuantum(); io.write(copy("Sync switched to Quantum.", "Se cambió la sincronización a Quantum.")); }
-      else if (sub === "now") { await api.sync.now(); io.write(copy("Synced.", "Se sincronizó.")); }
+      else if (sub === "setup") { if (!await finishSync(() => quantum ? service.sync.setupQuantum() : service.sync.setup(resolve(third)))) return 1; io.write(copy("Sync configured.", "Se configuró la sincronización.")); }
+      else if (sub === "join") { const recovery = args[3] === "--recovery", secret = await io.ask(copy(recovery ? "Recovery key: " : "Master password: ", recovery ? "Clave de recuperación: " : "Contraseña maestra: ")), credentials = recovery ? { recovery: secret } : { password: secret }; if (!await finishSync(() => quantum ? service.sync.joinQuantum(credentials) : service.sync.join(resolve(third), credentials))) return 1; io.write(copy("This computer joined Vault.", "Este dispositivo se unió a Vault.")); }
+      else if (sub === "switch") { if (!await finishSync(() => service.sync.switchToQuantum())) return 1; io.write(copy("Sync switched to Quantum.", "Se cambió la sincronización a Quantum.")); }
+      else if (sub === "now") { if (!await finishSync(() => service.sync.now())) return 1; io.write(copy("Synced.", "Se sincronizó.")); }
       else if (sub === "conflicts") { const conflicts = await api.sync.conflicts(); if (!conflicts.length) io.write(copy("No conflicts.", "No hay conflictos.")); for (const row of conflicts) io.write(`${row.id} | ${row.kind ?? copy("envelope", "bóveda")} | ${visible(row.title)} | ${row.deviceId} | ${row.time}${row.deleted ? copy(" | deleted", " | eliminada") : ""}`); }
       else if (sub === "restore") { await api.sync.restore(third); io.write(copy("Restored as a new change.", "Se restauró como un cambio nuevo.")); }
       else if (sub === "dismiss") { await api.sync.dismiss(third); io.write(copy("Dismissed.", "Se descartó.")); }
-      else { if (!io.isTTY()) throw new VaultClientError("terminal_required"); const remove = yes(await io.ask(copy("Remove only this computer's writer folder too? (y/n): ", "¿Borrar también la carpeta de esta computadora? (s/n): "))); await api.sync.leave(remove); io.write(copy("Sync disconnected on this computer.", "Se desconectó la sincronización en esta computadora.")); }
+      else { if (!io.isTTY()) throw new VaultClientError("terminal_required"); const remove = yes(await io.ask(copy("Remove only this computer's writer folder too? (y/n): ", "¿Borrar también la carpeta de este dispositivo? (s/n): "))); await api.sync.leave(remove); io.write(copy("Sync disconnected on this computer.", "Se desconectó la sincronización en este dispositivo.")); }
     }
     else if (command === "status") { const status = await api.status(); io.write(copy(`Vault is ${status.created ? status.unlocked ? "unlocked" : "locked" : "not created"}.`, `Vault está ${status.created ? status.unlocked ? "desbloqueado" : "bloqueado" : "sin crear"}.`)); }
     else if (command === "create") {

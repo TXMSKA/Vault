@@ -86,6 +86,7 @@ const DISMISSED_LIMIT = 1024;
 type State = { format: 2; origin: "folder" | "quantum"; quantum: { api: string; site: string; account: string; accountId?: string } | null; cursor?: number; folder: string; datasetId: string; deviceId: string; generationId: string; binding: string; sequence: number; operations: number; checkpoint: number; index: string; lastSynced: string | null; failure: { writer: string | null; cause: string } | null; computers: string[]; conflicts: number };
 type Candidate = { source: { deviceId: string; generationId: string }; time: number; records: SyncOperation[]; lineage: Record<string, string[]>; kept: SyncKept[]; applied: Record<string, number> };
 type Head = { op: SyncOperation; lineage: string[]; blobs: SyncBlob[] };
+type AcceptanceFlow = { id: string; manager: string; accountId: string; account: string; api: string; site: string; revision: number; ids: string[]; nextPollAt: number; deadline: number; inflight: Promise<void> | null; controller: AbortController | null; waiters: number; failures: number; result: "open" | "done" | "cancelled" | "expired" | "signin" };
 type Publication = { path: string; bytes: string };
 type Snapshot = { index: Index; rows: StoredEntry[]; envelope: { state: VaultState; version: number }; chunks: SyncBlob[]; state: State; publications: Publication[]; before: { rows: StoredEntry[]; envelope: { state: VaultState | null; version: number } } };
 const emptyIndex = (): Index => ({ records: [], applied: {}, kept: [] });
@@ -131,7 +132,9 @@ export class Sync {
   private home: string; private vault: Vault; private now: () => number; private disableHello: () => Promise<void>; private logger: VaultLogger;
   private config: State | null = null; private failure: State["failure"] = null; private joinFailures = { count: 0, until: 0 }; private root: string; private prepared = false;
   private storage: { at: number; value: SyncStatus["storage"] } | null = null; private access: Awaited<ReturnType<QuantumAuth["bootstrap"]>> | null = null; private switching: State | null = null;
-  constructor(home: string, vault: Vault, now: () => number, disableHello: () => Promise<void>, logger: VaultLogger, language?: () => string) { this.home = home; this.vault = vault; this.now = now; this.disableHello = disableHello; this.logger = logger; this.root = join(home, "sync"); this.quantum = new QuantumAuth(home, language); }
+  private language: () => string = () => "en"; private savedBlock: { accountId: string | null; api: string; site: string; revision: number; ids: string[] } | null = null; private flows = new Map<string, AcceptanceFlow>();
+  onResume: () => void = () => {};
+  constructor(home: string, vault: Vault, now: () => number, disableHello: () => Promise<void>, logger: VaultLogger, language?: () => string) { this.home = home; this.vault = vault; this.now = now; this.disableHello = disableHello; this.logger = logger; this.language = language ?? (() => "en"); this.root = join(home, "sync"); this.quantum = new QuantumAuth(home, this.language); }
   async load() { await this.quantum.load(); try { this.config = state(localRead(join(this.root, "state.json"), 16384)); } catch (error) { if (!missing(error)) throw new ServiceError("sync_state", 503); } try { const failure = object(localRead(join(this.root, "failure.json"), 4096), "cause,writer"); text(failure.cause, 80); if (failure.writer !== null) { const pair = text(failure.writer, 80).split("/"); if (pair.length !== 2) throw new VaultError("invalid"); pair.forEach(id); } this.failure = failure as State["failure"]; } catch (error) { if (!missing(error)) throw new ServiceError("sync_state", 503); } }
   private check(ticket: number) { return this.vault.memory.get(ticket); }
   private prepare() { if (this.prepared) return; for (const name of ["", "index", "outbox", "kept"]) privateDirectory(join(this.root, name)); this.prepared = true; }
@@ -258,7 +261,7 @@ export class Sync {
     const marker = object(localRead(join(this.root, "index", c.index, "versions.json"), 1024 * 1024), "envelope,rows"); syncNumber(marker.envelope); if (!Array.isArray(marker.rows) || marker.rows.length > 4096) throw new VaultError("invalid");
     const versions = new Map<string, number>(); for (const row of marker.rows) { object(row, "id,version"); const recordId = id(row.id); if (versions.has(recordId)) throw new VaultError("invalid"); versions.set(recordId, syncNumber(row.version, false)); }
     const rows = await this.vault.store.entries(), env = await this.vault.store.envelope(), pending = rows.filter(row => versions.get(row.id) !== row.version).length + [...versions.keys()].filter(recordId => !rows.some(row => row.id === recordId)).length + (marker.envelope !== env.version ? 1 : 0);
-    if (c.origin === "quantum") { try { this.transport(c); if (!this.storage || this.now() - this.storage.at >= 60000) { this.storage = { at: this.now(), value: null }; this.access = await this.quantum.bootstrap(this.now()); this.storage.value = this.access.storage; const cause = this.access.missingPolicies.some(policy => policy.id === "terms" || policy.id === "privacy") ? "sync_acceptance_required" : !this.access.managedSync ? "sync_plan_required" : null; if (cause) this.failure = { writer: null, cause }; else if (["sync_plan_required", "sync_acceptance_required", "sync_signin_required"].includes(this.failure?.cause ?? "")) this.failure = null; this.transport(c); } } catch (error) { this.failure = { writer: null, cause: this.cause(error) }; } }
+    if (c.origin === "quantum") { try { this.transport(c); if (!this.storage || this.now() - this.storage.at >= 60000) { this.storage = { at: this.now(), value: null }; this.access = await this.quantum.bootstrap(this.now()); this.storage.value = this.access.storage; const cause = this.access.missingPolicies.some(policy => policy.id === "terms" || policy.id === "privacy") ? "sync_acceptance_required" : !this.access.managedSync ? "sync_plan_required" : null; if (cause) this.failure = { writer: null, cause }; else if (["sync_plan_required", "sync_acceptance_required", "sync_signin_required"].includes(this.failure?.cause ?? "")) { if (this.failure?.cause === "sync_acceptance_required") this.releaseAcceptance(); this.failure = null; } this.transport(c); } } catch (error) { this.failure = { writer: null, cause: this.cause(error) }; } }
     const required = c.origin === "quantum" && this.access ? this.access.missingPolicies.some(policy => policy.id === "terms" || policy.id === "privacy") ? "sync_acceptance_required" : !this.access.managedSync ? "sync_plan_required" : null : null;
     return { configured: true, origin: c.origin, account: c.quantum?.account ?? null, storage: c.origin === "quantum" ? this.storage?.value ?? null : null, managedSync: c.origin === "quantum" ? this.access?.managedSync ?? null : null, missingPolicies: c.origin === "quantum" ? this.access?.missingPolicies ?? [] : [], folder: c.origin === "folder" ? c.folder : null, lastSynced: c.lastSynced, computers: c.computers, pending, conflicts: c.conflicts, failure: this.failure ?? (required ? { writer: null, cause: required } : c.failure) };
   }
@@ -271,9 +274,98 @@ export class Sync {
     if (!deviceId) { const paths = [join(this.root, "quantum-setup.json")]; if (fs.existsSync(join(this.root, "outbox"))) for (const name of fs.readdirSync(join(this.root, "outbox")).filter(name => syncPatterns.writer.test(name))) paths.push(join(this.root, "outbox", name, "state.json")); for (const path of paths) { let pending: State; try { pending = state(localRead(path, 16384)); } catch (error) { if (missing(error)) continue; throw error; } if (pending.origin === "quantum" && pending.binding === binding(this.home) && pending.quantum!.api === quantumUrl(api) && pending.quantum!.site === quantumUrl(site)) { deviceId = pending.deviceId; break; } } }
     this.storage = null; return this.quantum.start(api, site, deviceId);
   }
+  // Acceptance opens the signed-in account's site root. It keeps that account's credentials and never starts a sign-in.
+  async acceptance(manager: string): Promise<{ url: string; id: string }> {
+    let identity: ReturnType<QuantumAuth["identity"]>;
+    try { identity = this.quantum.identity(); } catch (error) { throw error instanceof ServiceError ? error : new ServiceError("sync_signin_required", 401); }
+    if (!identity.accountId) identity = await this.quantum.profile();
+    if (!identity.accountId) throw new ServiceError("sync_signin_required", 401);
+    const configured = this.config?.origin === "quantum" ? this.config.quantum : null;
+    if (configured && (configured.api !== identity.api || configured.site !== identity.site || (configured.accountId ? configured.accountId !== identity.accountId : configured.account !== identity.account))) throw new ServiceError("sync_signin_required", 401);
+    const saved = this.savedBlock; let ids: string[] | null = saved && saved.ids.length && saved.api === identity.api && saved.site === identity.site && saved.revision === this.quantum.authRevision() && (saved.accountId === null || saved.accountId === identity.accountId) ? [...new Set(saved.ids)] : null;
+    if (!ids) {
+      await this.quantum.dropBootstrap(); this.storage = null; const boot = await this.quantum.bootstrap(this.now()); identity = this.quantum.identity();
+      if (!identity.accountId || (configured && (configured.api !== identity.api || configured.site !== identity.site || (configured.accountId ? configured.accountId !== identity.accountId : configured.account !== identity.account)))) throw new ServiceError("sync_signin_required", 401);
+      this.access = boot; this.storage = { at: this.now(), value: boot.storage }; ids = [...new Set(boot.missingPolicies.filter(policy => policy.id === "terms" || policy.id === "privacy").map(policy => policy.id))];
+    }
+    if (!ids.length) throw new ServiceError("invalid");
+    const flow: AcceptanceFlow = { id: randomUUID(), manager, accountId: identity.accountId, account: identity.account, api: identity.api, site: identity.site, revision: this.quantum.authRevision(), ids, nextPollAt: 0, deadline: this.now() + 300000, inflight: null, controller: null, waiters: 0, failures: 0, result: "open" };
+    for (const old of this.flows.values()) if (old.manager === manager && old.result === "open") this.endFlow(old, "cancelled");
+    this.flows.set(flow.id, flow); const stale = [...this.flows.values()].filter(item => item.result !== "open"); while (this.flows.size > 16 && stale.length) this.flows.delete(stale.shift()!.id);
+    return { url: `${identity.site}${/^es(?:-|$)/i.test(this.language()) ? "/es/" : "/"}`, id: flow.id };
+  }
+  async pollQuantum(requestId: string, signal?: AbortSignal): Promise<{ pending: true } | { account: string }> { id(requestId); const flow = this.flows.get(requestId); return flow ? this.pollFlow(flow, signal) : this.quantum.poll(requestId); }
+  async cancelAcceptance(requestId: string, manager: string): Promise<{ ok: true }> { id(requestId); const flow = this.flows.get(requestId); if (!flow || flow.manager !== manager) throw new ServiceError("not_found", 404); if (flow.result === "open") this.endFlow(flow, "cancelled"); return { ok: true }; }
+  stop(): void { for (const flow of this.flows.values()) this.endFlow(flow, "cancelled"); this.quantum.stop(); }
+  private endFlow(flow: AcceptanceFlow, result: AcceptanceFlow["result"]) { if (flow.result !== "open") return; flow.result = result; flow.controller?.abort(); }
+  private guardFlow(flow: AcceptanceFlow) {
+    if (flow.result !== "open") return; if (this.now() >= flow.deadline) { this.endFlow(flow, "expired"); return; }
+    let current: ReturnType<QuantumAuth["identity"]>; try { current = this.quantum.identity(); } catch { this.endFlow(flow, "signin"); return; }
+    if (current.api !== flow.api || current.site !== flow.site || current.accountId !== flow.accountId || this.quantum.authRevision() !== flow.revision) this.endFlow(flow, "signin");
+  }
+  private flowResult(flow: AcceptanceFlow): { account: string } | null { if (flow.result === "done") return { account: flow.account }; if (flow.result === "cancelled") throw new ServiceError("cancelled"); if (flow.result === "expired") throw new ServiceError("expired"); if (flow.result === "signin") throw new ServiceError("sync_signin_required", 401); return null; }
+  private pause(ms: number, signal?: AbortSignal): Promise<boolean> {
+    if (signal?.aborted) return Promise.resolve(false); if (ms <= 0) return Promise.resolve(true);
+    return new Promise(resolve => { const timer = setTimeout(() => { signal?.removeEventListener("abort", stop); resolve(true); }, ms); timer.unref(); const stop = () => { clearTimeout(timer); resolve(false); }; signal?.addEventListener("abort", stop, { once: true }); });
+  }
+  private async pollFlow(flow: AcceptanceFlow, signal?: AbortSignal): Promise<{ pending: true } | { account: string }> {
+    const budget = Date.now() + 20000; this.guardFlow(flow); const ready = this.flowResult(flow); if (ready) return ready; if (signal?.aborted) return { pending: true };
+    const due = flow.nextPollAt - this.now();
+    if (due > 0) { const slice = Math.min(due, budget - Date.now()); if (slice <= 0) return { pending: true }; if (!await this.pause(slice, signal) || signal?.aborted) return { pending: true }; this.guardFlow(flow); const held = this.flowResult(flow); if (held) return held; if (this.now() < flow.nextPollAt || Date.now() >= budget) return { pending: true }; }
+    await this.pullAcceptance(flow, signal); if (signal?.aborted && flow.result === "open") return { pending: true }; return this.flowResult(flow) ?? { pending: true };
+  }
+  private async pullAcceptance(flow: AcceptanceFlow, signal?: AbortSignal) {
+    if (flow.result !== "open") return;
+    if (!flow.inflight) { const controller = new AbortController(), release = this.quantum.track(controller); flow.controller = controller; flow.inflight = this.readRequirements(flow, controller.signal).finally(() => { release(); if (flow.controller === controller) flow.controller = null; flow.inflight = null; }); }
+    let disconnected = false; const onAbort = () => { disconnected = true; }; signal?.addEventListener("abort", onAbort); flow.waiters++;
+    try { await flow.inflight; } finally { flow.waiters--; signal?.removeEventListener("abort", onAbort); if (disconnected && flow.waiters === 0) flow.controller?.abort(); }
+  }
+  private later(flow: AcceptanceFlow, delay: number) { const at = this.now() + delay; flow.nextPollAt = at > flow.deadline ? flow.deadline : at; }
+  private async readRequirements(flow: AcceptanceFlow, signal: AbortSignal) {
+    try {
+      this.guardFlow(flow); if (flow.result !== "open" || signal.aborted) return;
+      const reply = await this.quantum.requirements(signal); if (signal.aborted || flow.result !== "open") return; this.guardFlow(flow); if (flow.result !== "open") return;
+      const defer = Math.max(2000, reply.retryAfter);
+      if (flow.ids.some(item => reply.ids.includes(item))) { flow.failures = 0; this.later(flow, defer); return; }
+      await this.finishAcceptance(flow, defer);
+    } catch (error) {
+      if (flow.result !== "open") return; if (signal.aborted) { this.later(flow, 2000); return; }
+      const code = error instanceof ServiceError || error instanceof VaultError ? error.code : "";
+      if (code === "sync_signin_required") { this.endFlow(flow, "signin"); return; }
+      this.guardFlow(flow); if (flow.result !== "open") return; flow.failures++;
+      const header = Math.max(0, Number((error as { retryAfter?: number }).retryAfter) || 0), backoff = Math.min(60000, 2000 * 2 ** Math.min(flow.failures, 4));
+      this.later(flow, Math.max(2000, header, backoff));
+    }
+  }
+  private clearAcceptanceFailure() {
+    const cause = this.failure?.cause; if (cause && ["sync_plan_required", "sync_acceptance_required", "sync_signin_required"].includes(cause)) this.failure = null; if (cause !== "sync_acceptance_required") return;
+    const file = join(this.root, "failure.json"); try { const saved = object(localRead(file, 4096), "cause,writer"); if (saved.cause === "sync_acceptance_required") fs.rmSync(file, { force: true }); } catch (error) { if (!missing(error) && !(error instanceof SyntaxError) && !(error instanceof VaultError)) throw error; }
+  }
+  private async finishAcceptance(flow: AcceptanceFlow, defer: number) {
+    this.guardFlow(flow); if (flow.result !== "open") return; this.storage = null; this.access = null;
+    let boot: Awaited<ReturnType<QuantumAuth["bootstrap"]>>;
+    try { await this.quantum.dropBootstrap(); boot = await this.quantum.bootstrap(this.now()); }
+    catch (error) { if (this.cause(error) === "sync_signin_required") { this.endFlow(flow, "signin"); return; } throw error; }
+    this.guardFlow(flow); if (flow.result !== "open") return;
+    this.access = boot; this.storage = { at: this.now(), value: boot.storage };
+    if (flow.ids.some(item => boot.missingPolicies.some(policy => policy.id === item))) { this.later(flow, defer); return; }
+    const gate = boot.missingPolicies.some(policy => policy.id === "terms" || policy.id === "privacy") ? "sync_acceptance_required" : !boot.managedSync ? "sync_plan_required" : null;
+    if (gate) { this.failure = { writer: null, cause: gate }; try { this.prepare(); atomic(join(this.root, "failure.json"), this.failure); } catch { /* the memory failure still blocks the next pulse */ } }
+    else this.clearAcceptanceFailure();
+    this.releaseAcceptance(); flow.result = "done";
+    if (this.config?.origin !== "quantum") return;
+    try { this.vault.memory.get(this.vault.memory.ticket()); this.onResume(); } catch { /* locked sync waits until the vault is open */ }
+  }
+  private releaseAcceptance() { this.savedBlock = null; this.quantum.clearBlocked(); }
+  private noteAcceptance(error: unknown) {
+    if (this.cause(error) !== "sync_acceptance_required") return; const block = this.quantum.blocked(); if (!block?.ids.length || block.revision !== this.quantum.authRevision()) return;
+    let current: ReturnType<QuantumAuth["identity"]>; try { current = this.quantum.identity(); } catch { return; }
+    if (block.api !== current.api || block.site !== current.site || block.accountId && current.accountId && block.accountId !== current.accountId) return;
+    this.savedBlock = { accountId: block.accountId ?? current.accountId, api: block.api, site: block.site, revision: block.revision, ids: [...new Set(block.ids)] };
+  }
   /** The signed-in account and how many vaults it already holds, so a window can say before setup whether this vault would go in or another one is there. */
   async quantumAccount() { const q = this.quantum.identity(); return { account: q.account, datasets: (await this.quantum.datasets()).length }; }
-  async signOut() { if (this.config?.origin === "quantum") throw new ServiceError("sync_configured", 409); this.storage = null; return this.quantum.signOut(); }
+  async signOut() { if (this.config?.origin === "quantum") throw new ServiceError("sync_configured", 409); for (const flow of this.flows.values()) this.endFlow(flow, "signin"); this.storage = null; return this.quantum.signOut(); }
   private discardOtherAccounts() {
     const q = this.quantum.identity(), outbox = join(this.root, "outbox"), intent = join(this.root, "quantum-setup.json"), paths = [{ path: intent, file: intent, directory: false }];
     if (fs.existsSync(outbox)) for (const name of fs.readdirSync(outbox).filter(name => syncPatterns.writer.test(name))) paths.push({ path: join(outbox, name), file: join(outbox, name, "state.json"), directory: true });
@@ -336,7 +428,7 @@ export class Sync {
   watch() { const c = this.config; return c?.origin === "quantum" ? { api: c.quantum!.api, datasetId: c.datasetId, cursor: c.cursor ?? 0 } : null; }
   async changes(signal: AbortSignal) { const c = this.watch(); if (!c) throw new ServiceError("sync_unconfigured"); this.transport(this.config!); return { ...await this.quantum.changes(c.api, c.datasetId, c.cursor, signal), datasetId: c.datasetId }; }
   acknowledge(datasetId: string, cursor: number) { const c = this.config; syncNumber(cursor); if (c?.origin !== "quantum" || c.datasetId !== datasetId || cursor < (c.cursor ?? 0)) return; this.check(this.vault.memory.ticket()); c.cursor = cursor; atomic(join(this.root, "state.json"), c); }
-  feedFailure(error: unknown) { const cause = this.cause(error); this.failure = { writer: null, cause }; if (cause === "sync_acceptance_required") { const policies = (error as { policies?: NonNullable<SyncStatus["missingPolicies"]> }).policies; if (policies && this.access) this.access.missingPolicies = policies; this.storage = null; } }
+  feedFailure(error: unknown) { this.noteAcceptance(error); const cause = this.cause(error); this.failure = { writer: null, cause }; if (cause === "sync_acceptance_required") { const policies = (error as { policies?: NonNullable<SyncStatus["missingPolicies"]> }).policies; if (policies && this.access) this.access.missingPolicies = policies; this.storage = null; } }
   // A local write that lands while a pulse is staging its store restarts the pulse, which then carries it; a few restarts, then the caller retries.
   async pulse(): Promise<SyncStatus> { for (let attempt = 0; ; attempt++) try { return await this.attempt(); } catch (error) { if (this.cause(error) !== "sync_changed" || attempt >= 3) throw error; } }
   private async attempt() {
@@ -350,8 +442,8 @@ export class Sync {
         if (published.some(item => !known.has(`writers/${writer(c)}/batches/${item.name}`))) { for (const snapshot of pending) fs.rmSync(join(this.root, "outbox", snapshot.state.index), { recursive: true }); pending.length = 0; c = { ...c, deviceId: c.origin === "quantum" ? c.deviceId : randomUUID(), generationId: randomUUID(), binding: binding(this.home), sequence: 0, operations: 0, checkpoint: 0 }; }
       }
       if (pending.length) { await this.finish(pending[0], key, ticket, c); c = this.config!; }
-      await this.run(c, await this.current(c, key), key, ticket, false, this.config); this.failure = null; return this.status();
-    } catch (error) { const cause = this.cause(error); if (original.origin === "quantum" && ["sync_plan_required", "sync_storage_full"].includes(cause)) { const c = this.config!; for (const snapshot of await this.pending(key)) fs.rmSync(join(this.root, "outbox", snapshot.state.index), { recursive: true, force: true }); await this.run(c, await this.current(c, key), key, ticket, false, c, undefined, undefined, true); } if (cause !== "locked" && cause !== "sync_changed") { this.failure = { writer: this.receiving, cause }; try { atomic(join(this.root, "failure.json"), this.failure); this.logger("sync_pulse", { outcome: "denied" }); } catch {} } throw cause.startsWith("sync_") ? new ServiceError(cause, 503) : error instanceof VaultError || error instanceof ServiceError ? error : new VaultError("locked"); }
+      await this.run(c, await this.current(c, key), key, ticket, false, this.config); this.failure = null; this.releaseAcceptance(); return this.status();
+    } catch (error) { this.noteAcceptance(error); const cause = this.cause(error); if (original.origin === "quantum" && ["sync_plan_required", "sync_storage_full"].includes(cause)) { const c = this.config!; for (const snapshot of await this.pending(key)) fs.rmSync(join(this.root, "outbox", snapshot.state.index), { recursive: true, force: true }); await this.run(c, await this.current(c, key), key, ticket, false, c, undefined, undefined, true); } if (cause !== "locked" && cause !== "sync_changed") { this.failure = { writer: this.receiving, cause }; try { atomic(join(this.root, "failure.json"), this.failure); this.logger("sync_pulse", { outcome: "denied" }); } catch {} } throw cause.startsWith("sync_") ? new ServiceError(cause, 503) : error instanceof VaultError || error instanceof ServiceError ? error : new VaultError("locked"); }
     finally { this.receiving = null; this.pulsing--; }
   }
   private receiving: string | null = null;
