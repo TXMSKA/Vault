@@ -131,8 +131,23 @@ try {
   assert.equal(textOf(spanish).includes("dispositivo"), true);
   assert.equal(calls.filter(item => item === "acceptance").length, 0);
 
-  stage = "join-signin";
+  stage = "setup-signin";
   const savedWait = bridge.syncWait;
+  bridge.syncWait = async () => ({ ok: false, code: "sync_acceptance_required" });
+  datasets = 0; calls.length = 0; startJoin();
+  const setupRefused = screen(syncScreen, en);
+  await until("setup-signin-button", () => buttons(setupRefused, en.signIn).length === 1);
+  click(setupRefused, en.signIn);
+  await until("setup-signin-offer", () => buttons(setupRefused, en.acceptInBrowser).length === 1);
+  click(setupRefused, en.acceptInBrowser);
+  await until("setup-signin-accepting", () => textOf(setupRefused).includes(en.acceptingBody));
+  releaseWait({ ok: true, status: source, account: "qa@example.invalid", datasets: 0 });
+  await until("setup-signin-start", () => buttons(setupRefused, en.startSync).length === 1);
+  assert.equal(buttons(setupRefused, en.signIn).length, 0);
+  assert.equal(textOf(setupRefused).includes("qa@example.invalid"), true);
+  assert.equal(calls.filter(item => item === "setup").length, 0);
+
+  stage = "join-signin";
   bridge.syncWait = async () => ({ ok: false, code: "sync_acceptance_required" });
   datasets = 0; calls.length = 0; startJoin();
   const refused = screen(joinScreen, en);

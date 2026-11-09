@@ -72,7 +72,12 @@ export function syncScreen(context: Context): HTMLElement {
       if (disposed || progress.step !== "accepting") return;
       progress.step = resume;
       if (!result.ok) { draw(); if (result.code !== "cancelled") fail(result.code); return; }
-      if (resume === "choose") current = result.status; draw();
+      if (resume === "choose") {
+        current = result.status;
+        // Acceptance that followed this window's sign-in returns that account; setup continues from it instead of asking for a second sign-in.
+        if (!current?.configured && typeof result.account === "string" && typeof result.datasets === "number") { progress.account = result.account; progress.datasets = result.datasets; progress.step = "signed"; }
+      }
+      draw();
     } finally { opening = false; }
   }
 
