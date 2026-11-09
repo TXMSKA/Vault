@@ -182,6 +182,28 @@ try {
   assert.equal(counted.datasets, 1);
   assert.equal(counted.account, "qa@example.invalid");
   assert.equal(reads, 2);
+
+  stage = "join-count-lifecycle";
+  for (const mode of ["blur", "cancel"]) {
+    const releases = []; let loads = 0, polls = 0;
+    const held2 = {
+      ...quantum,
+      account: () => new Promise((resolve, reject) => { loads += 1; const n = loads; releases.push(() => n === 1 ? reject({ code: "sync_acceptance_required" }) : n === 2 ? resolve({ account: "qa@example.invalid", datasets: 1 }) : resolve({ account: "qa@example.invalid", datasets: 1 })); }),
+      poll: async () => { polls += 1; return { account: "qa@example.invalid" }; },
+    };
+    const m = createSync({ service: () => ({ sync: { status: async () => held, quantum: held2 } }), quantum: () => ({ api: "https://api.example.invalid", site: "https://accounts.example.invalid" }), openUrl: async () => {}, chooseFolder: async () => undefined, refresh: async () => {} });
+    assert.equal((await m.signIn()).ok, true);
+    const first = m.wait(); await new Promise(r => setTimeout(r, 5)); releases[0](); assert.equal((await first).code, "sync_acceptance_required");
+    assert.equal((await m.acceptance()).ok, true);
+    let settled; const pending = m.acceptanceWait().then(value => { settled = value; return value; });
+    await new Promise(r => setTimeout(r, 5)); assert.equal(releases.length, 2);
+    if (mode === "blur") m.foreground(false); else await m.cancel();
+    releases[1](); await new Promise(r => setTimeout(r, 10));
+    if (mode === "cancel") { assert.equal(settled?.ok, false); assert.equal(settled.code, "cancelled"); continue; }
+    assert.equal(settled, undefined);
+    m.foreground(true); await new Promise(r => setTimeout(r, 5)); releases[2]?.();
+    const done = await pending; assert.equal(done.ok, true); assert.equal(done.datasets, 1); assert.equal(polls, 2);
+  }
 } catch (error) {
   console.error(`Vault app acceptance failed at ${stage}: assertion.`);
   if (error?.stack) console.error(error.stack.split("\n").filter(line => /^\s+at .*acceptance\.test\.mjs:\d+:\d+/.test(line)).join("\n"));

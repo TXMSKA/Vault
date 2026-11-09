@@ -81,12 +81,14 @@ export function createSync(options: SyncOptions) {
         if (mine !== acceptAttempt || !inFront) continue;
         let account: string | undefined, datasets: number | undefined;
         if (signId && signing === signId && attempt === signAttempt) {
-          try {
-            const loaded = await service.sync.quantum.account();
-            if (signing === signId && attempt === signAttempt) { account = loaded.account; datasets = loaded.datasets; signing = undefined; }
-          } catch (error) {
-            if (signing === signId && attempt === signAttempt && codeOf(error) !== "sync_acceptance_required") signing = undefined;
-            if (codeOf(error) !== "sync_acceptance_required") throw error;
+          let loaded: { account: string; datasets: number } | undefined, failure: unknown;
+          try { loaded = await service.sync.quantum.account(); } catch (error) { failure = error; }
+          if (mine !== acceptAttempt) throw { code: "cancelled" };
+          if (!inFront) continue;
+          if (loaded) { if (signing === signId && attempt === signAttempt) { account = loaded.account; datasets = loaded.datasets; signing = undefined; } }
+          else {
+            if (signing === signId && attempt === signAttempt && codeOf(failure) !== "sync_acceptance_required") signing = undefined;
+            if (codeOf(failure) !== "sync_acceptance_required") throw failure;
           }
         }
         if (accepting?.id === id) accepting = undefined;
