@@ -274,7 +274,7 @@ export class Sync {
     if (!deviceId) { const paths = [join(this.root, "quantum-setup.json")]; if (fs.existsSync(join(this.root, "outbox"))) for (const name of fs.readdirSync(join(this.root, "outbox")).filter(name => syncPatterns.writer.test(name))) paths.push(join(this.root, "outbox", name, "state.json")); for (const path of paths) { let pending: State; try { pending = state(localRead(path, 16384)); } catch (error) { if (missing(error)) continue; throw error; } if (pending.origin === "quantum" && pending.binding === binding(this.home) && pending.quantum!.api === quantumUrl(api) && pending.quantum!.site === quantumUrl(site)) { deviceId = pending.deviceId; break; } } }
     this.storage = null; return this.quantum.start(api, site, deviceId);
   }
-  // Acceptance opens the signed-in account's site root. It keeps that account's credentials and never starts a sign-in.
+  // Acceptance opens the signed-in account's site root. A saved site can carry a path; the page is that origin. It keeps that account's credentials and never starts a sign-in.
   async acceptance(manager: string): Promise<{ url: string; id: string }> {
     let identity: ReturnType<QuantumAuth["identity"]>;
     try { identity = this.quantum.identity(); } catch (error) { throw error instanceof ServiceError ? error : new ServiceError("sync_signin_required", 401); }
@@ -292,7 +292,7 @@ export class Sync {
     const flow: AcceptanceFlow = { id: randomUUID(), manager, accountId: identity.accountId, account: identity.account, api: identity.api, site: identity.site, revision: this.quantum.authRevision(), ids, nextPollAt: 0, deadline: this.now() + 300000, inflight: null, controller: null, waiters: 0, failures: 0, result: "open" };
     for (const old of this.flows.values()) if (old.manager === manager && old.result === "open") this.endFlow(old, "cancelled");
     this.flows.set(flow.id, flow); const stale = [...this.flows.values()].filter(item => item.result !== "open"); while (this.flows.size > 16 && stale.length) this.flows.delete(stale.shift()!.id);
-    return { url: `${identity.site}${/^es(?:-|$)/i.test(this.language()) ? "/es/" : "/"}`, id: flow.id };
+    const root = new URL(identity.site).origin; return { url: `${root}${/^es(?:-|$)/i.test(this.language()) ? "/es/" : "/"}`, id: flow.id };
   }
   async pollQuantum(requestId: string, signal?: AbortSignal): Promise<{ pending: true } | { account: string }> { id(requestId); const flow = this.flows.get(requestId); return flow ? this.pollFlow(flow, signal) : this.quantum.poll(requestId); }
   async cancelAcceptance(requestId: string, manager: string): Promise<{ ok: true }> { id(requestId); const flow = this.flows.get(requestId); if (!flow || flow.manager !== manager) throw new ServiceError("not_found", 404); if (flow.result === "open") this.endFlow(flow, "cancelled"); return { ok: true }; }
@@ -312,19 +312,29 @@ export class Sync {
     const budget = Date.now() + 20000; this.guardFlow(flow); const ready = this.flowResult(flow); if (ready) return ready; if (signal?.aborted) return { pending: true };
     const due = flow.nextPollAt - this.now();
     if (due > 0) { const slice = Math.min(due, budget - Date.now()); if (slice <= 0) return { pending: true }; if (!await this.pause(slice, signal) || signal?.aborted) return { pending: true }; this.guardFlow(flow); const held = this.flowResult(flow); if (held) return held; if (this.now() < flow.nextPollAt || Date.now() >= budget) return { pending: true }; }
-    await this.pullAcceptance(flow, signal); if (signal?.aborted && flow.result === "open") return { pending: true }; return this.flowResult(flow) ?? { pending: true };
+    const left = budget - Date.now(); if (left <= 0) return { pending: true }; this.guardFlow(flow); const stopped = this.flowResult(flow); if (stopped) return stopped;
+    const deadline = flow.deadline - this.now(); if (deadline <= 0) { this.endFlow(flow, "expired"); return this.flowResult(flow) ?? { pending: true }; }
+    // The local budget and the flow deadline both cover the requirements read. Either one aborts that read instead of waiting it out.
+    const bound = new AbortController(), hitDeadline = deadline <= left, timer = setTimeout(() => { if (hitDeadline) this.endFlow(flow, "expired"); bound.abort(); }, hitDeadline ? deadline : left); timer.unref();
+    try { await this.pullAcceptance(flow, signal, bound.signal); } finally { clearTimeout(timer); }
+    if (signal?.aborted && flow.result === "open") return { pending: true }; this.guardFlow(flow); return this.flowResult(flow) ?? { pending: true };
   }
-  private async pullAcceptance(flow: AcceptanceFlow, signal?: AbortSignal) {
+  private async pullAcceptance(flow: AcceptanceFlow, signal?: AbortSignal, bound?: AbortSignal) {
     if (flow.result !== "open") return;
     if (!flow.inflight) { const controller = new AbortController(), release = this.quantum.track(controller); flow.controller = controller; flow.inflight = this.readRequirements(flow, controller.signal).finally(() => { release(); if (flow.controller === controller) flow.controller = null; flow.inflight = null; }); }
-    let disconnected = false; const onAbort = () => { disconnected = true; }; signal?.addEventListener("abort", onAbort); flow.waiters++;
-    try { await flow.inflight; } finally { flow.waiters--; signal?.removeEventListener("abort", onAbort); if (disconnected && flow.waiters === 0) flow.controller?.abort(); }
+    flow.waiters++;
+    let dropped = false, wake = () => {}; const stopped = new Promise<void>(resolve => { wake = () => resolve(); });
+    const leave = () => { if (dropped) return; dropped = true; if (flow.waiters === 1) flow.controller?.abort(); wake(); };
+    const onStop = () => wake(); flow.controller?.signal.addEventListener("abort", onStop);
+    signal?.addEventListener("abort", leave); bound?.addEventListener("abort", leave); if (signal?.aborted || bound?.aborted) leave();
+    try { if (!dropped && flow.result === "open") await Promise.race([flow.inflight, stopped]); }
+    finally { flow.waiters--; signal?.removeEventListener("abort", leave); bound?.removeEventListener("abort", leave); flow.controller?.signal.removeEventListener("abort", onStop); if (dropped && flow.waiters === 0) flow.controller?.abort(); }
   }
   private later(flow: AcceptanceFlow, delay: number) { const at = this.now() + delay; flow.nextPollAt = at > flow.deadline ? flow.deadline : at; }
   private async readRequirements(flow: AcceptanceFlow, signal: AbortSignal) {
     try {
-      this.guardFlow(flow); if (flow.result !== "open" || signal.aborted) return;
-      const reply = await this.quantum.requirements(signal); if (signal.aborted || flow.result !== "open") return; this.guardFlow(flow); if (flow.result !== "open") return;
+      this.guardFlow(flow); if (flow.result !== "open" || signal.aborted) { if (signal.aborted && flow.result === "open") this.later(flow, 2000); return; }
+      const reply = await this.quantum.requirements(signal); if (signal.aborted || flow.result !== "open") { if (signal.aborted && flow.result === "open") this.later(flow, 2000); return; } this.guardFlow(flow); if (flow.result !== "open") return;
       const defer = Math.max(2000, reply.retryAfter);
       if (flow.ids.some(item => reply.ids.includes(item))) { flow.failures = 0; this.later(flow, defer); return; }
       await this.finishAcceptance(flow, defer);
@@ -387,7 +397,7 @@ export class Sync {
       if (snapshot) await this.finish(snapshot, key, ticket, null);
       else await this.run(c, emptyIndex(), key, ticket, true, null, undefined, JSON.stringify({ format: "vault-sync", version: 1, datasetId: c.datasetId, createdAt: this.now(), envelope: env.state }));
       if (c.origin === "quantum") { fs.rmSync(intent, { force: true }); fs.rmSync(join(this.root, "quantum-switch.json"), { force: true }); }
-    } catch (error) { this.failure = { writer: null, cause: this.cause(error) }; throw error; } return this.status();
+    } catch (error) { this.noteAcceptance(error); this.failure = { writer: null, cause: this.cause(error) }; throw error; } return this.status();
   }
   async join(folder: string | true, secret: string, recovery: boolean, switching = false) {
     if (this.config || (await this.vault.store.envelope()).state && !switching) throw new ServiceError("sync_existing", 409);
@@ -408,7 +418,7 @@ export class Sync {
     try { if (folder === true) { this.prepare(); const snapshot = (await this.pending(opened.key))[0]; if (snapshot) { const previous = snapshot.state; if (previous.origin !== c.origin || previous.datasetId !== c.datasetId || !sameAccount(previous.quantum!, c.quantum!) || previous.deviceId !== c.deviceId || previous.binding !== c.binding) throw new VaultError("conflict"); await this.finish(snapshot, opened.key, ticket, null); return this.status(); } }
       let checkpoint: { index: Index; blobs: SyncBlob[] }; if (switching) { const index = await this.rebuild(c, opened.key, true), blobs: SyncBlob[] = []; for (const row of index.records) if (row.operation.record === "entry" && row.operation.value) blobs.push(...await this.findBlobs(c, row.operation, opened.key, c)); checkpoint = { index, blobs }; } else checkpoint = await this.checkpoint(c, opened.key);
       this.check(ticket); this.prepare(); await this.run(c, checkpoint.index, opened.key, ticket, true, null, { envelope: chosen, blobs: checkpoint.blobs, preserve: switching }); return this.status(); }
-    catch (error) { if (!switching) this.vault.memory.lock(); this.failure = { writer: null, cause: this.cause(error) }; throw error; }
+    catch (error) { this.noteAcceptance(error); if (!switching) this.vault.memory.lock(); this.failure = { writer: null, cause: this.cause(error) }; throw error; }
   }
   async switchToQuantum() {
     const intent = join(this.root, "quantum-switch.json"); let c = this.config; if (!c) { try { c = state(localRead(intent, 16384)); } catch (error) { if (!missing(error)) throw error; throw new ServiceError("sync_unconfigured"); } } if (c.origin !== "folder") throw new ServiceError("sync_configured", 409); const ticket = this.vault.memory.ticket(); this.check(ticket); this.discardOtherAccounts(); const datasets = await this.quantum.datasets(); if (datasets.length > 1) throw new ServiceError("sync_dataset", 400); this.check(ticket);

@@ -19,6 +19,16 @@ const failureText = (t: Dictionary, code: string) =>
 /** Failures the sync page already explains in its banner; repeating them under it as "could not be reached" would be wrong. */
 const BANNERED = new Set(["sync_acceptance_required", "sync_plan_required", "sync_signin_required", "sync_storage_full"]);
 const failureNotice = (slot: HTMLElement, t: Dictionary, code: string) => { slot.replaceChildren(notice("circleAlert", failureText(t, code), "error")); };
+/** The same acceptance action as the configured banner: the error, and one button that starts the existing wait. */
+const offerAcceptance = (slot: HTMLElement, t: Dictionary, code: string, start: () => void) => {
+  if (code !== "sync_acceptance_required") { failureNotice(slot, t, code); return; }
+  slot.replaceChildren(div("alert", icon("triangleAlert", 18), h("span", { class: "grow" }, failureText(t, code)), button(t.acceptInBrowser, { glyph: "externalLink", onclick: () => { start(); } })));
+};
+const waitingScreen = (t: Dictionary, body: string, status: HTMLElement, again: () => void, cancel: () => void) =>
+  div("syncwait",
+    div("waiticon", icon("externalLink", 22)), h("h2", { class: "h h20" }, t.signingTitle), h("p", { class: "lead" }, body),
+    div("actions gap", button(t.cancel, { onclick: cancel }), button(t.openAgain, { onclick: again })),
+    status);
 const minutesSince = (iso: string | null) => iso ? Math.max(0, (Date.now() - Date.parse(iso)) / 60000) : 0;
 
 /** The Sync row of the settings page: Set up while sync is off; where it goes and Manage while it is on. */
@@ -47,21 +57,22 @@ export function syncScreen(context: Context): HTMLElement {
   let current: SyncView | undefined, disposed = false;
   view.leave(() => { disposed = true; if (progress.step === "signing" || progress.step === "accepting") void bridge.syncCancel(); });
   const show = (...nodes: (HTMLElement | false | null | undefined)[]) => { if (!disposed) content.replaceChildren(...nodes.filter((node): node is HTMLElement => !!node)); };
-  const fail = (code: string) => failureNotice(status, t, code);
-  let opening = false;
+  const fail = (code: string) => offerAcceptance(status, t, code, () => { void accept(); });
+  let opening = false, resume: "choose" | "signed" = "choose";
   async function accept() {
     if (opening || progress.step === "accepting") return;
+    const back = progress.step === "signed" ? "signed" : "choose";
     opening = true;
     try {
       status.replaceChildren(); const opened = await bridge.syncAcceptance();
       if (disposed) { if (opened.ok) await bridge.syncCancel(); return; }
       if (!opened.ok) { fail(opened.code); return; }
-      progress.step = "accepting"; draw();
+      resume = back; progress.step = "accepting"; draw();
       const result = await bridge.syncAcceptanceWait();
       if (disposed || progress.step !== "accepting") return;
-      progress.step = "choose";
+      progress.step = resume;
       if (!result.ok) { draw(); if (result.code !== "cancelled") fail(result.code); return; }
-      current = result.status; draw();
+      if (resume === "choose") current = result.status; draw();
     } finally { opening = false; }
   }
 
@@ -132,17 +143,11 @@ export function syncScreen(context: Context): HTMLElement {
       div("computers", h("span", { class: "label" }, t.computers), computer("monitor", t.thisComputer), ...Array.from({ length: s.others }, () => computer("laptop", t.otherComputer))),
       status, div("fill"), div("actions", button(t.turnOff, { danger: true, onclick: turnOff }), div("fill")));
   }
-  function waiting(body: string, again: () => void, cancel: () => void): HTMLElement {
-    return div("syncwait",
-      div("waiticon", icon("externalLink", 22)), h("h2", { class: "h h20" }, t.signingTitle), h("p", { class: "lead" }, body),
-      div("actions gap", button(t.cancel, { onclick: cancel }), button(t.openAgain, { onclick: again })),
-      status);
-  }
   function signingView(): HTMLElement {
-    return waiting(t.signingBody, () => { void signIn(); }, () => { void bridge.syncCancel().then(() => { progress.moving = false; progress.step = "choose"; draw(); }); });
+    return waitingScreen(t, t.signingBody, status, () => { void signIn(); }, () => { void bridge.syncCancel().then(() => { progress.moving = false; progress.step = "choose"; draw(); }); });
   }
   function acceptingView(): HTMLElement {
-    return waiting(t.acceptingBody, () => { void bridge.syncAcceptanceOpen().then(result => { if (!result.ok && progress.step === "accepting") fail(result.code); }); }, () => { void bridge.syncCancel().then(() => { if (progress.step !== "accepting") return; progress.step = "choose"; draw(); }); });
+    return waitingScreen(t, t.acceptingBody, status, () => { void bridge.syncAcceptanceOpen().then(result => { if (!result.ok && progress.step === "accepting") fail(result.code); }); }, () => { void bridge.syncCancel().then(() => { if (progress.step !== "accepting") return; progress.step = resume; draw(); }); });
   }
   function draw() {
     if (current?.configured && progress.step !== "signing" && progress.step !== "accepting") { show(onView(current)); return; }
@@ -158,9 +163,25 @@ export function syncScreen(context: Context): HTMLElement {
 export function joinScreen({ t }: Context): HTMLElement {
   const content = div("syncbody"), status = div("slot");
   let disposed = false;
-  view.leave(() => { disposed = true; if (progress.step === "signing") void bridge.syncCancel(); });
+  view.leave(() => { disposed = true; if (progress.step === "signing" || progress.step === "accepting") void bridge.syncCancel(); });
   const show = (node: HTMLElement) => { if (!disposed) content.replaceChildren(node); };
-  const fail = (code: string) => failureNotice(status, t, code);
+  const fail = (code: string) => offerAcceptance(status, t, code, () => { void accept(); });
+  let opening = false;
+  async function accept() {
+    if (opening || progress.step === "accepting") return;
+    opening = true;
+    try {
+      status.replaceChildren(); const opened = await bridge.syncAcceptance();
+      if (disposed) { if (opened.ok) await bridge.syncCancel(); return; }
+      if (!opened.ok) { fail(opened.code); return; }
+      progress.step = "accepting"; draw();
+      const result = await bridge.syncAcceptanceWait();
+      if (disposed || progress.step !== "accepting") return;
+      progress.step = "password";
+      if (!result.ok) { draw(); if (result.code !== "cancelled") fail(result.code); return; }
+      draw();
+    } finally { opening = false; }
+  }
   async function signIn() {
     status.replaceChildren(); const opened = await bridge.syncSignIn();
     if (!opened.ok) { progress.step = "choose"; draw(); fail(opened.code); return; }
@@ -206,13 +227,13 @@ export function joinScreen({ t }: Context): HTMLElement {
     return form;
   }
   function signingView(): HTMLElement {
-    return div("syncwait",
-      div("waiticon", icon("externalLink", 22)), h("h2", { class: "h h20" }, t.signingTitle), h("p", { class: "lead" }, t.signingBody),
-      div("actions gap", button(t.cancel, { onclick: async () => { await bridge.syncCancel(); progress.step = "choose"; draw(); } }), button(t.openAgain, { onclick: () => { void signIn(); } })),
-      status);
+    return waitingScreen(t, t.signingBody, status, () => { void signIn(); }, () => { void bridge.syncCancel().then(() => { progress.step = "choose"; draw(); }); });
   }
-  function draw() { show(progress.step === "signing" ? signingView() : progress.step === "password" ? passwordView() : chooseView()); }
-  const back = iconButton("arrowLeft", t.back, () => { if (progress.step === "signing") void bridge.syncCancel(); restart(); go(() => { flow.first = "welcome"; }); }, 18);
+  function acceptingView(): HTMLElement {
+    return waitingScreen(t, t.acceptingBody, status, () => { void bridge.syncAcceptanceOpen().then(result => { if (!result.ok && progress.step === "accepting") fail(result.code); }); }, () => { void bridge.syncCancel().then(() => { if (progress.step !== "accepting") return; progress.step = "password"; draw(); }); });
+  }
+  function draw() { show(progress.step === "signing" ? signingView() : progress.step === "accepting" ? acceptingView() : progress.step === "password" ? passwordView() : chooseView()); }
+  const back = iconButton("arrowLeft", t.back, () => { if (progress.step === "signing" || progress.step === "accepting") void bridge.syncCancel(); restart(); go(() => { flow.first = "welcome"; }); }, 18);
   draw();
   return div("view page syncpage", div("sectionhead", back, h("h1", { class: "h h18" }, t.joinTitle)), content);
 }

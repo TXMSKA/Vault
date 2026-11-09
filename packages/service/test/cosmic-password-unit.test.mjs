@@ -110,6 +110,12 @@ try {
   check.equal(Object.values(forwarded).some(value => String(value).includes(secret)), false);
   delete process.env.VAULT_QUANTUM_SITE; check.equal(Object.hasOwn(serviceEnv(scratch), "VAULT_QUANTUM_SITE"), false);
   process.env.VAULT_QUANTUM_SITE = "http://accounts.example"; await check.rejects(async () => serviceEnv(scratch), error => error instanceof VaultClientError && error.code === "invalid");
+  stage = "readme";
+  const readme = await readFile(new URL("../../../README.md", import.meta.url), "utf8");
+  const permissions = readme.slice(readme.indexOf("## Storage and access"), readme.indexOf("## Settings, prompts and the app"));
+  check.equal(permissions.includes("Lyra and the other Cosmic callers"), true);
+  check.equal(permissions.includes("`docs/cosmic-password-provider.md`"), true);
+  check.equal(permissions.includes("Agent identities and Lyra cannot be allowed"), false);
   console.log(`Vault cosmic password unit: ${checks} checks passed.`);
 } catch (error) {
   console.error(`Vault cosmic password unit failed at ${stage}: ${error instanceof ServiceError || error instanceof VaultClientError ? error.code : "assertion"}.`);

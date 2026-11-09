@@ -226,7 +226,10 @@ exact normalized HTTP or HTTPS origin, including port, without subdomain
 or suffix matching. Nova gets `env` entries only. An environment entry's
 title is the project name; field IDs are variable names, and every value
 must be secret. Nebula, `vault-app` and `vault-cli` get all kinds. Other apps
-stay pending until allowed. Agent identities and Lyra cannot be allowed.
+stay pending until allowed. Agent identities cannot be allowed, and neither
+can a name that starts with `lyra-`. Lyra and the other Cosmic callers
+(`nebula`, `nova`, `horizon`, `lyra` and `hivem1nd`) are the granted exception
+for the Cosmic password provider, specified in `docs/cosmic-password-provider.md`.
 Only `vault-app` and `vault-cli` manage apps, recovery, import and export.
 Saving or removing checks both the existing and replacement entry kind.
 An entry outside the caller's kinds returns 404 on read, update, remove and
