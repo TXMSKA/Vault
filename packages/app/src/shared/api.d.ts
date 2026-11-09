@@ -125,8 +125,8 @@ export interface VaultBridge {
   syncSignOut(): Promise<Result>;
   /** Starts acceptance for every current blocker and opens the account page the service returns. */
   syncAcceptance(): Promise<Result>;
-  /** Waits until that acceptance finishes. Polling pauses while the window is in the background. */
-  syncAcceptanceWait(): Promise<Result<{ status: SyncView }>>;
+  /** Waits until that acceptance finishes. Polling pauses while the window is in the background. A join sign-in that stopped before its dataset count was known also returns that account and count once they can be read. */
+  syncAcceptanceWait(): Promise<Result<{ status: SyncView; account?: string; datasets?: number }>>;
   /** Opens the same account page again, without starting another acceptance. */
   syncAcceptanceOpen(): Promise<Result>;
   saveSettings(input: SettingsView): Promise<Result>;

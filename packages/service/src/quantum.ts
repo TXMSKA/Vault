@@ -164,8 +164,8 @@ export class QuantumAuth {
     } });
   }
   async createDataset(datasetId: string): Promise<void> { id(datasetId); await this.request(this.identity().api, `/v1/datasets/${datasetId}`, { method: "PUT" }); }
-  async profile(): Promise<ReturnType<QuantumAuth["identity"]>> {
-    const revision = this.revision, value = json(await this.request(this.identity().api, "/v1/me", {}, 65536)); if (this.refreshing) await this.refreshing; if (revision !== this.revision) throw new ServiceError("sync_signin_required", 401); const current = this.credentials, canonical = accountId(value.accountId), email = text(value.email, 320);
+  async profile(signal?: AbortSignal): Promise<ReturnType<QuantumAuth["identity"]>> {
+    const revision = this.revision, value = json(await this.request(this.identity().api, "/v1/me", signal ? { signal } : {}, 65536)); if (signal?.aborted) throw new ServiceError("sync_unavailable", 503); if (this.refreshing) await this.refreshing; if (signal?.aborted) throw new ServiceError("sync_unavailable", 503); if (revision !== this.revision) throw new ServiceError("sync_signin_required", 401); const current = this.credentials, canonical = accountId(value.accountId), email = text(value.email, 320);
     if (!current?.refreshToken || current.accountId && canonical !== current.accountId) { await this.clear(); throw new ServiceError("sync_signin_required", 401); }
     if (!email || /[\x00-\x1f\x7f]/.test(email)) throw new VaultError("invalid");
     if (canonical !== current.accountId || email !== current.account) { const next = { ...current, account: email, accountId: canonical }; await this.save(next, revision); this.credentials = next; } return this.identity();
@@ -176,13 +176,14 @@ export class QuantumAuth {
     if (typeof value.registrationBetaRequired !== "boolean") throw new VaultError("invalid");
     return { ids: [...new Set(policies(value.policies, current.site).map(row => row.id))], retryAfter: retryAfter(reply.headers) };
   }
-  async bootstrap(now = Date.now()): Promise<Bootstrap> {
-    this.identity(); if (this.snapshot && now - this.snapshot.at < 60000) return this.snapshot.value; if (this.bootstrapping) return this.bootstrapping;
+  async bootstrap(now = Date.now(), signal?: AbortSignal): Promise<Bootstrap> {
+    this.identity(); if (signal?.aborted) throw new ServiceError("sync_unavailable", 503); if (this.snapshot && now - this.snapshot.at < 60000) return this.snapshot.value; if (this.bootstrapping) return this.bootstrapping;
     const pending = (async () => {
-      const q = await this.profile(), revision = this.revision, value = json(await this.request(q.api, "/v1/bootstrap", {}, 65536)), capabilities = value.capabilities as { managedSync?: { vault?: unknown } } | undefined, pool = value.pool as { usedBytes?: unknown; poolBytes?: unknown } | undefined, legal = value.legal as { missing?: unknown } | undefined;
+      const q = await this.profile(signal), revision = this.revision, value = json(await this.request(q.api, "/v1/bootstrap", signal ? { signal } : {}, 65536)), capabilities = value.capabilities as { managedSync?: { vault?: unknown } } | undefined, pool = value.pool as { usedBytes?: unknown; poolBytes?: unknown } | undefined, legal = value.legal as { missing?: unknown } | undefined;
+      if (signal?.aborted) throw new ServiceError("sync_unavailable", 503);
       if (accountId(value.accountId) !== q.accountId) { await this.clear(); throw new ServiceError("sync_signin_required", 401); }
       if (typeof capabilities?.managedSync?.vault !== "boolean" || !pool || !Number.isSafeInteger(pool.usedBytes) || (pool.usedBytes as number) < 0 || pool.poolBytes !== null && (!Number.isSafeInteger(pool.poolBytes) || (pool.poolBytes as number) < 0) || revision !== this.revision) throw new VaultError("invalid");
-      const result = { managedSync: capabilities.managedSync.vault, missingPolicies: policies(legal?.missing, q.site), storage: { used: pool.usedBytes as number, pool: pool.poolBytes as number | null } }; this.snapshot = { at: now, value: result }; return result;
+      const result = { managedSync: capabilities.managedSync.vault, missingPolicies: policies(legal?.missing, q.site), storage: { used: pool.usedBytes as number, pool: pool.poolBytes as number | null } }; if (signal?.aborted) throw new ServiceError("sync_unavailable", 503); this.snapshot = { at: now, value: result }; return result;
     })(); this.bootstrapping = pending; try { return await pending; } finally { if (this.bootstrapping === pending) this.bootstrapping = null; }
   }
   async usage(): Promise<{ used: number; pool: number | null }> { return (await this.bootstrap()).storage; }

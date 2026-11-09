@@ -166,20 +166,30 @@ export function joinScreen({ t }: Context): HTMLElement {
   view.leave(() => { disposed = true; if (progress.step === "signing" || progress.step === "accepting") void bridge.syncCancel(); });
   const show = (node: HTMLElement) => { if (!disposed) content.replaceChildren(node); };
   const fail = (code: string) => offerAcceptance(status, t, code, () => { void accept(); });
-  let opening = false;
+  let opening = false, resume: "choose" | "password" = "choose";
   async function accept() {
     if (opening || progress.step === "accepting") return;
+    const back = progress.step === "password" ? "password" : "choose";
     opening = true;
     try {
       status.replaceChildren(); const opened = await bridge.syncAcceptance();
       if (disposed) { if (opened.ok) await bridge.syncCancel(); return; }
       if (!opened.ok) { fail(opened.code); return; }
-      progress.step = "accepting"; draw();
+      resume = back; progress.step = "accepting"; draw();
       const result = await bridge.syncAcceptanceWait();
       if (disposed || progress.step !== "accepting") return;
-      progress.step = "password";
-      if (!result.ok) { draw(); if (result.code !== "cancelled") fail(result.code); return; }
-      draw();
+      if (!result.ok) { progress.step = resume; draw(); if (result.code !== "cancelled") fail(result.code); return; }
+      if (resume === "choose") {
+        let account = typeof result.account === "string" ? result.account : undefined, datasets = typeof result.datasets === "number" ? result.datasets : undefined;
+        if (account === undefined || datasets === undefined) {
+          const loaded = await bridge.syncWait();
+          if (disposed || progress.step !== "accepting") return;
+          if (!loaded.ok) { progress.step = "choose"; draw(); fail(loaded.code); return; }
+          account = loaded.account; datasets = loaded.datasets;
+        }
+        progress.account = account; progress.datasets = datasets;
+      }
+      progress.step = "password"; draw();
     } finally { opening = false; }
   }
   async function signIn() {
@@ -230,7 +240,7 @@ export function joinScreen({ t }: Context): HTMLElement {
     return waitingScreen(t, t.signingBody, status, () => { void signIn(); }, () => { void bridge.syncCancel().then(() => { progress.step = "choose"; draw(); }); });
   }
   function acceptingView(): HTMLElement {
-    return waitingScreen(t, t.acceptingBody, status, () => { void bridge.syncAcceptanceOpen().then(result => { if (!result.ok && progress.step === "accepting") fail(result.code); }); }, () => { void bridge.syncCancel().then(() => { if (progress.step !== "accepting") return; progress.step = "password"; draw(); }); });
+    return waitingScreen(t, t.acceptingBody, status, () => { void bridge.syncAcceptanceOpen().then(result => { if (!result.ok && progress.step === "accepting") fail(result.code); }); }, () => { void bridge.syncCancel().then(() => { if (progress.step !== "accepting") return; progress.step = resume; draw(); }); });
   }
   function draw() { show(progress.step === "signing" ? signingView() : progress.step === "accepting" ? acceptingView() : progress.step === "password" ? passwordView() : chooseView()); }
   const back = iconButton("arrowLeft", t.back, () => { if (progress.step === "signing" || progress.step === "accepting") void bridge.syncCancel(); restart(); go(() => { flow.first = "welcome"; }); }, 18);

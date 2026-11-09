@@ -59,7 +59,7 @@ export function createSync(options: SyncOptions) {
      * the next poll, once the window is in front again, is what may finish the flow.
      */
     acceptanceWait: () => run(async service => {
-      const id = accepting?.id, mine = acceptAttempt; if (!id) throw { code: "not_found" };
+      const id = accepting?.id, mine = acceptAttempt, signId = signing, signAttempt = attempt; if (!id) throw { code: "not_found" };
       for (;;) {
         if (mine !== acceptAttempt) throw { code: "cancelled" };
         if (!inFront) { await untilFront(mine); continue; }
@@ -79,8 +79,18 @@ export function createSync(options: SyncOptions) {
         if (mine !== acceptAttempt || controller.signal.aborted || !inFront) continue;
         await options.refresh();
         if (mine !== acceptAttempt || !inFront) continue;
+        let account: string | undefined, datasets: number | undefined;
+        if (signId && signing === signId && attempt === signAttempt) {
+          try {
+            const loaded = await service.sync.quantum.account();
+            if (signing === signId && attempt === signAttempt) { account = loaded.account; datasets = loaded.datasets; signing = undefined; }
+          } catch (error) {
+            if (signing === signId && attempt === signAttempt && codeOf(error) !== "sync_acceptance_required") signing = undefined;
+            if (codeOf(error) !== "sync_acceptance_required") throw error;
+          }
+        }
         if (accepting?.id === id) accepting = undefined;
-        return { status: value };
+        return account !== undefined && datasets !== undefined ? { status: value, account, datasets } : { status: value };
       }
     }),
     /** Blur pauses the acceptance poll. Focus lets it read again before any earlier result counts. */
@@ -94,9 +104,13 @@ export function createSync(options: SyncOptions) {
     /** Waits for the browser; an older wait that a new sign-in replaced answers `cancelled`. */
     wait: () => run(async service => {
       const id = signing, mine = attempt; if (!id) throw { code: "not_found" };
-      try { const { account } = await service.sync.quantum.wait(id); if (mine !== attempt) throw { code: "cancelled" }; const { datasets } = await service.sync.quantum.account(); return { account, datasets }; }
-      catch (error) { if (mine !== attempt) throw { code: "cancelled" }; throw error; }
-      finally { if (mine === attempt) signing = undefined; }
+      let retain = false;
+      try {
+        const { account } = await service.sync.quantum.wait(id); if (mine !== attempt) throw { code: "cancelled" };
+        try { const { datasets } = await service.sync.quantum.account(); return { account, datasets }; }
+        catch (error) { if (mine === attempt && codeOf(error) === "sync_acceptance_required") retain = true; throw error; }
+      } catch (error) { if (mine !== attempt) throw { code: "cancelled" }; throw error; }
+      finally { if (mine === attempt && !retain) signing = undefined; }
     }),
     async cancel() {
       attempt++; signing = undefined;

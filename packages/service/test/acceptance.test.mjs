@@ -14,7 +14,7 @@ const check = (actual, expected) => { checks++; assert.equal(actual, expected); 
 function make(site = "https://accounts.example.invalid", language = "en") {
   let clock = Date.now(), revision = 1, current = { account: "qa@example.invalid", accountId: "qa-account", api: "https://api.example.invalid", site };
   let boot = { managedSync: true, missingPolicies: [privacy], storage: { used: 0, pool: 1 } };
-  const vault = { memory: { ticket: () => 0, get() { throw new Error("locked"); } } };
+  const vault = { memory: { ticket: () => 0, get() { throw new Error("locked"); } }, store: { envelope: async () => ({ state: null, version: 0 }) } };
   const sync = new Sync(scratch, vault, () => clock, async () => {}, () => {}, () => language);
   const quantum = sync.quantum;
   quantum.identity = () => { if (!current) throw new ServiceError("sync_signin_required", 401); return { ...current }; };
@@ -67,6 +67,52 @@ try {
     fixture.quantum.requirements = async () => { done = sleep(21050).then(() => ({ ids: ["privacy"], retryAfter: 0 })); return done; };
     const started = performance.now(), result = await code(fixture.sync.pollQuantum(flow.id)), elapsed = Math.round(performance.now() - started);
     check(result, "pending"); check(elapsed >= 19000 && elapsed <= 20500, true); await done;
+  }
+
+  stage = "join-read";
+  for (const where of ["datasets", "dataset"]) {
+    const fixture = make(), terms = { id: "terms", path: "/terms", version: "synthetic" }, device = "01234567-89ab-4cde-8fab-0123456789ab", datasetId = "11111111-1111-4111-8111-111111111111";
+    fixture.quantum.identity = () => ({ account: "qa@example.invalid", accountId: "qa-account", api: "https://api.example.invalid", site: "https://accounts.example.invalid", deviceId: device });
+    fixture.quantum.bootstrap = async () => ({ managedSync: true, missingPolicies: [terms], storage: { used: 0, pool: 1 } });
+    fixture.quantum.blocked = () => ({ accountId: "qa-account", api: "https://api.example.invalid", site: "https://accounts.example.invalid", revision: 1, ids: ["privacy"] });
+    fixture.quantum.datasets = async () => { if (where === "datasets") throw new ServiceError("sync_acceptance_required", 403); return [datasetId]; };
+    fixture.quantum.request = async () => { throw new ServiceError("sync_acceptance_required", 403); };
+    let failed = "";
+    try { await fixture.sync.join(true, "synthetic-secret", false); } catch (error) { failed = error.code ?? ""; }
+    check(failed, "sync_acceptance_required");
+    fixture.quantum.requirements = async () => ({ ids: ["terms"], retryAfter: 0 });
+    const flow = await fixture.sync.acceptance("vault-app");
+    check(await code(fixture.sync.pollQuantum(flow.id)), "done");
+  }
+
+  stage = "completion-abort";
+  {
+    const fixture = make(), flow = await fixture.sync.acceptance("vault-app");
+    let release = () => {}, entered = false, upstream;
+    fixture.quantum.requirements = async () => ({ ids: [], retryAfter: 0 });
+    fixture.quantum.bootstrap = (_now, signal) => { upstream = signal; entered = true; return new Promise(resolve => { release = () => resolve({ managedSync: true, missingPolicies: [], storage: { used: 0, pool: 1 } }); }); };
+    const abort = new AbortController(), waiting = code(fixture.sync.pollQuantum(flow.id, abort.signal));
+    for (let i = 0; i < 50 && !entered; i++) await sleep(1);
+    check(entered, true); abort.abort(); const result = await waiting; release(); await sleep(20);
+    let rereads = 0;
+    fixture.quantum.requirements = async () => { rereads++; return { ids: ["privacy"], retryAfter: 0 }; };
+    fixture.quantum.bootstrap = async () => ({ managedSync: true, missingPolicies: [privacy], storage: { used: 0, pool: 1 } });
+    const resumed = await code(fixture.sync.pollQuantum(flow.id));
+    check(result, "pending"); check(upstream?.aborted ?? false, true); check(resumed, "pending"); check(rereads, 1);
+  }
+
+  stage = "cadence-wake";
+  for (const action of ["cancel", "replace", "stop"]) {
+    const fixture = make(), flow = await fixture.sync.acceptance("vault-app");
+    fixture.quantum.requirements = async () => ({ ids: ["privacy"], retryAfter: 60000 });
+    check(await code(fixture.sync.pollQuantum(flow.id)), "pending");
+    const started = performance.now(), waiting = code(fixture.sync.pollQuantum(flow.id));
+    await sleep(20);
+    if (action === "cancel") await fixture.sync.cancelAcceptance(flow.id, "vault-app");
+    else if (action === "replace") await fixture.sync.acceptance("vault-app");
+    else fixture.sync.stop();
+    const result = await Promise.race([waiting, sleep(500).then(() => "asleep")]);
+    check(result, "cancelled"); check(performance.now() - started < 500, true);
   }
   console.log(`Vault acceptance: ${checks} checks passed.`);
 } catch (error) {

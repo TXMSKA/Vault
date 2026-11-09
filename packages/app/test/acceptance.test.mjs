@@ -1,6 +1,7 @@
 import "../../../test/guard.mjs";
 import assert from "node:assert/strict";
 import { en, es } from "../src/renderer/i18n.ts";
+import { createSync } from "../src/main/sync.ts";
 
 class ClassList {
   constructor(el) { this.el = el; }
@@ -129,6 +130,58 @@ try {
   assert.equal(buttons(spanish, es.acceptInBrowser).length, 1);
   assert.equal(textOf(spanish).includes("dispositivo"), true);
   assert.equal(calls.filter(item => item === "acceptance").length, 0);
+
+  stage = "join-signin";
+  const savedWait = bridge.syncWait;
+  bridge.syncWait = async () => ({ ok: false, code: "sync_acceptance_required" });
+  datasets = 0; calls.length = 0; startJoin();
+  const refused = screen(joinScreen, en);
+  click(refused, en.signIn);
+  await until("signin-offer", () => buttons(refused, en.acceptInBrowser).length === 1);
+  assert.equal(textOf(refused).includes(en.joinEmpty), false);
+  click(refused, en.acceptInBrowser);
+  await until("signin-wait", () => textOf(refused).includes(en.acceptingBody));
+  click(refused, en.cancel);
+  await until("signin-back", () => buttons(refused, en.signIn).length === 1 && !textOf(refused).includes(en.acceptingBody));
+  assert.equal(textOf(refused).includes(en.joinEmpty), false);
+  assert.equal(buttons(refused, en.join).length, 0);
+
+  calls.length = 0; startJoin();
+  const resumed = screen(joinScreen, en);
+  click(resumed, en.signIn);
+  await until("signin-again", () => buttons(resumed, en.acceptInBrowser).length === 1);
+  click(resumed, en.acceptInBrowser);
+  await until("signin-accepting", () => textOf(resumed).includes(en.acceptingBody));
+  releaseWait({ ok: true, status: source, account: "qa@example.invalid", datasets: 1 });
+  await until("signin-password", () => { try { return field(resumed, "password").tag === "input"; } catch { return false; } });
+  assert.equal(textOf(resumed).includes(en.joinEmpty), false);
+  assert.equal(textOf(resumed).includes("qa@example.invalid"), true);
+  assert.equal(buttons(resumed, en.join).length, 1);
+  bridge.syncWait = savedWait;
+
+  stage = "join-count";
+  let reads = 0;
+  const quantum = {
+    signIn: async () => ({ url: "https://accounts.example.invalid/authorize/", id: "sign-join" }),
+    wait: async () => ({ account: "qa@example.invalid" }),
+    account: async () => { reads += 1; if (reads === 1) throw { code: "sync_acceptance_required" }; return { account: "qa@example.invalid", datasets: 1 }; },
+    acceptance: async () => ({ url: "https://accounts.example.invalid/", id: "flow-join" }),
+    poll: async () => ({ account: "qa@example.invalid" }),
+    cancelAcceptance: async () => ({ ok: true }),
+  };
+  const held = { configured: false, origin: null, account: null, folder: null, storage: null, lastSynced: null, computers: [], pending: 0, conflicts: 0, failure: null, managedSync: true, missingPolicies: [] };
+  const main = createSync({ service: () => ({ sync: { status: async () => held, quantum } }), quantum: () => ({ api: "https://api.example.invalid", site: "https://accounts.example.invalid" }), openUrl: async () => {}, chooseFolder: async () => undefined, refresh: async () => {} });
+  assert.equal((await main.signIn()).ok, true);
+  const blocked = await main.wait();
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.code, "sync_acceptance_required");
+  assert.equal(Object.hasOwn(blocked, "datasets"), false);
+  assert.equal((await main.acceptance()).ok, true);
+  const counted = await main.acceptanceWait();
+  assert.equal(counted.ok, true);
+  assert.equal(counted.datasets, 1);
+  assert.equal(counted.account, "qa@example.invalid");
+  assert.equal(reads, 2);
 } catch (error) {
   console.error(`Vault app acceptance failed at ${stage}: assertion.`);
   if (error?.stack) console.error(error.stack.split("\n").filter(line => /^\s+at .*acceptance\.test\.mjs:\d+:\d+/.test(line)).join("\n"));
